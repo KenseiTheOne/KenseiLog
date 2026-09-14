@@ -1,0 +1,19 @@
+{
+  "name": "com.kensei.log",
+  "version": "0.1.0",
+  "displayName": "Kensei Log",
+  "description": "Tagged logging with separate dev and prod channels. Dev calls are stripped by the compiler in release builds. Ships an editor window that splits logs into saved filter tabs by tag.",
+  "unity": "2022.3",
+  "author": {
+    "name": "KenseiTheOne",
+    "url": "https://github.com/KenseiTheOne"
+  },
+  "keywords": [
+    "logging",
+    "logger",
+    "debug",
+    "editor",
+    "tools"
+  ],
+  "license": "MIT"
+}

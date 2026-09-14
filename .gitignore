@@ -1,0 +1,21 @@
+# Unity .meta files are intentionally NOT ignored: a UPM package must ship them,
+# otherwise asset GUIDs differ for every consumer and references break.
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vs/
+.vscode/
+*.user
+*.userprefs
+*.suo
+
+# Generated project files
+*.csproj
+*.sln
+obj/
+bin/

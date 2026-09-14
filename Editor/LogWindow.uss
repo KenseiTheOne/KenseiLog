@@ -1,0 +1,248 @@
+/* Colours come from the editor theme variables, so the window follows the light and
+   dark skins without a second palette to keep in sync. */
+
+.kl-root {
+    flex-grow: 1;
+}
+
+/* ===================== Tab bar ===================== */
+
+.kl-tabbar {
+    flex-direction: row;
+    flex-shrink: 0;
+    height: 24px;
+    background-color: var(--unity-colors-toolbar-background);
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(0, 0, 0, 0.35);
+}
+
+.kl-tab {
+    margin: 0;
+    padding-left: 10px;
+    padding-right: 10px;
+    border-width: 0;
+    border-radius: 0;
+    background-color: rgba(0, 0, 0, 0);
+    border-bottom-width: 2px;
+    border-bottom-color: rgba(0, 0, 0, 0);
+    -unity-text-align: middle-center;
+}
+
+.kl-tab:hover {
+    background-color: rgba(127, 127, 127, 0.16);
+}
+
+.kl-tab--active {
+    background-color: var(--unity-colors-window-background);
+    border-bottom-color: var(--unity-colors-highlight-background);
+}
+
+.kl-tab-add {
+    margin: 0;
+    width: 24px;
+    border-width: 0;
+    border-radius: 0;
+    background-color: rgba(0, 0, 0, 0);
+    -unity-text-align: middle-center;
+}
+
+.kl-tab-add:hover {
+    background-color: rgba(127, 127, 127, 0.16);
+}
+
+/* ===================== Body ===================== */
+
+.kl-body {
+    flex-direction: row;
+    flex-grow: 1;
+}
+
+.kl-tagpane {
+    width: 176px;
+    min-width: 120px;
+    flex-shrink: 0;
+    background-color: var(--unity-colors-window-background);
+    border-right-width: 1px;
+    border-right-color: rgba(0, 0, 0, 0.35);
+}
+
+.kl-main {
+    flex-grow: 1;
+    flex-direction: column;
+}
+
+.kl-listarea {
+    flex-grow: 1;
+}
+
+.kl-list {
+    flex-grow: 1;
+}
+
+/* ===================== Tag tree ===================== */
+
+.kl-tagrow {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+    padding-right: 6px;
+}
+
+.kl-tagrow:hover {
+    background-color: rgba(127, 127, 127, 0.14);
+}
+
+.kl-tagrow--selected {
+    background-color: var(--unity-colors-highlight-background-inactive);
+}
+
+.kl-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.kl-tagname {
+    flex-grow: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.kl-tagcount {
+    opacity: 0.55;
+    -unity-text-align: middle-right;
+    min-width: 24px;
+}
+
+/* ===================== Toolbar ===================== */
+
+.kl-toolbar {
+    flex-shrink: 0;
+}
+
+.kl-search {
+    width: 160px;
+    margin-left: 4px;
+}
+
+.kl-spacer {
+    flex-grow: 1;
+}
+
+.kl-frame-pill {
+    -unity-text-align: middle-center;
+    padding-left: 6px;
+    padding-right: 6px;
+    margin-left: 4px;
+    margin-top: 2px;
+    margin-bottom: 2px;
+    border-radius: 3px;
+    background-color: var(--unity-colors-highlight-background);
+}
+
+/* ===================== Rows ===================== */
+
+.kl-row {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+}
+
+.kl-strip {
+    width: 3px;
+    height: 14px;
+    margin-right: 7px;
+    flex-shrink: 0;
+    border-radius: 2px;
+}
+
+.kl-cell-frame {
+    width: 54px;
+    flex-shrink: 0;
+    opacity: 0.5;
+}
+
+.kl-cell-time {
+    width: 52px;
+    flex-shrink: 0;
+    opacity: 0.5;
+    -unity-text-align: middle-right;
+    margin-right: 10px;
+}
+
+.kl-cell-tag {
+    width: 96px;
+    flex-shrink: 0;
+    opacity: 0.8;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.kl-cell-message {
+    flex-grow: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.kl-cell-repeats {
+    width: 40px;
+    flex-shrink: 0;
+    opacity: 0.6;
+    -unity-text-align: middle-right;
+    margin-right: 6px;
+}
+
+/* Severity colours the text only. The tag already owns the row's colour, and painting
+   both makes everything shout at once. */
+.kl-level-warning {
+    color: var(--unity-colors-warning-text);
+}
+
+.kl-level-error {
+    color: var(--unity-colors-error-text);
+}
+
+.kl-empty {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 24px;
+    -unity-text-align: upper-center;
+    white-space: normal;
+    opacity: 0.6;
+}
+
+/* ===================== Detail pane ===================== */
+
+.kl-detail {
+    height: 140px;
+    flex-shrink: 0;
+    border-top-width: 1px;
+    border-top-color: rgba(0, 0, 0, 0.35);
+    background-color: var(--unity-colors-window-background);
+}
+
+.kl-detail-header {
+    height: 20px;
+    padding-left: 8px;
+    -unity-text-align: middle-left;
+    -unity-font-style: bold;
+    opacity: 0.75;
+}
+
+.kl-detail-body {
+    flex-grow: 1;
+    margin: 0 6px 0 6px;
+}
+
+.kl-detail-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+    height: 24px;
+    padding-right: 6px;
+}
