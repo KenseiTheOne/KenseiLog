@@ -22,10 +22,12 @@ namespace KenseiLog {
         private const float BarHeight = 28f;
         private const float DragThreshold = 6f;
 
+        private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
+
         private static LogOverlay _instance;
 
         private readonly LogFilter _filter = new LogFilter { Name = "Overlay" };
-        private readonly List<long> _visible = new List<long>();
+        private readonly List<Row> _visible = new List<Row>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly int[] _levelCounts = new int[3];
 
@@ -103,8 +105,8 @@ namespace KenseiLog {
             }
             LogOverlay overlay = _instance;
             for (int i = overlay._visible.Count - 1; i >= 0; i--) {
-                if (overlay._sink.Buffer.TryGetBySequence(overlay._visible[i], out LogRecord record) && record.Level == level) {
-                    overlay._selected = record.Sequence;
+                if (overlay._visible[i].Level == level) {
+                    overlay._selected = overlay._visible[i].Sequence;
                     overlay._scroll.y = Mathf.Max(0f, i * RowHeight - RowHeight * 4f);
                     return;
                 }
@@ -160,12 +162,12 @@ namespace KenseiLog {
                 _tagCounts[record.Tag] = seen + 1;
 
                 if (_filter.Matches(in record)) {
-                    _visible.Add(record.Sequence);
+                    _visible.Add(new Row(in record));
                 }
             }
 
             int drop = 0;
-            while (drop < _visible.Count && _visible[drop] < oldest) {
+            while (drop < _visible.Count && _visible[drop].Sequence < oldest) {
                 drop++;
             }
             if (drop > 0) {
@@ -188,7 +190,7 @@ namespace KenseiLog {
             int copied = _sink.Buffer.CopyNewerThan(0, _scratch);
             for (int i = 0; i < copied; i++) {
                 if (_filter.Matches(in _scratch[i])) {
-                    _visible.Add(_scratch[i].Sequence);
+                    _visible.Add(new Row(in _scratch[i]));
                 }
             }
             _scroll.y = float.MaxValue;
@@ -343,10 +345,7 @@ namespace KenseiLog {
 
             bool showFrame = area.width > 520f;
             for (int i = first; i < last; i++) {
-                if (!_sink.Buffer.TryGetBySequence(_visible[i], out LogRecord record)) {
-                    continue;
-                }
-                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), in record, showFrame);
+                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), _visible[i], showFrame);
             }
 
             GUI.EndScrollView();
@@ -356,31 +355,29 @@ namespace KenseiLog {
             }
         }
 
-        private void DrawRow(Rect rect, in LogRecord record, bool showFrame) {
-            bool selected = record.Sequence == _selected;
+        private void DrawRow(Rect rect, Row row, bool showFrame) {
+            bool selected = row.Sequence == _selected;
             if (selected) {
                 GUI.Box(rect, GUIContent.none, _bar);
             }
 
-            GUI.color = TagPalette.For(record.Tag, 0.55f, 0.85f, -0.08f);
+            GUI.color = row.Stripe;
             GUI.DrawTexture(new Rect(rect.x + 2f, rect.y + 4f, 3f, rect.height - 8f), _chipTex);
 
             float x = rect.x + 8f;
-            GUI.color = new Color(0.58f, 0.58f, 0.63f);
+            GUI.color = _metaColor;
             // Frame only when there is room for it. On a phone the message needs the width more
             // than the frame number does, and the detail pane carries it anyway.
             if (showFrame) {
-                GUI.Label(new Rect(x, rect.y, 48f, rect.height), record.Frame.ToString(CultureInfo.InvariantCulture), _meta);
+                GUI.Label(new Rect(x, rect.y, 48f, rect.height), row.Frame, _meta);
                 x += 52f;
             }
-            GUI.Label(new Rect(x, rect.y, 44f, rect.height), Seconds(record.TimeMs), _meta);
+            GUI.Label(new Rect(x, rect.y, 44f, rect.height), row.Time, _meta);
             x += 50f;
 
-            GUI.color = LevelColor(record.Level);
-            long sequence = record.Sequence;
-            string text = ShortTag(record.Tag) + "  " + FirstLine(record.Message);
-            if (GUI.Button(new Rect(x, rect.y, rect.xMax - x, rect.height), text, _row) && !_didDrag) {
-                _selected = selected ? -1 : sequence;
+            GUI.color = LevelColor(row.Level);
+            if (GUI.Button(new Rect(x, rect.y, rect.xMax - x, rect.height), row.Text, _row) && !_didDrag) {
+                _selected = selected ? -1 : row.Sequence;
             }
             GUI.color = Color.white;
         }
@@ -529,6 +526,33 @@ namespace KenseiLog {
                     return new Color(1f, 0.45f, 0.4f);
                 default:
                     return new Color(0.88f, 0.88f, 0.9f);
+            }
+        }
+
+        /// <summary>
+        /// Everything a row needs to draw itself, worked out once when the record arrives.
+        /// <para>
+        /// OnGUI runs at least twice per frame, so doing this per row per pass meant taking the
+        /// buffer's lock, re-deriving the tag colour and cutting two substrings thousands of
+        /// times a second - all to produce the same characters, because none of it changes
+        /// after the record is written.
+        /// </para>
+        /// </summary>
+        private readonly struct Row {
+            public readonly long Sequence;
+            public readonly LogLevel Level;
+            public readonly Color Stripe;
+            public readonly string Frame;
+            public readonly string Time;
+            public readonly string Text;
+
+            public Row(in LogRecord record) {
+                Sequence = record.Sequence;
+                Level = record.Level;
+                Stripe = TagPalette.For(record.Tag, 0.55f, 0.85f, -0.08f);
+                Frame = record.Frame.ToString(CultureInfo.InvariantCulture);
+                Time = Seconds(record.TimeMs);
+                Text = ShortTag(record.Tag) + "  " + FirstLine(record.Message);
             }
         }
 

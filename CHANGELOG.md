@@ -4,6 +4,16 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-15
+
+### Changed
+
+- The overlay works out a row's display data once, when the record arrives, instead of on
+  every draw. OnGUI runs at least twice per frame, so each visible row was taking the ring
+  buffer's lock, re-deriving the tag colour from its name and cutting two substrings
+  thousands of times a second - to produce the same characters every time, since nothing
+  about a written record changes. Drawing a row now touches no lock and allocates nothing.
+
 ## [0.3.4] - 2026-09-15
 
 ### Added
