@@ -148,6 +148,11 @@ namespace KenseiLog {
                 if (_fileSink == null) {
                     _fileSink = new FileSink(in _config);
                     AddSink(_fileSink);
+                } else {
+                    // The sink exists from the early pass, built with defaults so that nothing
+                    // logged during engine startup is lost. A project's own Configure arrives
+                    // later and has to reach it, or its file settings would be silently ignored.
+                    _fileSink.Reconfigure(in _config);
                 }
                 if (_sceneSystemsReady) {
                     LogLifecycleHooks.Ensure();

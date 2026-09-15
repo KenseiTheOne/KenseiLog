@@ -21,10 +21,10 @@ namespace KenseiLog {
         private readonly object _lock = new object();
         private readonly StringBuilder _builder = new StringBuilder(512);
         private readonly Stopwatch _clock = Stopwatch.StartNew();
-        private readonly long _sizeLimitBytes;
-        private readonly int _retainedFiles;
-        private readonly double _flushInterval;
-        private readonly bool _includeDev;
+        private long _sizeLimitBytes;
+        private int _retainedFiles;
+        private double _flushInterval;
+        private bool _includeDev;
         private readonly string _app;
         private readonly string _unity;
         private readonly string _platform;
@@ -37,10 +37,7 @@ namespace KenseiLog {
         public FileSink(in LogConfig config) {
             LogDirectory = Path.Combine(Application.persistentDataPath, DirectoryName);
             CurrentFilePath = Path.Combine(LogDirectory, CurrentFileName);
-            _sizeLimitBytes = Math.Max(64L, config.FileSizeLimitKb) * 1024L;
-            _retainedFiles = Math.Max(1, config.RetainedFileCount);
-            _flushInterval = Math.Max(0.5, config.FileFlushIntervalSeconds);
-            _includeDev = config.FileIncludesDevChannel;
+            Reconfigure(in config);
 
             // Read on the main thread at construction. These reach into the engine, and Write
             // runs on whichever thread happened to log.
@@ -94,6 +91,24 @@ namespace KenseiLog {
                 if (_bytesWritten >= _sizeLimitBytes) {
                     Rotate();
                 }
+            }
+        }
+
+        /// <summary>
+        /// Apply the settings that do not need the file reopened.
+        /// <para>
+        /// Configuration normally arrives after logging has already started: the sink is built
+        /// during early initialisation so nothing is missed, while a project's own Configure
+        /// call runs later. Rebuilding the sink instead would start a fresh session and push a
+        /// file out of the history on every launch.
+        /// </para>
+        /// </summary>
+        public void Reconfigure(in LogConfig config) {
+            lock (_lock) {
+                _sizeLimitBytes = Math.Max(64L, config.FileSizeLimitKb) * 1024L;
+                _retainedFiles = Math.Max(1, config.RetainedFileCount);
+                _flushInterval = Math.Max(0.5, config.FileFlushIntervalSeconds);
+                _includeDev = config.FileIncludesDevChannel;
             }
         }
 
