@@ -2,7 +2,8 @@
 
 Open `LogDemo.unity` and press Play.
 
-A bubble appears in the corner showing error and warning counts. Drag it anywhere, tap it to
+A bubble appears in the corner. It reads the error count if there are errors, the warning
+count if there are warnings but none, and the total otherwise. Drag it anywhere, tap it to
 open the viewer. The buttons on the right produce records to look at:
 
 - **Prod log / Warning / Error** — records written through this API.
@@ -18,4 +19,4 @@ One message reads "combat handshake rejected by relay" and is tagged `Net`. Sear
 in the text.
 
 File logging is on, so `persistentDataPath/logs/current.jsonl` fills up as you play. Open it
-afterwards with **Window → Kensei → Logs → Open file**.
+afterwards: open **Window → Kensei → Logs** and press **Open file** in the toolbar.

@@ -4,6 +4,30 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-09-15
+
+### Fixed
+
+- File settings arriving through `LogCore.Configure` were silently ignored. The file sink is
+  built during early initialisation so that nothing logged at startup is lost, which means a
+  project's own `Configure` always runs after it exists - and `FileSizeLimitKb`,
+  `RetainedFileCount`, `FileFlushIntervalSeconds` and `FileIncludesDevChannel` were frozen in
+  readonly fields at construction. `FileSink.Reconfigure` applies them to the live sink, so
+  the documented way of configuring the package now works for them too.
+
+### Changed
+
+- README rewritten against the code after a review turned up nine places where it promised
+  more than the package delivers: the bubble shows one counter rather than two, tabs are one
+  click apart rather than side by side, Open file is a toolbar button rather than a menu path,
+  Ping is disabled rather than reporting failure after the click, the record capacity has no
+  settings UI, the tag hue comes from the root segment, the overlay's tag list offers only
+  tags actually logged, console mirroring skips captured records, and the pipeline's cost
+  claim ignored the file sink that is on by default.
+- README carries screenshots of the window and the overlay, under `Documentation~/images`.
+- The license file is `LICENSE.md`, the name Unity's package layout documents, so Package
+  Manager recognises it.
+
 ## [0.3.6] - 2026-09-15
 
 ### Fixed
@@ -43,9 +67,8 @@ All notable changes to this package are documented here. The format follows
 - Overlay rows carry the frame number and the timestamp, and the detail pane carries the
   timestamp alongside the frame. Both were already on the record and simply were not shown;
   the editor window had them from the start.
-
-The frame column is dropped when the viewer is narrow. On a phone the message needs the width
-more than the frame number does, and the detail pane still has it.
+- The frame column is dropped when the viewer is narrow. On a phone the message needs the
+  width more than the frame number does, and the detail pane still has it.
 
 ## [0.3.2] - 2026-09-15
 
