@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using UnityEditor;
 using UnityEditor.UIElements;
@@ -703,7 +704,8 @@ namespace KenseiLog.Editor {
             }
 
             _detailHeader.text = record.Tag + "  ·  " + record.Level + "  ·  " + record.Channel +
-                                 "  ·  frame " + record.Frame + "  ·  " + (record.TimeMs / 1000.0).ToString("0.00") + "s";
+                                 "  ·  frame " + record.Frame + "  ·  " +
+                                 (record.TimeMs / 1000.0).ToString("0.00", CultureInfo.InvariantCulture) + "s";
 
             string body = record.Message;
             if (!string.IsNullOrEmpty(record.StackTrace)) {
@@ -715,7 +717,17 @@ namespace KenseiLog.Editor {
             _detailBody.value = body;
 
             _sourceButton.SetEnabled(!string.IsNullOrEmpty(record.File));
-            _pingButton.SetEnabled(record.ContextInstanceId != 0);
+
+            // Resolved here rather than on the click, so a button that cannot do anything looks
+            // like one instead of reporting the bad news afterwards.
+            bool canPing = record.ContextInstanceId != 0 &&
+                           EditorUtility.InstanceIDToObject(record.ContextInstanceId) != null;
+            _pingButton.SetEnabled(canPing);
+            _pingButton.tooltip = record.ContextInstanceId == 0
+                ? "This log was written without a related object."
+                : canPing
+                    ? "Highlight the related object in the hierarchy."
+                    : "The object this log referred to no longer exists.";
         }
 
         private bool TryGetSelectedRecord(out LogRecord record) {
@@ -741,7 +753,11 @@ namespace KenseiLog.Editor {
             }
             UnityEngine.Object target = EditorUtility.InstanceIDToObject(record.ContextInstanceId);
             if (target == null) {
-                _detailHeader.text += "   (context object no longer exists)";
+                // A notification, not text appended to the header: the header is structured
+                // metadata, and appending there stacked up one copy of this per click.
+                ShowNotification(new GUIContent("That object no longer exists"));
+                _pingButton.SetEnabled(false);
+                _pingButton.tooltip = "The object this log referred to no longer exists.";
                 return;
             }
             EditorGUIUtility.PingObject(target);

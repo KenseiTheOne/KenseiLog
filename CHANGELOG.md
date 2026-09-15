@@ -4,6 +4,19 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-09-15
+
+### Fixed
+
+- Ping on a record whose object was gone appended "(context object no longer exists)" to the
+  detail header, once per click, so repeated clicks stacked copies of it into what is
+  otherwise structured metadata. It shows an editor notification instead.
+- The Ping button was enabled whenever a record carried a context id, without checking that
+  the object still resolved - so it offered a click that could not do anything and only said
+  so afterwards. Resolution now happens when the row is selected, and the button is disabled
+  with a tooltip explaining why.
+- The detail header's timestamp is formatted in invariant culture, matching the rest.
+
 ## [0.3.5] - 2026-09-15
 
 ### Changed
