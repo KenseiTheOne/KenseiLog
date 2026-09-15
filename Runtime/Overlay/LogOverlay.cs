@@ -44,11 +44,13 @@ namespace KenseiLog {
         private bool _didDrag;
 
         private GUIStyle _panel;
+        private GUIStyle _pane;
         private GUIStyle _row;
         private GUIStyle _bar;
         private GUIStyle _button;
         private GUIStyle _detail;
         private Texture2D _panelTex;
+        private Texture2D _paneTex;
         private Texture2D _rowTex;
         private Texture2D _barTex;
         private Texture2D _chipTex;
@@ -69,6 +71,44 @@ namespace KenseiLog {
             _instance._scratch = new LogRecord[sink.Buffer.Capacity];
         }
 
+        /// <summary>Open or close the viewer, for wiring into a debug menu of your own.</summary>
+        public static bool IsOpen {
+            get => _instance != null && _instance._open;
+            set {
+                if (_instance != null) {
+                    _instance._open = value;
+                }
+            }
+        }
+
+        /// <summary>Show or hide the tag list inside the viewer.</summary>
+        public static bool TagPaneVisible {
+            get => _instance != null && _instance._showTags;
+            set {
+                if (_instance != null) {
+                    _instance._showTags = value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Jump to the most recent record at this level and expand it. Handy on a "something
+        /// broke, show me" button.
+        /// </summary>
+        public static void SelectNewest(LogLevel level) {
+            if (_instance == null) {
+                return;
+            }
+            LogOverlay overlay = _instance;
+            for (int i = overlay._visible.Count - 1; i >= 0; i--) {
+                if (overlay._sink.Buffer.TryGetBySequence(overlay._visible[i], out LogRecord record) && record.Level == level) {
+                    overlay._selected = record.Sequence;
+                    overlay._scroll.y = Mathf.Max(0f, i * RowHeight - RowHeight * 4f);
+                    return;
+                }
+            }
+        }
+
         public static void Remove() {
             if (_instance == null) {
                 return;
@@ -87,6 +127,7 @@ namespace KenseiLog {
 
         private void OnDestroy() {
             DestroyTexture(ref _panelTex);
+            DestroyTexture(ref _paneTex);
             DestroyTexture(ref _rowTex);
             DestroyTexture(ref _barTex);
             DestroyTexture(ref _chipTex);
@@ -215,7 +256,12 @@ namespace KenseiLog {
 
             int errors = _levelCounts[(int)LogLevel.Error];
             int warnings = _levelCounts[(int)LogLevel.Warning];
-            string label = errors > 0 ? "! " + errors : warnings > 0 ? "? " + warnings : "logs";
+            int total = _levelCounts[0] + _levelCounts[1] + _levelCounts[2];
+            string label = errors > 0
+                ? errors + " error" + (errors == 1 ? string.Empty : "s")
+                : warnings > 0
+                    ? warnings + " warning" + (warnings == 1 ? string.Empty : "s")
+                    : total + " logs";
             GUI.color = errors > 0 ? new Color(1f, 0.45f, 0.4f) : warnings > 0 ? new Color(1f, 0.8f, 0.3f) : Color.white;
 
             if (GUI.Button(rect, label, _button) && !_draggingBubble) {
@@ -349,15 +395,30 @@ namespace KenseiLog {
         }
 
         private void DrawTagPane(Rect area) {
-            GUI.Box(area, GUIContent.none, _panel);
+            // Opaque, not the translucent panel background: this sits on top of the list, and
+            // at 94% the rows underneath still showed through enough to make it unreadable.
+            GUI.Box(area, GUIContent.none, _pane);
+            GUI.color = new Color(0f, 0f, 0f, 0.5f);
+            GUI.DrawTexture(new Rect(area.xMax - 1f, area.y, 1f, area.height), _chipTex);
+            GUI.color = Color.white;
             float content = _tagCounts.Count * RowHeight;
             _tagScroll = GUI.BeginScrollView(area, _tagScroll, new Rect(0f, 0f, area.width - 16f, content));
 
             float y = 0f;
             foreach (KeyValuePair<string, int> pair in _tagCounts) {
                 bool active = _filter.Tags.Contains(pair.Key);
-                GUI.color = active ? TagPalette.For(pair.Key, 0.6f, 0.9f, -0.08f) : new Color(0.7f, 0.7f, 0.7f);
-                if (GUI.Button(new Rect(0f, y, area.width - 16f, RowHeight), pair.Key + "  " + pair.Value, _row) && !_didDrag) {
+                Rect row = new Rect(0f, y, area.width - 16f, RowHeight);
+                if (active) {
+                    GUI.Box(row, GUIContent.none, _bar);
+                }
+
+                // The colour is the tag's identity, so it stays on whether the tag is selected
+                // or not; selection is carried by the highlight and the text brightness.
+                GUI.color = TagPalette.For(pair.Key, 0.6f, 0.9f, -0.08f);
+                GUI.DrawTexture(new Rect(row.x + 5f, row.y + 7f, 8f, 8f), _chipTex);
+
+                GUI.color = active ? Color.white : new Color(0.62f, 0.62f, 0.66f);
+                if (GUI.Button(new Rect(row.x + 18f, row.y, row.width - 18f, row.height), pair.Key + "  " + pair.Value, _row) && !_didDrag) {
                     _filter.ToggleTag(pair.Key);
                     Refilter();
                 }
@@ -397,11 +458,13 @@ namespace KenseiLog {
             }
 
             _panelTex = SolidTexture(new Color(0.09f, 0.09f, 0.11f, 0.94f));
+            _paneTex = SolidTexture(new Color(0.12f, 0.12f, 0.15f, 1f));
             _barTex = SolidTexture(new Color(0.18f, 0.18f, 0.22f, 0.98f));
             _rowTex = SolidTexture(new Color(0f, 0f, 0f, 0f));
             _chipTex = SolidTexture(Color.white);
 
             _panel = new GUIStyle { normal = { background = _panelTex } };
+            _pane = new GUIStyle { normal = { background = _paneTex } };
             _bar = new GUIStyle { normal = { background = _barTex } };
 
             _row = new GUIStyle {

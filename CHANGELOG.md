@@ -4,6 +4,24 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-09-15
+
+### Fixed
+
+- The overlay's tag pane was translucent and the log rows underneath showed through it,
+  which made the tag names hard to read. It is opaque now, with an edge against the list.
+
+### Changed
+
+- Tags in the overlay's pane keep their colour whether selected or not - the colour is the
+  tag's identity, and selection is carried by a highlight and text brightness instead.
+- The collapsed bubble reads "2 errors" / "1 warning" / "14 logs" rather than "! 2" / "? 1".
+
+### Added
+
+- `LogOverlay.IsOpen`, `LogOverlay.TagPaneVisible` and `LogOverlay.SelectNewest(level)` for
+  driving the viewer from a debug menu of your own.
+
 ## [0.3.1] - 2026-09-15
 
 ### Added

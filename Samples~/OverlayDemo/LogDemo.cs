@@ -26,6 +26,7 @@ public sealed class LogDemo : MonoBehaviour {
     private float _nextChatter;
     private int _tick;
     private GUIStyle _button;
+    private GUIStyle _wrapped;
 
     private void Awake() {
         LogConfig config = LogConfig.Default();
@@ -73,7 +74,8 @@ public sealed class LogDemo : MonoBehaviour {
 
         float width = Screen.width / scale;
         float x = width - 136f;
-        float y = 8f;
+        // Starts below the overlay's own toolbar so the two never sit on top of each other.
+        float y = 36f;
 
         GUI.Label(new Rect(x, y, 128f, 20f), "Kensei Log demo");
         y += 22f;
@@ -107,7 +109,10 @@ public sealed class LogDemo : MonoBehaviour {
         y += 34f;
 
         if (LogCore.File != null) {
-            GUI.Label(new Rect(x - 120f, y, 248f, 40f), "file: " + LogCore.File.CurrentFilePath);
+            if (_wrapped == null) {
+                _wrapped = new GUIStyle(GUI.skin.label) { fontSize = 10, wordWrap = true };
+            }
+            GUI.Label(new Rect(x - 130f, y, 258f, 60f), "writing to\n" + LogCore.File.CurrentFilePath, _wrapped);
         }
 
         GUI.matrix = previous;
