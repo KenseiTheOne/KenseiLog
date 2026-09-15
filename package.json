@@ -1,6 +1,6 @@
 {
   "name": "com.kensei.log",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "displayName": "Kensei Log",
   "description": "Tagged logging with separate dev and prod channels. Dev calls are stripped by the compiler in release builds. Ships an editor window that splits logs into saved filter tabs by tag.",
   "unity": "2022.3",
@@ -15,5 +15,12 @@
     "editor",
     "tools"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "samples": [
+    {
+      "displayName": "Overlay Demo",
+      "description": "A scene that drives the logger so you can see the in-game overlay, the tag hierarchy and the file sink.",
+      "path": "Samples~/OverlayDemo"
+    }
+  ]
 }

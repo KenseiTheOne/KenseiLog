@@ -159,6 +159,12 @@ public sealed class MySink : ILogSink {
 LogCore.AddSink(new MySink());
 ```
 
+## Try it
+
+The package ships a sample. **Package Manager → Kensei Log → Samples → Overlay Demo → Import**, then open `LogDemo.unity` and press Play.
+
+It drives the logger from several tags, has buttons for a log, a warning, an error, a Unity exception thrown past this API, and a burst of repeats to collapse. It also writes a file while you play, so there is something to open afterwards with **Open file**.
+
 ## Requirements
 
 Unity 2022.3 or newer. No third-party dependencies.

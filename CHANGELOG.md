@@ -4,6 +4,14 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-15
+
+### Added
+
+- `Overlay Demo` sample: a scene that drives the logger from several tags with buttons for a
+  log, a warning, an error, a Unity exception thrown past this API, and a burst of repeats to
+  collapse. Import it from Package Manager, open the scene, press Play.
+
 ## [0.3.0] - 2026-09-15
 
 ### Added
