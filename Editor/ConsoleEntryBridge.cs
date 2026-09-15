@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using UnityEditor;
 
 namespace KenseiLog.Editor {
     /// <summary>
@@ -17,8 +19,20 @@ namespace KenseiLog.Editor {
     /// good. A Unity upgrade that moves this API costs the extra navigation and nothing else -
     /// logging itself never runs through here.
     /// </para>
+    /// <para>
+    /// Lookups go through an index built in one pass. Reading the store takes its lock and
+    /// walks every entry, so doing that per question froze the editor as soon as a drag moved
+    /// the selection across a few rows of a console holding thousands of lines.
+    /// </para>
     /// </summary>
     public static class ConsoleEntryBridge {
+        /// <summary>
+        /// Floor on how often the index may be rebuilt. Unity's entry count is the real signal;
+        /// this is the backstop for an editor version that does not expose one, so a stale
+        /// index costs a fifth of a second of freshness rather than a walk per lookup.
+        /// </summary>
+        private const double MinRebuildSeconds = 0.2;
+
         private static bool _probed;
         private static bool _available;
 
@@ -26,10 +40,15 @@ namespace KenseiLog.Editor {
         private static MethodInfo _startGettingEntries;
         private static MethodInfo _endGettingEntries;
         private static MethodInfo _getEntryInternal;
+        private static MethodInfo _getCount;
         private static FieldInfo _messageField;
         private static FieldInfo _instanceIdField;
         private static FieldInfo _fileField;
         private static FieldInfo _lineField;
+
+        private static Dictionary<string, Entry> _index;
+        private static int _indexedCount = -1;
+        private static double _lastBuild;
 
         public static bool Available {
             get {
@@ -39,8 +58,8 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Find what Unity knows about the console entry carrying this message: the object it
-        /// was logged against, and a source location when the entry has one.
+        /// What Unity knows about the console entry carrying this message: the object it was
+        /// logged against, and a source location when the entry has one.
         /// </summary>
         public static bool TryResolve(string message, out int instanceId, out string file, out int line) {
             instanceId = 0;
@@ -52,7 +71,39 @@ namespace KenseiLog.Editor {
                 return false;
             }
 
-            string wanted = FirstLine(message);
+            EnsureIndex();
+            if (_index == null || !_index.TryGetValue(FirstLine(message), out Entry entry)) {
+                return false;
+            }
+
+            instanceId = entry.InstanceId;
+            file = entry.File;
+            line = entry.Line;
+            return instanceId != 0 || !string.IsNullOrEmpty(file);
+        }
+
+        /// <summary>Drops the index so the next lookup reads the console again.</summary>
+        public static void Invalidate() {
+            _index = null;
+            _indexedCount = -1;
+        }
+
+        private static void EnsureIndex() {
+            int count = CurrentCount();
+            if (_index != null && count >= 0 && count == _indexedCount) {
+                return;
+            }
+
+            double now = EditorApplication.timeSinceStartup;
+            if (_index != null && now - _lastBuild < MinRebuildSeconds) {
+                return;
+            }
+
+            BuildIndex(now);
+        }
+
+        private static void BuildIndex(double now) {
+            Dictionary<string, Entry> index = new Dictionary<string, Entry>(StringComparer.Ordinal);
             object entry = Activator.CreateInstance(_entryType);
             object[] args = new object[2];
 
@@ -61,32 +112,35 @@ namespace KenseiLog.Editor {
                 count = (int)_startGettingEntries.Invoke(null, null);
             } catch (Exception) {
                 _available = false;
-                return false;
+                return;
             }
 
             try {
-                // Newest first: a message logged repeatedly should resolve to the latest one,
-                // which is the entry the row in front of you came from.
-                for (int row = count - 1; row >= 0; row--) {
+                // Oldest first, so a message logged repeatedly leaves the newest entry in the
+                // index - the one the row in front of you came from.
+                for (int row = 0; row < count; row++) {
                     args[0] = row;
                     args[1] = entry;
                     if (!(bool)_getEntryInternal.Invoke(null, args)) {
                         continue;
                     }
 
-                    string entryMessage = _messageField.GetValue(args[1]) as string;
-                    if (entryMessage == null || !entryMessage.StartsWith(wanted, StringComparison.Ordinal)) {
+                    if (!(_messageField.GetValue(args[1]) is string entryMessage) || entryMessage.Length == 0) {
                         continue;
                     }
 
-                    instanceId = (int)_instanceIdField.GetValue(args[1]);
-                    file = _fileField?.GetValue(args[1]) as string;
-                    line = _lineField != null ? (int)_lineField.GetValue(args[1]) : 0;
-                    return instanceId != 0 || !string.IsNullOrEmpty(file);
+                    int instanceId = (int)_instanceIdField.GetValue(args[1]);
+                    string file = _fileField?.GetValue(args[1]) as string;
+                    int line = _lineField != null ? (int)_lineField.GetValue(args[1]) : 0;
+                    if (instanceId == 0 && string.IsNullOrEmpty(file)) {
+                        continue;
+                    }
+
+                    index[FirstLine(entryMessage)] = new Entry(instanceId, file, line);
                 }
             } catch (Exception) {
                 _available = false;
-                return false;
+                return;
             } finally {
                 try {
                     _endGettingEntries.Invoke(null, null);
@@ -95,7 +149,21 @@ namespace KenseiLog.Editor {
                 }
             }
 
-            return false;
+            _index = index;
+            _indexedCount = count;
+            _lastBuild = now;
+        }
+
+        private static int CurrentCount() {
+            if (_getCount == null) {
+                return -1;
+            }
+            try {
+                return (int)_getCount.Invoke(null, null);
+            } catch (Exception) {
+                _getCount = null;
+                return -1;
+            }
         }
 
         private static void Probe() {
@@ -121,6 +189,12 @@ namespace KenseiLog.Editor {
                 _messageField = _entryType.GetField("message", instance);
                 _instanceIdField = _entryType.GetField("instanceID", instance);
 
+                // Optional. Without it the index falls back to the time-based floor above.
+                _getCount = entries.GetMethod("GetCount", statics, null, Type.EmptyTypes, null);
+                if (_getCount != null && _getCount.ReturnType != typeof(int)) {
+                    _getCount = null;
+                }
+
                 // Optional: only used to offer a jump when the entry carries a location.
                 _fileField = _entryType.GetField("file", instance);
                 _lineField = _entryType.GetField("line", instance);
@@ -138,6 +212,18 @@ namespace KenseiLog.Editor {
         private static string FirstLine(string message) {
             int newline = message.IndexOf('\n');
             return newline < 0 ? message : message.Substring(0, newline);
+        }
+
+        private readonly struct Entry {
+            public readonly int InstanceId;
+            public readonly string File;
+            public readonly int Line;
+
+            public Entry(int instanceId, string file, int line) {
+                InstanceId = instanceId;
+                File = file;
+                Line = line;
+            }
         }
     }
 }

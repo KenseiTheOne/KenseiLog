@@ -4,6 +4,28 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-16
+
+### Fixed
+
+- Dragging the selection across rows froze the editor. Every selection change asked the
+  console bridge for a context object, and each question took the console's lock and walked
+  every entry it held - a few thousand in a real project, repeated per row crossed. Lookups
+  now go through an index built in one pass, rebuilt when Unity's entry count changes and no
+  more often than five times a second.
+- `Compact` wrote `false` into the per-column preferences, so pressing it once left the frame,
+  time and tag columns off with no record of ever having chosen that. It stores nothing now,
+  and the preference keys were renamed so anyone carrying the damage starts from the defaults
+  again - all three columns on.
+
+### Changed
+
+- `Compact` is a mode over the preferences rather than a preset that rewrote them. Leaving it
+  gives back exactly what was showing, and while it is on the controls it overrides are
+  disabled with a tooltip saying why, instead of appearing to work and half-working.
+- The tree toggle reads `Tree`, not `Tags`. A `Tag` column sits two controls along, and one
+  word for both left it unclear which the button hid.
+
 ## [0.8.0] - 2026-09-16
 
 ### Added

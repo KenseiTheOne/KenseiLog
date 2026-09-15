@@ -18,17 +18,16 @@ namespace KenseiLog.Editor {
     public sealed class LogWindow : EditorWindow {
         private const double RefreshInterval = 1.0 / 15.0;
         private const float RowHeight = 20f;
-        private const string FrameKey = "KenseiLog.Columns.Frame";
-        private const string TimeKey = "KenseiLog.Columns.Time";
-        private const string TagKey = "KenseiLog.Columns.Tag";
+        private const string FrameKey = "KenseiLog.Columns.Frame.v2";
+        private const string TimeKey = "KenseiLog.Columns.Time.v2";
+        private const string TagKey = "KenseiLog.Columns.Tag.v2";
         private const string FoldedTagsKey = "KenseiLog.FoldedTags";
 
         /// <summary>Joins folded tag names in EditorPrefs. A tag can hold no vertical bar.</summary>
         private const string FoldSeparator = "|";
 
-        private const string TagPaneKey = "KenseiLog.TagPane";
+        private const string TreeKey = "KenseiLog.Tree.v2";
         private const string CompactKey = "KenseiLog.Compact";
-        private const string CompactRestoreKey = "KenseiLog.CompactRestore";
 
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
@@ -48,7 +47,7 @@ namespace KenseiLog.Editor {
         private bool _showFrame = true;
         private bool _showTime = true;
         private bool _showTag = true;
-        private bool _showTagPane = true;
+        private bool _showTree = true;
         private bool _compact;
 
         private VisualElement _tabBar;
@@ -74,13 +73,25 @@ namespace KenseiLog.Editor {
         private VisualElement _headerTime;
         private VisualElement _headerTag;
         private ToolbarToggle _compactToggle;
-        private ToolbarToggle _tagPaneToggle;
+        private ToolbarToggle _treeToggle;
+        private Label _headerMenuButton;
 
         private LogSession _session;
 
         private LogFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
 
         private TabView ActiveView => _views[Mathf.Clamp(_activeTab, 0, _views.Count - 1)];
+
+        // Compact is a mode laid over the preferences, never a write into them: pressing it
+        // must not cost you the column layout you chose, and leaving it must give that back
+        // without having to remember anything.
+        private bool ShowFrame => !_compact && _showFrame;
+
+        private bool ShowTime => !_compact && _showTime;
+
+        private bool ShowTag => !_compact && _showTag;
+
+        private bool ShowTree => !_compact && _showTree;
 
         /// <summary>Live records, or the ones loaded from a session file.</summary>
         private LogRingBuffer Source => _session != null ? _session.Buffer : EditorSink.Instance.Buffer;
@@ -108,7 +119,7 @@ namespace KenseiLog.Editor {
             _showFrame = EditorPrefs.GetBool(FrameKey, true);
             _showTime = EditorPrefs.GetBool(TimeKey, true);
             _showTag = EditorPrefs.GetBool(TagKey, true);
-            _showTagPane = EditorPrefs.GetBool(TagPaneKey, true);
+            _showTree = EditorPrefs.GetBool(TreeKey, true);
             _compact = EditorPrefs.GetBool(CompactKey, false);
             string[] folded = EditorPrefs.GetString(FoldedTagsKey, string.Empty)
                 .Split(new[] { FoldSeparator }, StringSplitOptions.RemoveEmptyEntries);
@@ -243,18 +254,19 @@ namespace KenseiLog.Editor {
             _collapseToggle = FilterToggle("Collapse", value => ActiveFilter.Collapse = value);
             toolbar.Add(_collapseToggle);
 
-            _tagPaneToggle = new ToolbarToggle {
-                text = "Tags",
-                tooltip = "Show or hide the tag tree."
+            // "Tree", not "Tags": there is a Tag column two controls along, and one word
+            // for both left nobody sure which this hid.
+            _treeToggle = new ToolbarToggle {
+                text = "Tree",
+                tooltip = "Show or hide the tag tree on the left."
             };
-            _tagPaneToggle.SetValueWithoutNotify(_showTagPane);
-            _tagPaneToggle.RegisterValueChangedCallback(evt => {
-                _showTagPane = evt.newValue;
-                EditorPrefs.SetBool(TagPaneKey, _showTagPane);
-                LeaveCompact();
+            _treeToggle.SetValueWithoutNotify(_showTree);
+            _treeToggle.RegisterValueChangedCallback(evt => {
+                _showTree = evt.newValue;
+                EditorPrefs.SetBool(TreeKey, _showTree);
                 ApplyTagPaneVisibility();
             });
-            toolbar.Add(_tagPaneToggle);
+            toolbar.Add(_treeToggle);
 
             _compactToggle = new ToolbarToggle {
                 text = "Compact",
@@ -358,20 +370,26 @@ namespace KenseiLog.Editor {
             AppendColumnItem(menu, "Time", _showTime, value => _showTime = value, TimeKey);
             AppendColumnItem(menu, "Tag", _showTag, value => _showTag = value, TagKey);
             menu.AddSeparator(string.Empty);
-            menu.AddItem(new GUIContent("Show all"), false, () => {
-                SetColumn(value => _showFrame = value, FrameKey, true);
-                SetColumn(value => _showTime = value, TimeKey, true);
-                SetColumn(value => _showTag = value, TagKey, true);
-                LeaveCompact();
-                ApplyColumnVisibility();
-            });
+            if (_compact) {
+                menu.AddDisabledItem(new GUIContent("Compact is hiding these"), true);
+            } else {
+                menu.AddItem(new GUIContent("Show all"), false, () => {
+                    SetColumn(value => _showFrame = value, FrameKey, true);
+                    SetColumn(value => _showTime = value, TimeKey, true);
+                    SetColumn(value => _showTag = value, TagKey, true);
+                    ApplyColumnVisibility();
+                });
+            }
             menu.ShowAsContext();
         }
 
         private void AppendColumnItem(GenericMenu menu, string label, bool shown, Action<bool> write, string key) {
+            if (_compact) {
+                menu.AddDisabledItem(new GUIContent(label), false);
+                return;
+            }
             menu.AddItem(new GUIContent(label), shown, () => {
                 SetColumn(write, key, !shown);
-                LeaveCompact();
                 ApplyColumnVisibility();
             });
         }
@@ -382,50 +400,20 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// One switch for "just the messages": no tag tree, no column but the text. Turning it
-        /// back off restores what was showing before rather than some default, which is the
-        /// difference between a shortcut and something that loses your layout.
+        /// One switch for "just the messages": no tag tree, no column but the text.
+        /// <para>
+        /// A mode of its own rather than a preset. It leaves the per-column preferences
+        /// untouched and merely overrides what is drawn, so leaving it restores exactly what
+        /// you had - and while it is on, the controls it overrides are disabled, because a
+        /// toggle that visibly does nothing is worse than one you cannot press.
+        /// </para>
         /// </summary>
         private void SetCompact(bool compact) {
-            if (compact) {
-                int saved = (_showTagPane ? 1 : 0) | (_showFrame ? 2 : 0) | (_showTime ? 4 : 0) | (_showTag ? 8 : 0);
-                EditorPrefs.SetInt(CompactRestoreKey, saved);
-                _showTagPane = false;
-                _showFrame = false;
-                _showTime = false;
-                _showTag = false;
-            } else {
-                int saved = EditorPrefs.GetInt(CompactRestoreKey, 15);
-                _showTagPane = (saved & 1) != 0;
-                _showFrame = (saved & 2) != 0;
-                _showTime = (saved & 4) != 0;
-                _showTag = (saved & 8) != 0;
-            }
-
             _compact = compact;
             EditorPrefs.SetBool(CompactKey, compact);
-            EditorPrefs.SetBool(TagPaneKey, _showTagPane);
-            EditorPrefs.SetBool(FrameKey, _showFrame);
-            EditorPrefs.SetBool(TimeKey, _showTime);
-            EditorPrefs.SetBool(TagKey, _showTag);
-
             _compactToggle.SetValueWithoutNotify(compact);
-            _tagPaneToggle.SetValueWithoutNotify(_showTagPane);
             ApplyColumnVisibility();
             ApplyTagPaneVisibility();
-        }
-
-        /// <summary>
-        /// Changing anything by hand means the preset no longer describes what is on screen,
-        /// so the toggle stops claiming that it does.
-        /// </summary>
-        private void LeaveCompact() {
-            if (!_compact) {
-                return;
-            }
-            _compact = false;
-            EditorPrefs.SetBool(CompactKey, false);
-            _compactToggle.SetValueWithoutNotify(false);
         }
 
         /// <summary>
@@ -450,15 +438,15 @@ namespace KenseiLog.Editor {
             header.Add(HeaderCell("Message", "kl-cell-message"));
             header.Add(HeaderCell(string.Empty, "kl-cell-repeats"));
 
-            Label columnsButton = new Label("\u22EE") {
+            _headerMenuButton = new Label("\u22EE") {
                 tooltip = "Choose which columns to show. Right-clicking the header does the same."
             };
-            columnsButton.AddToClassList("kl-header-menu");
-            columnsButton.RegisterCallback<PointerDownEvent>(evt => {
+            _headerMenuButton.AddToClassList("kl-header-menu");
+            _headerMenuButton.RegisterCallback<PointerDownEvent>(evt => {
                 evt.StopPropagation();
                 ShowColumnMenu();
             });
-            header.Add(columnsButton);
+            header.Add(_headerMenuButton);
 
             // The list reserves room for its vertical scroller; without the same gap here the
             // last column would sit a few pixels right of the values under it.
@@ -478,13 +466,18 @@ namespace KenseiLog.Editor {
         }
 
         private void ApplyTagPaneVisibility() {
-            _tagPane.style.display = _showTagPane ? DisplayStyle.Flex : DisplayStyle.None;
+            _tagPane.style.display = ShowTree ? DisplayStyle.Flex : DisplayStyle.None;
+            _treeToggle.SetEnabled(!_compact);
+            _treeToggle.tooltip = _compact
+                ? "Compact is hiding the tree. Turn Compact off to choose."
+                : "Show or hide the tag tree on the left.";
         }
 
         private void ApplyColumnVisibility() {
-            _headerFrame.style.display = _showFrame ? DisplayStyle.Flex : DisplayStyle.None;
-            _headerTime.style.display = _showTime ? DisplayStyle.Flex : DisplayStyle.None;
-            _headerTag.style.display = _showTag ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerFrame.style.display = ShowFrame ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerTime.style.display = ShowTime ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerTag.style.display = ShowTag ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerMenuButton.SetEnabled(!_compact);
 
             // Rebuild rather than refresh: a row's visibility is set while binding, and
             // recycled rows keep whatever the last bind gave them until bound again.
@@ -881,9 +874,9 @@ namespace KenseiLog.Editor {
                 return;
             }
 
-            element.ElementAt(1).style.display = _showFrame ? DisplayStyle.Flex : DisplayStyle.None;
-            element.ElementAt(2).style.display = _showTime ? DisplayStyle.Flex : DisplayStyle.None;
-            element.ElementAt(3).style.display = _showTag ? DisplayStyle.Flex : DisplayStyle.None;
+            element.ElementAt(1).style.display = ShowFrame ? DisplayStyle.Flex : DisplayStyle.None;
+            element.ElementAt(2).style.display = ShowTime ? DisplayStyle.Flex : DisplayStyle.None;
+            element.ElementAt(3).style.display = ShowTag ? DisplayStyle.Flex : DisplayStyle.None;
 
             element.ElementAt(0).style.backgroundColor = TagColor.For(record.Tag);
             ((Label)element.ElementAt(1)).text = record.Frame.ToString();
