@@ -36,6 +36,13 @@ namespace KenseiLog {
         public readonly LogLevel Level;
         public readonly LogChannel Channel;
 
+        /// <summary>
+        /// True when the record was picked up from Unity's own log stream rather than written
+        /// through <see cref="Log"/>. Sinks that write back into that stream must skip these,
+        /// or every foreign message lands in the console twice.
+        /// </summary>
+        public readonly bool Captured;
+
         public LogRecord(
             long sequence,
             string tag,
@@ -47,7 +54,9 @@ namespace KenseiLog {
             string file,
             int line,
             string stackTrace,
-            int contextInstanceId) {
+            int contextInstanceId,
+            bool captured = false) {
+            Captured = captured;
             Sequence = sequence;
             Tag = tag;
             Message = message;

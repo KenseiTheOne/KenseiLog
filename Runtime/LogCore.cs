@@ -140,7 +140,8 @@ namespace KenseiLog {
                 null,
                 0,
                 string.IsNullOrEmpty(stackTrace) ? null : stackTrace,
-                0);
+                0,
+                captured: true);
 
             Emit(in record);
         }

@@ -12,6 +12,12 @@ namespace KenseiLog {
     /// </summary>
     public sealed class UnityConsoleSink : ILogSink {
         public void Write(in LogRecord record) {
+            // A captured record came out of the console to begin with. Writing it back would
+            // print every foreign message a second time under the Unity tag.
+            if (record.Captured) {
+                return;
+            }
+
             string line = record.Tag + ": " + record.Message;
 
             // Our own Debug.Log call comes straight back through the foreign-log handler.

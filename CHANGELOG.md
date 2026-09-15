@@ -4,6 +4,14 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-15
+
+### Fixed
+
+- Turning on `MirrorToUnityConsole` made every log written outside this API appear in the
+  console twice: it was captured, folded into the pipeline, then written straight back.
+  Records now carry `LogRecord.Captured`, and `UnityConsoleSink` skips them.
+
 ## [0.1.0] - 2026-09-15
 
 First release. Core pipeline and editor window.
