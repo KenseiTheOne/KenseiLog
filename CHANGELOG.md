@@ -4,6 +4,28 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-15
+
+### Added
+
+- In-game overlay (`LogConfig.ShowOverlay`, off by default): a draggable bubble showing error
+  and warning counts that expands into a log viewer on the device - level toggles, tag list,
+  full message and stack trace on tap, copy to clipboard. No prefab, no Canvas, no
+  PanelSettings, no package dependency; turning the flag on is the whole installation.
+- `MemorySink` for views that need recent records at runtime.
+- `TagPalette`, the shared tag-to-colour rule, so a tag looks the same in the overlay and in
+  the editor window.
+
+### Changed
+
+- The filter moved to the runtime assembly as `LogFilter`, shared by the editor window and the
+  overlay. The tag rules have a subtle edge - a selected "Net" must not pull in an unrelated
+  "Network" - and two copies of that would have drifted apart. The editor's `TabFilter` is
+  gone; saved window layouts start again with a single All tab.
+- Pieces backed by a GameObject are now created during `BeforeSceneLoad` rather than
+  `SubsystemRegistration`, which runs before there is anywhere to put one. Sinks are still set
+  up in the earlier pass so nothing is missed.
+
 ## [0.2.0] - 2026-09-15
 
 ### Added

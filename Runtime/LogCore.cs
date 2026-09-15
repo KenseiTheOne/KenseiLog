@@ -20,10 +20,12 @@ namespace KenseiLog {
         private static ILogSink[] _sinks = Array.Empty<ILogSink>();
         private static UnityConsoleSink _consoleSink;
         private static FileSink _fileSink;
+        private static MemorySink _overlaySink;
         private static LogConfig _config = LogConfig.Default();
         private static long _sequence;
         private static int _mainThreadId;
         private static int _lastKnownFrame;
+        private static bool _sceneSystemsReady;
 
         [ThreadStatic] private static bool _suppressForeignCapture;
 
@@ -108,6 +110,17 @@ namespace KenseiLog {
             _clock.Restart();
         }
 
+        /// <summary>
+        /// Second pass, once the scene systems exist. Sinks are set up as early as possible so
+        /// nothing is missed, but the pieces backed by a GameObject cannot be built at
+        /// SubsystemRegistration - that runs before there is anywhere to put one.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void OnBeforeSceneLoad() {
+            _sceneSystemsReady = true;
+            ApplyConfig();
+        }
+
         private static void ApplyConfig() {
             Application.logMessageReceivedThreaded -= OnForeignLogReceived;
             if (_config.CaptureForeignLogs) {
@@ -135,12 +148,28 @@ namespace KenseiLog {
                 if (_fileSink == null) {
                     _fileSink = new FileSink(in _config);
                     AddSink(_fileSink);
+                }
+                if (_sceneSystemsReady) {
                     LogLifecycleHooks.Ensure();
                 }
             } else if (_fileSink != null) {
                 RemoveSink(_fileSink);
                 _fileSink.Dispose();
                 _fileSink = null;
+            }
+
+            if (_config.ShowOverlay && Application.isPlaying) {
+                if (_overlaySink == null) {
+                    _overlaySink = new MemorySink(Math.Max(32, _config.OverlayRecordCapacity));
+                    AddSink(_overlaySink);
+                }
+                if (_sceneSystemsReady) {
+                    LogOverlay.Ensure(_overlaySink, _config.OverlayScale);
+                }
+            } else if (_overlaySink != null) {
+                LogOverlay.Remove();
+                RemoveSink(_overlaySink);
+                _overlaySink = null;
             }
         }
 

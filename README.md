@@ -99,6 +99,9 @@ private static void SetUpLogging() {
 | `RetainedFileCount` | `3` | How many rotated files to keep |
 | `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once |
 | `FileIncludesDevChannel` | `false` | Also write dev records to the file |
+| `ShowOverlay` | `false` | Draw the in-game log viewer |
+| `OverlayRecordCapacity` | `512` | How many records the overlay keeps |
+| `OverlayScale` | `0` | Overlay UI scale, or 0 to derive one from screen DPI |
 
 How many records the window keeps is an editor setting, not a build one, and lives in `EditorPrefs`.
 
@@ -121,6 +124,30 @@ In the editor the file sink only runs during play mode. Otherwise every script r
 To read a file back: **Window → Kensei → Logs → Open file**. It loads into the same window with the same tabs, tags and filters as a live run, including files that are still being written.
 
 Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — flip `FileIncludesDevChannel` if you want them.
+
+## Logs on the device, while playing
+
+A file answers "send it to me afterwards". The overlay answers "what just happened, right now, on this phone".
+
+```csharp
+LogConfig config = LogConfig.Default();
+config.ShowOverlay = true;
+LogCore.Configure(config);
+```
+
+A small bubble appears in the corner showing the error and warning counts. Drag it anywhere, tap it to open the viewer: level toggles with counts, a tag list, tap a row for the full message and stack trace, and Copy to put it on the clipboard. The same tag rules as the editor window, so selecting `Combat` also brings in `Combat.Damage`.
+
+It is off by default. A debug panel that shows up in someone's game uninvited is worse than one you have to ask for.
+
+**No setup.** No prefab, no Canvas, no `PanelSettings`, no package dependency — turning the flag on is the whole installation. That is why it is drawn with IMGUI rather than uGUI or UI Toolkit: it also cannot collide with your `EventSystem`, it works in every render pipeline, and it reads touches through `Event.current`, so a project on the new Input System is unaffected.
+
+To keep it out of a public build entirely, guard the flag:
+
+```csharp
+#if DEVELOPMENT_BUILD || UNITY_EDITOR
+config.ShowOverlay = true;
+#endif
+```
 
 ## Writing your own sink
 

@@ -10,14 +10,14 @@ namespace KenseiLog.Editor {
     /// </para>
     /// </summary>
     public sealed class TabView {
-        public readonly TabFilter Filter;
+        public readonly LogFilter Filter;
         public readonly List<long> Sequences = new List<long>();
         public readonly List<int> Repeats = new List<int>();
 
         private readonly List<CollapseKey> _keys = new List<CollapseKey>();
         private readonly Dictionary<CollapseKey, int> _collapsed = new Dictionary<CollapseKey, int>();
 
-        public TabView(TabFilter filter) {
+        public TabView(LogFilter filter) {
             Filter = filter;
         }
 

@@ -18,7 +18,7 @@ namespace KenseiLog.Editor {
         private const double RefreshInterval = 1.0 / 15.0;
         private const float RowHeight = 20f;
 
-        [SerializeField] private List<TabFilter> _filters = new List<TabFilter>();
+        [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
 
         private readonly List<TabView> _views = new List<TabView>();
@@ -54,7 +54,7 @@ namespace KenseiLog.Editor {
 
         private LogSession _session;
 
-        private TabFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
+        private LogFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
 
         private TabView ActiveView => _views[Mathf.Clamp(_activeTab, 0, _views.Count - 1)];
 
@@ -79,7 +79,7 @@ namespace KenseiLog.Editor {
 
         public void CreateGUI() {
             if (_filters.Count == 0) {
-                _filters.Add(new TabFilter { Name = "All" });
+                _filters.Add(new LogFilter { Name = "All" });
             }
             _scratch = new LogRecord[Source.Capacity];
             RebuildViews();
@@ -469,7 +469,7 @@ namespace KenseiLog.Editor {
         }
 
         private void AddTab() {
-            TabFilter filter = new TabFilter { Name = "Tab " + (_filters.Count + 1) };
+            LogFilter filter = new LogFilter { Name = "Tab " + (_filters.Count + 1) };
             _filters.Add(filter);
             TabView view = new TabView(filter);
             RebuildView(view);
@@ -478,8 +478,8 @@ namespace KenseiLog.Editor {
         }
 
         private void DuplicateTab(int index) {
-            TabFilter source = _filters[index];
-            TabFilter copy = new TabFilter {
+            LogFilter source = _filters[index];
+            LogFilter copy = new LogFilter {
                 Name = source.Name + " copy",
                 Tags = new List<string>(source.Tags),
                 ShowLog = source.ShowLog,
@@ -525,7 +525,7 @@ namespace KenseiLog.Editor {
         }
 
         private void AddTagRow(TagNode node, int depth) {
-            TabFilter filter = ActiveFilter;
+            LogFilter filter = ActiveFilter;
             bool selected = filter.Tags.Contains(node.FullTag);
 
             VisualElement row = new VisualElement();
@@ -558,7 +558,7 @@ namespace KenseiLog.Editor {
         }
 
         private void ToggleTag(string fullTag) {
-            TabFilter filter = ActiveFilter;
+            LogFilter filter = ActiveFilter;
             int index = filter.Tags.IndexOf(fullTag);
             if (index >= 0) {
                 filter.Tags.RemoveAt(index);
@@ -769,7 +769,7 @@ namespace KenseiLog.Editor {
         }
 
         private void SyncToolbarToFilter() {
-            TabFilter filter = ActiveFilter;
+            LogFilter filter = ActiveFilter;
             _logToggle.SetValueWithoutNotify(filter.ShowLog);
             _warningToggle.SetValueWithoutNotify(filter.ShowWarning);
             _errorToggle.SetValueWithoutNotify(filter.ShowError);
@@ -794,7 +794,7 @@ namespace KenseiLog.Editor {
                 return "No records yet.\nEnter play mode, or call Log.Dev / Log.Prod.";
             }
 
-            TabFilter filter = ActiveFilter;
+            LogFilter filter = ActiveFilter;
             for (int i = 0; i < filter.Tags.Count; i++) {
                 if (!TagSeen(filter.Tags[i])) {
                     return "Tag '" + filter.Tags[i] + "' has not appeared in this session.";
@@ -808,7 +808,7 @@ namespace KenseiLog.Editor {
 
         private bool TagSeen(string tag) {
             foreach (string seen in _tagCounts.Keys) {
-                if (TabFilter.TagMatches(seen, tag)) {
+                if (LogFilter.TagMatches(seen, tag)) {
                     return true;
                 }
             }

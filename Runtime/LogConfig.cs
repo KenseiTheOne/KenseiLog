@@ -48,6 +48,19 @@ namespace KenseiLog {
         /// </summary>
         public bool FileIncludesDevChannel;
 
+        /// <summary>
+        /// Draw the in-game overlay: a small bubble that expands into a log viewer on the
+        /// device. Off by default, because a debug panel appearing in someone's game
+        /// uninvited is worse than having to ask for it.
+        /// </summary>
+        public bool ShowOverlay;
+
+        /// <summary>How many records the overlay keeps. Kept small; phones are not desktops.</summary>
+        public int OverlayRecordCapacity;
+
+        /// <summary>UI scale for the overlay, or 0 to derive one from screen DPI.</summary>
+        public float OverlayScale;
+
         public static LogConfig Default() {
             return new LogConfig {
                 CaptureStackTraceOnError = true,
@@ -57,7 +70,10 @@ namespace KenseiLog {
                 FileSizeLimitKb = 5 * 1024,
                 RetainedFileCount = 3,
                 FileFlushIntervalSeconds = 5f,
-                FileIncludesDevChannel = false
+                FileIncludesDevChannel = false,
+                ShowOverlay = false,
+                OverlayRecordCapacity = 512,
+                OverlayScale = 0f
             };
         }
     }

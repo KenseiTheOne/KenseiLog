@@ -1,15 +1,17 @@
 using System;
 using System.Collections.Generic;
 
-namespace KenseiLog.Editor {
+namespace KenseiLog {
     /// <summary>
-    /// A saved view over the log stream: which tags, levels and channels a tab shows.
-    /// Pure serialized data — the matching index lives in <see cref="TabView"/>, because
-    /// Unity restores serialized objects without running field initialisers and would leave
-    /// non-serialized collections null after a domain reload.
+    /// Which records a view shows: tags, levels, channels, free text.
+    /// <para>
+    /// Shared by the editor window and the in-game overlay on purpose. The tag rules have a
+    /// subtle edge - a selected "Net" must not pull in an unrelated "Network" - and two copies
+    /// of that would drift apart.
+    /// </para>
     /// </summary>
     [Serializable]
-    public sealed class TabFilter {
+    public sealed class LogFilter {
         public string Name = "New tab";
         public List<string> Tags = new List<string>();
         public bool ShowLog = true;
@@ -43,7 +45,7 @@ namespace KenseiLog.Editor {
             return true;
         }
 
-        private bool LevelAllowed(LogLevel level) {
+        public bool LevelAllowed(LogLevel level) {
             switch (level) {
                 case LogLevel.Warning:
                     return ShowWarning;
@@ -51,6 +53,29 @@ namespace KenseiLog.Editor {
                     return ShowError;
                 default:
                     return ShowLog;
+            }
+        }
+
+        public void SetLevel(LogLevel level, bool shown) {
+            switch (level) {
+                case LogLevel.Warning:
+                    ShowWarning = shown;
+                    break;
+                case LogLevel.Error:
+                    ShowError = shown;
+                    break;
+                default:
+                    ShowLog = shown;
+                    break;
+            }
+        }
+
+        public void ToggleTag(string tag) {
+            int index = Tags.IndexOf(tag);
+            if (index >= 0) {
+                Tags.RemoveAt(index);
+            } else {
+                Tags.Add(tag);
             }
         }
 
