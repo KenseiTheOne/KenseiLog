@@ -332,10 +332,13 @@
 /* ===================== Icons ===================== */
 
 .kl-icon {
-    width: 13px;
-    height: 13px;
+    width: 15px;
+    height: 15px;
     flex-shrink: 0;
-    margin-right: 3px;
+    margin-right: 4px;
+    /* Without this the icon takes the cross-axis default and rides up against the top of
+       whatever control it was put in. */
+    align-self: center;
     -unity-background-scale-mode: scale-to-fit;
 }
 
@@ -377,4 +380,10 @@
     margin-left: 6px;
     margin-right: 2px;
     font-size: 10px;
+}
+
+/* A toggle lays its parts out along the top by default, which leaves an icon beside the
+   caption sitting higher than the text it belongs to. */
+.kl-leveltoggle {
+    align-items: center;
 }

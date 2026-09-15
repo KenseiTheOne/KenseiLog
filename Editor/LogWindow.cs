@@ -251,9 +251,11 @@ namespace KenseiLog.Editor {
             _errorToggle = FilterToggle("Error", value => ActiveFilter.ShowError = value);
 
             // The console's own three, so the severity reads before the word does.
-            AddIcon(_logToggle, "console.infoicon.sml");
-            AddIcon(_warningToggle, "console.warnicon.sml");
-            AddIcon(_errorToggle, "console.erroricon.sml");
+            // The full-size icons, not the .sml ones: those are small source images, and
+            // stretching them into place is what made them look smeared.
+            AddIcon(_logToggle, "console.infoicon");
+            AddIcon(_warningToggle, "console.warnicon");
+            AddIcon(_errorToggle, "console.erroricon");
             toolbar.Add(_logToggle);
             toolbar.Add(_warningToggle);
             toolbar.Add(_errorToggle);

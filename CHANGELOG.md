@@ -4,6 +4,14 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-09-16
+
+### Fixed
+
+- Icons on the level toggles sat above their captions and looked smeared. They had no
+  cross-axis alignment, so they rode to the top of the control, and they were the .sml source
+  images stretched to fit. Centred now, and drawn from the full-size icons.
+
 ## [0.12.0] - 2026-09-16
 
 ### Added
