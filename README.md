@@ -105,7 +105,11 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 - **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing.
 - **Colour means two things, kept apart.** The tag colours the stripe at the left of the row — a stable hue derived from the tag's root segment, so a family shares a hue and descendants differ only in brightness. The level colours the text, following the editor theme's own warning and error colours.
 - **Search looks at the message only.** Tags are a field, so searching for `combat` never pulls in the `Combat` tag by itself.
-- **Double-click** opens the source at the exact line. **Ping** highlights the related object in the hierarchy; when the object is gone the button is disabled and its tooltip says so, rather than letting you press it for nothing.
+- **Double-click** opens the source at the exact line. Records written through this API carry
+  their call site from the compiler; captured ones carry none, so the first project frame in
+  their stack trace is used instead — the same thing Unity's own console navigates by. A log
+  the engine attached an asset to, such as a USS warning, cannot be followed: the capture
+  callback hands over the message, the trace and the level, and no context object. **Ping** highlights the related object in the hierarchy; when the object is gone the button is disabled and its tooltip says so, rather than letting you press it for nothing.
 - **Right-click a row** to isolate its frame, filter by its tag, or copy the message. Isolating a frame is what you want for a bug that only happens on one.
 - **Collapse** folds repeats into one row with a counter, which keeps a stray log in `Update` from drowning the view.
 - **Columns** hides the frame, time or tag column when you do not want it. This is a window setting rather than a per-tab one — which columns you want is a habit, and having the layout change as you switch tabs would only surprise you.

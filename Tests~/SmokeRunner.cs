@@ -34,6 +34,7 @@ public static class SmokeRunner {
         SourcePathsResolveAcrossMachines();
         TaglessOverloadsLandUnderUntagged();
         ScopedLoggerCarriesItsTag();
+        CapturedLogsNavigateByTheirStackTrace();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -460,6 +461,40 @@ public static class SmokeRunner {
         // the window rather than anywhere near the code that forgot to assign it.
         Logger uninitialised = default;
         Check("a default logger falls back to Untagged", uninitialised.Tag == LogCore.UntaggedTag);
+    }
+
+    /// <summary>
+    /// Captured records carry no file or line - logMessageReceived does not hand one over -
+    /// so nothing in the window could navigate from an engine or third-party log. Unity writes
+    /// the location into the stack trace, which is what its own console navigates by.
+    /// </summary>
+    private static void CapturedLogsNavigateByTheirStackTrace() {
+        const string trace =
+            "UnityEngine.Debug:LogWarning (object)\n" +
+            "Game.Combat.Hitbox:Resolve () (at Assets/Scripts/Combat/Hitbox.cs:128)\n" +
+            "Game.Combat.Loop:Tick () (at Assets/Scripts/Combat/Loop.cs:44)\n";
+
+        Check("first project frame is found",
+            LogWindow.TryFindSourceInStackTrace(trace, out string path, out int line) &&
+            path == "Assets/Scripts/Combat/Hitbox.cs" && line == 128);
+
+        Check("a frame from a package is accepted",
+            LogWindow.TryFindSourceInStackTrace(
+                "Foo:Bar () (at Packages/com.kensei.log/Runtime/Log.cs:12)", out string p2, out int l2) &&
+            p2 == "Packages/com.kensei.log/Runtime/Log.cs" && l2 == 12);
+
+        // Unity's own frames point at a build agent's disk and open nothing here.
+        Check("engine frames are skipped in favour of a project one",
+            LogWindow.TryFindSourceInStackTrace(
+                "UnityEngine.Thing:Do () (at C:/build/output/unity/Runtime/Export/Thing.cs:17)\n" +
+                "Game.Boot:Run () (at Assets/Scripts/Boot.cs:9)", out string p3, out int l3) &&
+            p3 == "Assets/Scripts/Boot.cs" && l3 == 9);
+
+        Check("a trace with no project frame is refused",
+            !LogWindow.TryFindSourceInStackTrace("UnityEditor.EditorApplication:Internal_RestoreLastOpenedScenes ()", out _, out _));
+
+        Check("an empty trace is refused", !LogWindow.TryFindSourceInStackTrace(null, out _, out _));
+        Check("a malformed frame does not throw", !LogWindow.TryFindSourceInStackTrace("Foo:Bar () (at nonsense", out _, out _));
     }
 
     // =====================================================================

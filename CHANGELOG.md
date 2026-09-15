@@ -4,6 +4,23 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-16
+
+### Fixed
+
+- Nothing in the window could navigate from a captured log. Records from Unity's own stream
+  carry no file or line, because `logMessageReceived` hands over the message, the trace and
+  the level and nothing else - so Open source was disabled and double-click did nothing for
+  every engine and third-party log. The first project frame in the stack trace is used
+  instead, which is what Unity's console navigates by; engine frames pointing at a build
+  agent's disk are skipped.
+
+### Known limits
+
+- A log the engine attached an asset to rather than a script - a USS warning naming a
+  StyleSheet, for instance - still cannot be followed. Unity's console opens the asset because
+  it holds the context object internally; the public capture callback never receives one.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

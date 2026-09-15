@@ -766,7 +766,7 @@ namespace KenseiLog.Editor {
             }
             _detailBody.value = body;
 
-            _sourceButton.SetEnabled(!string.IsNullOrEmpty(record.File));
+            _sourceButton.SetEnabled(TryGetSourceLocation(in record, out _, out _));
 
             // Resolved here rather than on the click, so a button that cannot do anything looks
             // like one instead of reporting the bad news afterwards.
@@ -791,10 +791,25 @@ namespace KenseiLog.Editor {
         }
 
         private void OpenSelectedSource() {
-            if (!TryGetSelectedRecord(out LogRecord record) || string.IsNullOrEmpty(record.File)) {
+            if (!TryGetSelectedRecord(out LogRecord record)) {
                 return;
             }
-            OpenSource(record.File, record.Line);
+            if (TryGetSourceLocation(in record, out string file, out int line)) {
+                OpenSource(file, line);
+            }
+        }
+
+        /// <summary>
+        /// Where a record points in source: its own call site when it has one, otherwise the
+        /// first project frame in its stack trace - which is all a captured record ever has.
+        /// </summary>
+        private static bool TryGetSourceLocation(in LogRecord record, out string file, out int line) {
+            if (!string.IsNullOrEmpty(record.File)) {
+                file = record.File;
+                line = record.Line;
+                return true;
+            }
+            return TryFindSourceInStackTrace(record.StackTrace, out file, out line);
         }
 
         private void PingSelectedContext() {
@@ -838,6 +853,57 @@ namespace KenseiLog.Editor {
             // Doing nothing would be the worst answer: the row plainly shows a file and a line,
             // so the only readings left are "the window is broken" or "the line is a lie".
             ShowNotification(new GUIContent("Cannot find " + Path.GetFileName(normalized)));
+        }
+
+        /// <summary>
+        /// Find a source location inside a stack trace.
+        /// <para>
+        /// Records captured from Unity's own log stream carry no file or line - the callback
+        /// hands over the message, the trace and the level, nothing more. Unity writes the
+        /// location into the trace itself as <c>(at Assets/Foo.cs:42)</c>, which is the same
+        /// thing its console navigates by, so that is where to look.
+        /// </para>
+        /// </summary>
+        public static bool TryFindSourceInStackTrace(string stackTrace, out string path, out int line) {
+            path = null;
+            line = 0;
+            if (string.IsNullOrEmpty(stackTrace)) {
+                return false;
+            }
+
+            int search = 0;
+            while (true) {
+                int open = stackTrace.IndexOf("(at ", search, StringComparison.Ordinal);
+                if (open < 0) {
+                    return false;
+                }
+                int close = stackTrace.IndexOf(')', open);
+                if (close < 0) {
+                    return false;
+                }
+
+                string candidate = stackTrace.Substring(open + 4, close - open - 4);
+                search = close + 1;
+
+                int colon = candidate.LastIndexOf(':');
+                if (colon <= 0 || !int.TryParse(candidate.Substring(colon + 1), out int parsed)) {
+                    continue;
+                }
+
+                string file = candidate.Substring(0, colon);
+                // Unity also writes frames from its own compiled sources, whose paths point at
+                // a build agent's disk. Only project-relative ones can be opened here.
+                if (file.IndexOf("/Assets/", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    file.IndexOf("/Packages/", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    !file.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
+                    !file.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase)) {
+                    continue;
+                }
+
+                path = file;
+                line = parsed;
+                return true;
+            }
         }
 
         /// <summary>
