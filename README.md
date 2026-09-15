@@ -84,6 +84,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 - **Double-click** opens the source at the exact line. **Ping** highlights the related object in the hierarchy; when the object is gone the button is disabled and its tooltip says so, rather than letting you press it for nothing.
 - **Right-click a row** to isolate its frame, filter by its tag, or copy the message. Isolating a frame is what you want for a bug that only happens on one.
 - **Collapse** folds repeats into one row with a counter, which keeps a stray log in `Update` from drowning the view.
+- **Columns** hides the frame, time or tag column when you do not want it. This is a window setting rather than a per-tab one — which columns you want is a habit, and having the layout change as you switch tabs would only surprise you.
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 

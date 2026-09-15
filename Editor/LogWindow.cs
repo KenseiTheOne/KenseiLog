@@ -18,6 +18,9 @@ namespace KenseiLog.Editor {
     public sealed class LogWindow : EditorWindow {
         private const double RefreshInterval = 1.0 / 15.0;
         private const float RowHeight = 20f;
+        private const string FrameKey = "KenseiLog.Columns.Frame";
+        private const string TimeKey = "KenseiLog.Columns.Time";
+        private const string TagKey = "KenseiLog.Columns.Tag";
 
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
@@ -32,6 +35,9 @@ namespace KenseiLog.Editor {
         private double _lastRefresh;
         private bool _paused;
         private bool _followTail = true;
+        private bool _showFrame = true;
+        private bool _showTime = true;
+        private bool _showTag = true;
 
         private VisualElement _tabBar;
         private ScrollView _tagPane;
@@ -82,6 +88,10 @@ namespace KenseiLog.Editor {
             if (_filters.Count == 0) {
                 _filters.Add(new LogFilter { Name = "All" });
             }
+            _showFrame = EditorPrefs.GetBool(FrameKey, true);
+            _showTime = EditorPrefs.GetBool(TimeKey, true);
+            _showTag = EditorPrefs.GetBool(TagKey, true);
+
             _scratch = new LogRecord[Source.Capacity];
             RebuildViews();
 
@@ -205,6 +215,8 @@ namespace KenseiLog.Editor {
             _collapseToggle = FilterToggle("Collapse", value => ActiveFilter.Collapse = value);
             toolbar.Add(_collapseToggle);
 
+            toolbar.Add(BuildColumnsMenu());
+
             _frameIsolationLabel = new Label();
             _frameIsolationLabel.AddToClassList("kl-frame-pill");
             _frameIsolationLabel.style.display = DisplayStyle.None;
@@ -282,6 +294,40 @@ namespace KenseiLog.Editor {
             }
             _sessionLabel.text = _session.Describe() +
                                  (_session.SkippedLines > 0 ? "   (" + _session.SkippedLines + " unreadable lines skipped)" : string.Empty);
+        }
+
+        /// <summary>
+        /// Column visibility, as checked items rather than three more toolbar toggles: the bar
+        /// already runs the full width of a docked window, and columns are a view preference
+        /// worth less permanent space than the filters beside them.
+        /// <para>
+        /// These are a window setting, not a per-tab one. Which columns you want is a habit,
+        /// and having it differ from tab to tab would be a surprise every time you switched.
+        /// </para>
+        /// </summary>
+        private ToolbarMenu BuildColumnsMenu() {
+            ToolbarMenu menu = new ToolbarMenu { text = "Columns" };
+            menu.tooltip = "Show or hide the frame, time and tag columns.";
+
+            AppendColumnItem(menu, "Frame", () => _showFrame, value => _showFrame = value, FrameKey);
+            AppendColumnItem(menu, "Time", () => _showTime, value => _showTime = value, TimeKey);
+            AppendColumnItem(menu, "Tag", () => _showTag, value => _showTag = value, TagKey);
+
+            return menu;
+        }
+
+        private void AppendColumnItem(ToolbarMenu menu, string label, Func<bool> read, Action<bool> write, string key) {
+            menu.menu.AppendAction(
+                label,
+                _ => {
+                    bool value = !read();
+                    write(value);
+                    EditorPrefs.SetBool(key, value);
+                    // Rebuild rather than refresh: display is set while binding, and recycled
+                    // rows keep whatever the last bind gave them until they are bound again.
+                    _listView.Rebuild();
+                },
+                _ => read() ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
         }
 
         private ToolbarToggle FilterToggle(string label, Action<bool> apply) {
@@ -642,6 +688,10 @@ namespace KenseiLog.Editor {
                 ((Label)element.ElementAt(5)).text = string.Empty;
                 return;
             }
+
+            element.ElementAt(1).style.display = _showFrame ? DisplayStyle.Flex : DisplayStyle.None;
+            element.ElementAt(2).style.display = _showTime ? DisplayStyle.Flex : DisplayStyle.None;
+            element.ElementAt(3).style.display = _showTag ? DisplayStyle.Flex : DisplayStyle.None;
 
             element.ElementAt(0).style.backgroundColor = TagColor.For(record.Tag);
             ((Label)element.ElementAt(1)).text = record.Frame.ToString();

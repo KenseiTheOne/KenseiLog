@@ -4,6 +4,15 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-16
+
+### Added
+
+- A **Columns** menu in the log window toggles the frame, time and tag columns. Gathered into
+  a menu rather than three more toolbar toggles, because the bar already fills the width of a
+  docked window and columns are a view preference worth less permanent space than the filters
+  beside them. Remembered in `EditorPrefs`, per window rather than per tab.
+
 ## [0.4.0] - 2026-09-16
 
 ### Added
