@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 
 namespace KenseiLog {
@@ -49,6 +50,7 @@ namespace KenseiLog {
         private GUIStyle _bar;
         private GUIStyle _button;
         private GUIStyle _detail;
+        private GUIStyle _meta;
         private Texture2D _panelTex;
         private Texture2D _paneTex;
         private Texture2D _rowTex;
@@ -339,11 +341,12 @@ namespace KenseiLog {
             int first = Mathf.Max(0, Mathf.FloorToInt(_scroll.y / RowHeight));
             int last = Mathf.Min(_visible.Count, first + Mathf.CeilToInt(area.height / RowHeight) + 1);
 
+            bool showFrame = area.width > 520f;
             for (int i = first; i < last; i++) {
                 if (!_sink.Buffer.TryGetBySequence(_visible[i], out LogRecord record)) {
                     continue;
                 }
-                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), in record);
+                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), in record, showFrame);
             }
 
             GUI.EndScrollView();
@@ -353,7 +356,7 @@ namespace KenseiLog {
             }
         }
 
-        private void DrawRow(Rect rect, in LogRecord record) {
+        private void DrawRow(Rect rect, in LogRecord record, bool showFrame) {
             bool selected = record.Sequence == _selected;
             if (selected) {
                 GUI.Box(rect, GUIContent.none, _bar);
@@ -361,11 +364,22 @@ namespace KenseiLog {
 
             GUI.color = TagPalette.For(record.Tag, 0.55f, 0.85f, -0.08f);
             GUI.DrawTexture(new Rect(rect.x + 2f, rect.y + 4f, 3f, rect.height - 8f), _chipTex);
-            GUI.color = LevelColor(record.Level);
 
+            float x = rect.x + 8f;
+            GUI.color = new Color(0.58f, 0.58f, 0.63f);
+            // Frame only when there is room for it. On a phone the message needs the width more
+            // than the frame number does, and the detail pane carries it anyway.
+            if (showFrame) {
+                GUI.Label(new Rect(x, rect.y, 48f, rect.height), record.Frame.ToString(CultureInfo.InvariantCulture), _meta);
+                x += 52f;
+            }
+            GUI.Label(new Rect(x, rect.y, 44f, rect.height), Seconds(record.TimeMs), _meta);
+            x += 50f;
+
+            GUI.color = LevelColor(record.Level);
             long sequence = record.Sequence;
             string text = ShortTag(record.Tag) + "  " + FirstLine(record.Message);
-            if (GUI.Button(new Rect(rect.x + 8f, rect.y, rect.width - 8f, rect.height), text, _row) && !_didDrag) {
+            if (GUI.Button(new Rect(x, rect.y, rect.xMax - x, rect.height), text, _row) && !_didDrag) {
                 _selected = selected ? -1 : sequence;
             }
             GUI.color = Color.white;
@@ -378,7 +392,8 @@ namespace KenseiLog {
                 return;
             }
 
-            string body = record.Tag + "  ·  " + record.Level + "  ·  " + record.Channel + "  ·  frame " + record.Frame +
+            string body = record.Tag + "  ·  " + record.Level + "  ·  " + record.Channel +
+                          "  ·  frame " + record.Frame + "  ·  " + Seconds(record.TimeMs) + "s" +
                           "\n" + record.Message;
             if (!string.IsNullOrEmpty(record.File)) {
                 body += "\n" + record.File + ":" + record.Line;
@@ -487,6 +502,8 @@ namespace KenseiLog {
                 wordWrap = true,
                 clipping = TextClipping.Clip
             };
+
+            _meta = new GUIStyle(_row) { alignment = TextAnchor.MiddleRight, fontSize = 11 };
         }
 
         private static Texture2D SolidTexture(Color color) {
@@ -514,6 +531,9 @@ namespace KenseiLog {
                     return new Color(0.88f, 0.88f, 0.9f);
             }
         }
+
+        private static string Seconds(double milliseconds) =>
+            (milliseconds / 1000.0).ToString("0.00", CultureInfo.InvariantCulture);
 
         private static string ShortTag(string tag) {
             int dot = tag.LastIndexOf('.');

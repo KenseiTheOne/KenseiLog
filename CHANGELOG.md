@@ -4,6 +4,17 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-15
+
+### Added
+
+- Overlay rows carry the frame number and the timestamp, and the detail pane carries the
+  timestamp alongside the frame. Both were already on the record and simply were not shown;
+  the editor window had them from the start.
+
+The frame column is dropped when the viewer is narrow. On a phone the message needs the width
+more than the frame number does, and the detail pane still has it.
+
 ## [0.3.2] - 2026-09-15
 
 ### Fixed

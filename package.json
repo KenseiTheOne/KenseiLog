@@ -1,6 +1,6 @@
 {
   "name": "com.kensei.log",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "displayName": "Kensei Log",
   "description": "Tagged logging with separate dev and prod channels. Dev calls are stripped by the compiler in release builds. Ships an editor window that splits logs into saved filter tabs by tag.",
   "unity": "2022.3",
