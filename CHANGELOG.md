@@ -4,6 +4,15 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-09-15
+
+### Added
+
+- `LogWindow.AddTab(LogFilter)` and `LogWindow.SelectNewest(LogLevel)`, mirroring what the
+  overlay already exposes. The first lets a project seed its own set of tabs from an editor
+  script instead of rebuilding them by hand on every machine; the second suits a "jump to the
+  last error" shortcut.
+
 ## [0.3.3] - 2026-09-15
 
 ### Added

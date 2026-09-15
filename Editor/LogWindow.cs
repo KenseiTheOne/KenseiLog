@@ -468,13 +468,35 @@ namespace KenseiLog.Editor {
             RefreshList();
         }
 
-        private void AddTab() {
-            LogFilter filter = new LogFilter { Name = "Tab " + (_filters.Count + 1) };
+        /// <summary>
+        /// Add a tab and make it current, for seeding a project's own set of views from an
+        /// editor script instead of rebuilding them by hand on every machine.
+        /// </summary>
+        public void AddTab(LogFilter filter) {
             _filters.Add(filter);
             TabView view = new TabView(filter);
             RebuildView(view);
             _views.Add(view);
             SelectTab(_filters.Count - 1);
+        }
+
+        /// <summary>
+        /// Select the most recent record at this level in the current tab and show it in the
+        /// detail pane. Handy on a "jump to the last error" shortcut.
+        /// </summary>
+        public void SelectNewest(LogLevel level) {
+            TabView view = ActiveView;
+            for (int i = view.Sequences.Count - 1; i >= 0; i--) {
+                if (Source.TryGetBySequence(view.Sequences[i], out LogRecord record) && record.Level == level) {
+                    _listView.SetSelection(i);
+                    _listView.ScrollToItem(i);
+                    return;
+                }
+            }
+        }
+
+        private void AddTab() {
+            AddTab(new LogFilter { Name = "Tab " + (_filters.Count + 1) });
         }
 
         private void DuplicateTab(int index) {
