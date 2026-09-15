@@ -4,6 +4,16 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-16
+
+### Added
+
+- Overloads that take no tag: `Log.Dev("text")` and the five others write under `Untagged`.
+  The alternative for a throwaway log was `Debug.Log`, which lands it under the `Unity` tag
+  among the engine's own warnings - the noisiest place it could go. The new overloads differ
+  from the tagged ones only in the second parameter's type, so a two-string call still means
+  "tag, message" and no existing code changes meaning.
+
 ## [0.3.8] - 2026-09-16
 
 ### Fixed

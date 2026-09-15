@@ -58,5 +58,46 @@ namespace KenseiLog {
         public static void ProdError(string tag, string message, Object context = null,
                                      [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Error, LogChannel.Prod, context, file, line);
+
+        // =====================================================================
+        // Without a tag
+        //
+        // For the log you are about to delete anyway. It lands under "Untagged" rather than
+        // nowhere, which keeps it inside the window and apart from the engine's own chatter -
+        // reaching for Debug.Log instead would bury it under the Unity tag. A branch of the
+        // tag tree filling up with these is also a fair hint about where to put a real one.
+        //
+        // No ambiguity with the six above: their second parameter is a string, these take a
+        // UnityEngine.Object, and there is no conversion between the two.
+        // =====================================================================
+
+        [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
+        public static void Dev(string message, Object context = null,
+                               [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Log, LogChannel.Dev, context, file, line);
+
+        [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
+        public static void DevWarning(string message, Object context = null,
+                                      [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Warning, LogChannel.Dev, context, file, line);
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
+        public static void DevError(string message, Object context = null,
+                                    [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Error, LogChannel.Dev, context, file, line);
+
+        public static void Prod(string message, Object context = null,
+                                [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Log, LogChannel.Prod, context, file, line);
+
+        public static void ProdWarning(string message, Object context = null,
+                                       [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Warning, LogChannel.Prod, context, file, line);
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static void ProdError(string message, Object context = null,
+                                     [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+            LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Error, LogChannel.Prod, context, file, line);
     }
 }

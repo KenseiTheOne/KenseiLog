@@ -40,6 +40,11 @@ Log.ProdError(Tags.Net, "desync at tick " + tick);
 
 Six methods, three levels across two channels: `Dev`, `DevWarning`, `DevError`, `Prod`, `ProdWarning`, `ProdError`.
 
+A tag is not required. `Log.Dev("still here")` writes under `Untagged`, which keeps the log
+you are about to delete inside the window and apart from the engine's chatter — reaching for
+`Debug.Log` instead buries it under the `Unity` tag. A branch of the tag tree filling up with
+these is a fair hint about where a real tag belongs.
+
 Tags are plain strings — nothing has to be registered, and any string works. A `const` holder like the one above only buys you autocomplete and safe renames. A dot in a tag builds a hierarchy: selecting `Combat` in the window also selects `Combat.Damage` and `Combat.AI`.
 
 ## The two channels

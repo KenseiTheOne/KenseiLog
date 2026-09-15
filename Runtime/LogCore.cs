@@ -14,6 +14,9 @@ namespace KenseiLog {
         /// <summary>Tag given to records captured from outside this facade.</summary>
         public const string ForeignTag = "Unity";
 
+        /// <summary>Tag given to records written through the overloads that take no tag.</summary>
+        public const string UntaggedTag = "Untagged";
+
         private static readonly object _sinkLock = new object();
         private static readonly Stopwatch _clock = new Stopwatch();
 

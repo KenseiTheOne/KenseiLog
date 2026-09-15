@@ -32,6 +32,7 @@ public static class SmokeRunner {
         TagColoursAreStableAndDistinct();
         FileSettingsApplyAfterTheSinkExists();
         SourcePathsResolveAcrossMachines();
+        TaglessOverloadsLandUnderUntagged();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -403,6 +404,32 @@ public static class SmokeRunner {
             !LogWindow.TryResolveAssetPath("/tmp/scratch/Thing.cs", root, out _));
 
         Check("an empty path is refused", !LogWindow.TryResolveAssetPath(null, root, out _));
+    }
+
+    /// <summary>
+    /// The tagless overloads must not shadow the tagged ones: a two-string call has to keep
+    /// meaning "tag, message". They differ only in the second parameter's type, so this check
+    /// is really about overload resolution rather than about the tag.
+    /// </summary>
+    private static void TaglessOverloadsLandUnderUntagged() {
+        EditorSink.Instance.Clear();
+
+        Log.Prod("no tag on this one");
+        Log.Prod("SmokeRunner", "this one is tagged");
+        Log.ProdWarning("no tag, warning");
+
+        LogRecord[] scratch = new LogRecord[8];
+        int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
+
+        Check("all three records arrived", copied == 3);
+        if (copied != 3) {
+            return;
+        }
+
+        Check("tagless call lands under Untagged", scratch[0].Tag == LogCore.UntaggedTag);
+        Check("two strings still mean tag and message", scratch[1].Tag == "SmokeRunner" && scratch[1].Message == "this one is tagged");
+        Check("tagless warning keeps its level", scratch[2].Tag == LogCore.UntaggedTag && scratch[2].Level == LogLevel.Warning);
+        Check("tagless call still captures its call site", !string.IsNullOrEmpty(scratch[0].File) && scratch[0].Line > 0);
     }
 
     // =====================================================================
