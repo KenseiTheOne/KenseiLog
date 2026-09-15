@@ -27,6 +27,8 @@ namespace KenseiLog.Editor {
         private const string FoldSeparator = "|";
 
         private const string TagPaneKey = "KenseiLog.TagPane";
+        private const string CompactKey = "KenseiLog.Compact";
+        private const string CompactRestoreKey = "KenseiLog.CompactRestore";
 
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
@@ -35,6 +37,7 @@ namespace KenseiLog.Editor {
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly int[] _levelCounts = new int[3];
         private readonly HashSet<string> _foldedTags = new HashSet<string>();
+        private readonly Dictionary<long, ConsoleContext> _consoleContexts = new Dictionary<long, ConsoleContext>();
 
         private LogRecord[] _scratch;
         private long _lastSequence;
@@ -46,6 +49,7 @@ namespace KenseiLog.Editor {
         private bool _showTime = true;
         private bool _showTag = true;
         private bool _showTagPane = true;
+        private bool _compact;
 
         private VisualElement _tabBar;
         private ScrollView _tagPane;
@@ -69,6 +73,8 @@ namespace KenseiLog.Editor {
         private VisualElement _headerFrame;
         private VisualElement _headerTime;
         private VisualElement _headerTag;
+        private ToolbarToggle _compactToggle;
+        private ToolbarToggle _tagPaneToggle;
 
         private LogSession _session;
 
@@ -103,6 +109,7 @@ namespace KenseiLog.Editor {
             _showTime = EditorPrefs.GetBool(TimeKey, true);
             _showTag = EditorPrefs.GetBool(TagKey, true);
             _showTagPane = EditorPrefs.GetBool(TagPaneKey, true);
+            _compact = EditorPrefs.GetBool(CompactKey, false);
             string[] folded = EditorPrefs.GetString(FoldedTagsKey, string.Empty)
                 .Split(new[] { FoldSeparator }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < folded.Length; i++) {
@@ -236,19 +243,26 @@ namespace KenseiLog.Editor {
             _collapseToggle = FilterToggle("Collapse", value => ActiveFilter.Collapse = value);
             toolbar.Add(_collapseToggle);
 
-            ToolbarToggle tagPane = new ToolbarToggle {
+            _tagPaneToggle = new ToolbarToggle {
                 text = "Tags",
                 tooltip = "Show or hide the tag tree."
             };
-            tagPane.SetValueWithoutNotify(_showTagPane);
-            tagPane.RegisterValueChangedCallback(evt => {
+            _tagPaneToggle.SetValueWithoutNotify(_showTagPane);
+            _tagPaneToggle.RegisterValueChangedCallback(evt => {
                 _showTagPane = evt.newValue;
                 EditorPrefs.SetBool(TagPaneKey, _showTagPane);
+                LeaveCompact();
                 ApplyTagPaneVisibility();
             });
-            toolbar.Add(tagPane);
+            toolbar.Add(_tagPaneToggle);
 
-            toolbar.Add(BuildColumnsMenu());
+            _compactToggle = new ToolbarToggle {
+                text = "Compact",
+                tooltip = "Hide the tag tree and every column but the message. Toggling back restores what you had."
+            };
+            _compactToggle.SetValueWithoutNotify(_compact);
+            _compactToggle.RegisterValueChangedCallback(evt => SetCompact(evt.newValue));
+            toolbar.Add(_compactToggle);
 
             _frameIsolationLabel = new Label();
             _frameIsolationLabel.AddToClassList("kl-frame-pill");
@@ -330,35 +344,88 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Column visibility, as checked items rather than three more toolbar toggles: the bar
-        /// already runs the full width of a docked window, and columns are a view preference
-        /// worth less permanent space than the filters beside them.
+        /// Column visibility, opened from the header rather than the toolbar - a heading is
+        /// where anyone looks to change the column under it, and the toolbar already runs the
+        /// full width of a docked window.
         /// <para>
         /// These are a window setting, not a per-tab one. Which columns you want is a habit,
         /// and having it differ from tab to tab would be a surprise every time you switched.
         /// </para>
         /// </summary>
-        private ToolbarMenu BuildColumnsMenu() {
-            ToolbarMenu menu = new ToolbarMenu { text = "Columns" };
-            menu.tooltip = "Show or hide the frame, time and tag columns.";
-
-            AppendColumnItem(menu, "Frame", () => _showFrame, value => _showFrame = value, FrameKey);
-            AppendColumnItem(menu, "Time", () => _showTime, value => _showTime = value, TimeKey);
-            AppendColumnItem(menu, "Tag", () => _showTag, value => _showTag = value, TagKey);
-
-            return menu;
+        private void ShowColumnMenu() {
+            GenericMenu menu = new GenericMenu();
+            AppendColumnItem(menu, "Frame", _showFrame, value => _showFrame = value, FrameKey);
+            AppendColumnItem(menu, "Time", _showTime, value => _showTime = value, TimeKey);
+            AppendColumnItem(menu, "Tag", _showTag, value => _showTag = value, TagKey);
+            menu.AddSeparator(string.Empty);
+            menu.AddItem(new GUIContent("Show all"), false, () => {
+                SetColumn(value => _showFrame = value, FrameKey, true);
+                SetColumn(value => _showTime = value, TimeKey, true);
+                SetColumn(value => _showTag = value, TagKey, true);
+                LeaveCompact();
+                ApplyColumnVisibility();
+            });
+            menu.ShowAsContext();
         }
 
-        private void AppendColumnItem(ToolbarMenu menu, string label, Func<bool> read, Action<bool> write, string key) {
-            menu.menu.AppendAction(
-                label,
-                _ => {
-                    bool value = !read();
-                    write(value);
-                    EditorPrefs.SetBool(key, value);
-                    ApplyColumnVisibility();
-                },
-                _ => read() ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
+        private void AppendColumnItem(GenericMenu menu, string label, bool shown, Action<bool> write, string key) {
+            menu.AddItem(new GUIContent(label), shown, () => {
+                SetColumn(write, key, !shown);
+                LeaveCompact();
+                ApplyColumnVisibility();
+            });
+        }
+
+        private static void SetColumn(Action<bool> write, string key, bool value) {
+            write(value);
+            EditorPrefs.SetBool(key, value);
+        }
+
+        /// <summary>
+        /// One switch for "just the messages": no tag tree, no column but the text. Turning it
+        /// back off restores what was showing before rather than some default, which is the
+        /// difference between a shortcut and something that loses your layout.
+        /// </summary>
+        private void SetCompact(bool compact) {
+            if (compact) {
+                int saved = (_showTagPane ? 1 : 0) | (_showFrame ? 2 : 0) | (_showTime ? 4 : 0) | (_showTag ? 8 : 0);
+                EditorPrefs.SetInt(CompactRestoreKey, saved);
+                _showTagPane = false;
+                _showFrame = false;
+                _showTime = false;
+                _showTag = false;
+            } else {
+                int saved = EditorPrefs.GetInt(CompactRestoreKey, 15);
+                _showTagPane = (saved & 1) != 0;
+                _showFrame = (saved & 2) != 0;
+                _showTime = (saved & 4) != 0;
+                _showTag = (saved & 8) != 0;
+            }
+
+            _compact = compact;
+            EditorPrefs.SetBool(CompactKey, compact);
+            EditorPrefs.SetBool(TagPaneKey, _showTagPane);
+            EditorPrefs.SetBool(FrameKey, _showFrame);
+            EditorPrefs.SetBool(TimeKey, _showTime);
+            EditorPrefs.SetBool(TagKey, _showTag);
+
+            _compactToggle.SetValueWithoutNotify(compact);
+            _tagPaneToggle.SetValueWithoutNotify(_showTagPane);
+            ApplyColumnVisibility();
+            ApplyTagPaneVisibility();
+        }
+
+        /// <summary>
+        /// Changing anything by hand means the preset no longer describes what is on screen,
+        /// so the toggle stops claiming that it does.
+        /// </summary>
+        private void LeaveCompact() {
+            if (!_compact) {
+                return;
+            }
+            _compact = false;
+            EditorPrefs.SetBool(CompactKey, false);
+            _compactToggle.SetValueWithoutNotify(false);
         }
 
         /// <summary>
@@ -383,12 +450,23 @@ namespace KenseiLog.Editor {
             header.Add(HeaderCell("Message", "kl-cell-message"));
             header.Add(HeaderCell(string.Empty, "kl-cell-repeats"));
 
+            Label columnsButton = new Label("\u22EE") {
+                tooltip = "Choose which columns to show. Right-clicking the header does the same."
+            };
+            columnsButton.AddToClassList("kl-header-menu");
+            columnsButton.RegisterCallback<PointerDownEvent>(evt => {
+                evt.StopPropagation();
+                ShowColumnMenu();
+            });
+            header.Add(columnsButton);
+
             // The list reserves room for its vertical scroller; without the same gap here the
             // last column would sit a few pixels right of the values under it.
             VisualElement scrollerSpacer = new VisualElement();
             scrollerSpacer.AddToClassList("kl-header-scroller-gap");
             header.Add(scrollerSpacer);
 
+            header.RegisterCallback<ContextClickEvent>(_ => ShowColumnMenu());
             return header;
         }
 
@@ -528,6 +606,7 @@ namespace KenseiLog.Editor {
             _lastSequence = 0;
             Array.Clear(_levelCounts, 0, _levelCounts.Length);
             _tagCounts.Clear();
+            _consoleContexts.Clear();
             for (int i = 0; i < _views.Count; i++) {
                 _views[i].Clear();
             }
@@ -881,12 +960,13 @@ namespace KenseiLog.Editor {
 
             _sourceButton.SetEnabled(TryGetSourceLocation(in record, out _, out _));
 
+            int contextId = ResolveContextId(in record);
+
             // Resolved here rather than on the click, so a button that cannot do anything looks
             // like one instead of reporting the bad news afterwards.
-            bool canPing = record.ContextInstanceId != 0 &&
-                           EditorUtility.InstanceIDToObject(record.ContextInstanceId) != null;
+            bool canPing = contextId != 0 && EditorUtility.InstanceIDToObject(contextId) != null;
             _pingButton.SetEnabled(canPing);
-            _pingButton.tooltip = record.ContextInstanceId == 0
+            _pingButton.tooltip = contextId == 0
                 ? "This log was written without a related object."
                 : canPing
                     ? "Highlight the related object in the hierarchy."
@@ -916,20 +996,74 @@ namespace KenseiLog.Editor {
         /// Where a record points in source: its own call site when it has one, otherwise the
         /// first project frame in its stack trace - which is all a captured record ever has.
         /// </summary>
-        private static bool TryGetSourceLocation(in LogRecord record, out string file, out int line) {
+        private bool TryGetSourceLocation(in LogRecord record, out string file, out int line) {
             if (!string.IsNullOrEmpty(record.File)) {
                 file = record.File;
                 line = record.Line;
                 return true;
             }
-            return TryFindSourceInStackTrace(record.StackTrace, out file, out line);
+            if (TryFindSourceInStackTrace(record.StackTrace, out file, out line)) {
+                return true;
+            }
+
+            ConsoleContext context = LookUpConsoleContext(in record);
+            file = context.File;
+            line = context.Line;
+            return !string.IsNullOrEmpty(file);
+        }
+
+        /// <summary>
+        /// The context object for a record, asking Unity's console for captured ones.
+        /// <para>
+        /// Looked up when a row is selected rather than when a record arrives: the console
+        /// store takes a lock and is walked end to end, which is fine once per click and
+        /// absurd once per log line.
+        /// </para>
+        /// </summary>
+        private int ResolveContextId(in LogRecord record) {
+            if (record.ContextInstanceId != 0) {
+                return record.ContextInstanceId;
+            }
+            return LookUpConsoleContext(in record).InstanceId;
+        }
+
+        private ConsoleContext LookUpConsoleContext(in LogRecord record) {
+            if (!record.Captured) {
+                return default;
+            }
+            if (_consoleContexts.TryGetValue(record.Sequence, out ConsoleContext cached)) {
+                return cached;
+            }
+
+            ConsoleContext resolved = default;
+            if (ConsoleEntryBridge.TryResolve(record.Message, out int instanceId, out string file, out int line)) {
+                resolved = new ConsoleContext(instanceId, file, line);
+            }
+            _consoleContexts[record.Sequence] = resolved;
+            return resolved;
+        }
+
+        private readonly struct ConsoleContext {
+            public readonly int InstanceId;
+            public readonly string File;
+            public readonly int Line;
+
+            public ConsoleContext(int instanceId, string file, int line) {
+                InstanceId = instanceId;
+                File = file;
+                Line = line;
+            }
         }
 
         private void PingSelectedContext() {
-            if (!TryGetSelectedRecord(out LogRecord record) || record.ContextInstanceId == 0) {
+            if (!TryGetSelectedRecord(out LogRecord record)) {
                 return;
             }
-            UnityEngine.Object target = EditorUtility.InstanceIDToObject(record.ContextInstanceId);
+            int contextId = ResolveContextId(in record);
+            if (contextId == 0) {
+                return;
+            }
+            UnityEngine.Object target = EditorUtility.InstanceIDToObject(contextId);
             if (target == null) {
                 // A notification, not text appended to the header: the header is structured
                 // metadata, and appending there stacked up one copy of this per click.

@@ -35,6 +35,7 @@ public static class SmokeRunner {
         TaglessOverloadsLandUnderUntagged();
         ScopedLoggerCarriesItsTag();
         CapturedLogsNavigateByTheirStackTrace();
+        ConsoleBridgeFindsTheContextObject();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -495,6 +496,34 @@ public static class SmokeRunner {
 
         Check("an empty trace is refused", !LogWindow.TryFindSourceInStackTrace(null, out _, out _));
         Check("a malformed frame does not throw", !LogWindow.TryFindSourceInStackTrace("Foo:Bar () (at nonsense", out _, out _));
+    }
+
+    /// <summary>
+    /// The context object never reaches us through the public callback, so the window asks
+    /// Unity's own console store for it. That store is internal, so this check is really about
+    /// whether the reflection still lines up with the editor we are running on.
+    /// </summary>
+    private static void ConsoleBridgeFindsTheContextObject() {
+        Check("console bridge found the internal API", ConsoleEntryBridge.Available);
+        if (!ConsoleEntryBridge.Available) {
+            return;
+        }
+
+        UnityEngine.ScriptableObject target = UnityEngine.ScriptableObject.CreateInstance<UnityEngine.ScriptableObject>();
+        target.name = "KenseiLogBridgeProbe";
+        string message = "bridge probe " + System.Guid.NewGuid().ToString("N");
+
+        UnityEngine.Debug.LogWarning(message, target);
+
+        bool resolved = ConsoleEntryBridge.TryResolve(message, out int instanceId, out _, out _);
+        Check("bridge resolved the entry", resolved);
+        Check("bridge returned the object that was logged against",
+            resolved && instanceId == target.GetInstanceID());
+
+        Check("an unknown message resolves to nothing",
+            !ConsoleEntryBridge.TryResolve("no such message " + System.Guid.NewGuid().ToString("N"), out _, out _, out _));
+
+        UnityEngine.Object.DestroyImmediate(target);
     }
 
     // =====================================================================

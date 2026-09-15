@@ -107,12 +107,17 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 - **Search looks at the message only.** Tags are a field, so searching for `combat` never pulls in the `Combat` tag by itself.
 - **Double-click** opens the source at the exact line. Records written through this API carry
   their call site from the compiler; captured ones carry none, so the first project frame in
-  their stack trace is used instead — the same thing Unity's own console navigates by. A log
-  the engine attached an asset to, such as a USS warning, cannot be followed: the capture
-  callback hands over the message, the trace and the level, and no context object. **Ping** highlights the related object in the hierarchy; when the object is gone the button is disabled and its tooltip says so, rather than letting you press it for nothing.
+  their stack trace is used instead — the same thing Unity's own console navigates by.
+- **Ping** highlights the related object. Logs the engine raised against an asset rather than
+  a script — a USS warning naming a StyleSheet — reach it too: the capture callback passes no
+  context object, so the window asks Unity's own console store for it. That store is internal,
+  so the lookup is probed once and disables itself if a Unity version moves it; nothing about
+  logging depends on it, only this extra navigation. When the object is gone the button is
+  disabled and its tooltip says so, rather than letting you press it for nothing.
 - **Right-click a row** to isolate its frame, filter by its tag, or copy the message. Isolating a frame is what you want for a bug that only happens on one.
 - **Collapse** folds repeats into one row with a counter, which keeps a stray log in `Update` from drowning the view.
-- **Columns** hides the frame, time or tag column when you do not want it. This is a window setting rather than a per-tab one — which columns you want is a habit, and having the layout change as you switch tabs would only surprise you.
+- **Right-click the column header** — or press the button at its right end — to choose which of frame, time and tag to show. It lives on the header because that is where anyone looks to change the column under it. A window setting rather than a per-tab one: which columns you want is a habit, and having the layout change as you switch tabs would only surprise you.
+- **Compact** hides the tag tree and every column but the message, for when you only want to read. Turning it back off restores what you had rather than some default, and touching any of those controls by hand clears it, since it would no longer describe the screen.
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 

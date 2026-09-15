@@ -4,6 +4,37 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-16
+
+### Added
+
+- **Compact** in the toolbar hides the tag tree and every column but the message. Turning it
+  back off restores what was showing rather than a default, and changing any of those controls
+  by hand clears it, since the toggle would no longer describe the screen.
+
+### Changed
+
+- Column visibility moved from a toolbar menu onto the column header: right-click the header,
+  or press the button at its right end. A heading is where anyone looks to change the column
+  under it, and it frees space on a toolbar that already fills a docked window. A **Show all**
+  item brings every column back at once.
+
+## [0.7.0] - 2026-09-16
+
+### Added
+
+- `ConsoleEntryBridge` recovers the context object Unity attached to a captured log, so a
+  warning the engine raised against an asset - a USS file naming a StyleSheet - can be pinged
+  and opened, which is what Unity's own console does and what this window could not.
+  `Application.logMessageReceived` passes no context object, so this reads Unity's own console
+  store, `UnityEditor.LogEntries`, by reflection.
+
+  Built to be wrong safely: everything is probed once with its signatures checked, and any
+  missing or renamed piece turns the bridge off for good. A Unity upgrade that moves the API
+  costs this navigation and nothing else - no log passes through it. The lookup runs when a
+  row is selected, not when a record arrives: the store takes a lock and is walked end to end,
+  which is fine once per click and absurd once per log line. Results are cached per record.
+
 ## [0.6.0] - 2026-09-16
 
 ### Added

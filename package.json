@@ -1,6 +1,6 @@
 {
   "name": "com.kensei.log",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "displayName": "Kensei Log",
   "description": "Tagged logging with separate dev and prod channels. Dev calls are stripped by the compiler in release builds. Ships an editor window with saved filter tabs, a rolling JSONL file sink for builds, and an in-game overlay for reading logs on the device.",
   "unity": "2022.3",
