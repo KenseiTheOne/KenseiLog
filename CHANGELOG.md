@@ -4,6 +4,17 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-16
+
+### Added
+
+- `Logger`, a logger bound to one tag, so a file can state its tag once rather than at every
+  call: `private static readonly Logger Log = Logger.For(Tags.Combat);`. A struct, so the
+  field costs a string reference; its `Dev` methods carry `ConditionalAttribute` just as the
+  static ones do, since the attribute applies to instance methods too. `Child` nests a tag
+  under it, and a default instance falls back to `Untagged` rather than carrying a null into
+  the window.
+
 ## [0.4.1] - 2026-09-16
 
 ### Added

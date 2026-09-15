@@ -40,6 +40,30 @@ Log.ProdError(Tags.Net, "desync at tick " + tick);
 
 Six methods, three levels across two channels: `Dev`, `DevWarning`, `DevError`, `Prod`, `ProdWarning`, `ProdError`.
 
+### One tag per file
+
+When a file always logs under the same tag, state it once:
+
+```csharp
+private static readonly Logger Log = Logger.For(Tags.Combat);
+
+Log.Dev("hit " + target.name + " for " + damage);
+Log.ProdError("desync at tick " + tick);
+```
+
+Naming the field `Log` shadows the static `Log` class inside that type, which is the point —
+every unqualified call in the file then carries the tag. Reach a different tag from the same
+file with the full `KenseiLog.Log.Dev(tag, message)`.
+
+`Logger` is a struct, so the field costs a string reference and no allocation. Its `Dev`
+methods carry `[Conditional]` exactly as the static ones do — the attribute applies to
+instance methods too — so they leave a release build with their arguments. The field
+initialiser does not: it survives as one assignment per type, which is the whole price.
+
+`Logger.For(Tags.Combat).Child("AI")` gives `Combat.AI`, nested under `Combat` in the tree.
+
+### No tag at all
+
 A tag is not required. `Log.Dev("still here")` writes under `Untagged`, which keeps the log
 you are about to delete inside the window and apart from the engine's chatter — reaching for
 `Debug.Log` instead buries it under the `Unity` tag. A branch of the tag tree filling up with

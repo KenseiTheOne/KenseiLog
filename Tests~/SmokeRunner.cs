@@ -33,6 +33,7 @@ public static class SmokeRunner {
         FileSettingsApplyAfterTheSinkExists();
         SourcePathsResolveAcrossMachines();
         TaglessOverloadsLandUnderUntagged();
+        ScopedLoggerCarriesItsTag();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -430,6 +431,35 @@ public static class SmokeRunner {
         Check("two strings still mean tag and message", scratch[1].Tag == "SmokeRunner" && scratch[1].Message == "this one is tagged");
         Check("tagless warning keeps its level", scratch[2].Tag == LogCore.UntaggedTag && scratch[2].Level == LogLevel.Warning);
         Check("tagless call still captures its call site", !string.IsNullOrEmpty(scratch[0].File) && scratch[0].Line > 0);
+    }
+
+    private static readonly Logger _scoped = Logger.For("Scoped");
+
+    private static void ScopedLoggerCarriesItsTag() {
+        EditorSink.Instance.Clear();
+
+        _scoped.Prod("from the scoped logger");
+        _scoped.Child("Child").ProdWarning("from a child logger");
+        Logger.For("Other").ProdError("from a one-off logger");
+
+        LogRecord[] scratch = new LogRecord[8];
+        int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
+
+        Check("scoped logger records arrived", copied == 3);
+        if (copied != 3) {
+            return;
+        }
+
+        Check("scoped logger carries its tag", scratch[0].Tag == "Scoped");
+        Check("child logger nests under the parent", scratch[1].Tag == "Scoped.Child");
+        Check("child keeps the level and channel", scratch[1].Level == LogLevel.Warning && scratch[1].Channel == LogChannel.Prod);
+        Check("one-off logger works", scratch[2].Tag == "Other" && scratch[2].Level == LogLevel.Error);
+        Check("scoped logger still captures the call site", !string.IsNullOrEmpty(scratch[0].File) && scratch[0].Line > 0);
+
+        // An uninitialised struct has a null tag, which would otherwise surface as a crash in
+        // the window rather than anywhere near the code that forgot to assign it.
+        Logger uninitialised = default;
+        Check("a default logger falls back to Untagged", uninitialised.Tag == LogCore.UntaggedTag);
     }
 
     // =====================================================================
