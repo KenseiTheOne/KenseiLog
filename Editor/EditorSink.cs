@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Threading;
 using UnityEditor;
+using UnityEngine;
 
 namespace KenseiLog.Editor {
     /// <summary>
@@ -58,9 +60,66 @@ namespace KenseiLog.Editor {
         [InitializeOnLoadMethod]
         private static void Install() {
             Instance = new EditorSink(EditorPrefs.GetInt(CapacityKey, DefaultCapacity));
+            SeedFromConsole();
             LogCore.AddSink(Instance);
             LogCore.Initialize();
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
+        }
+
+        /// <summary>
+        /// Fill the buffer with what the console is already holding.
+        /// <para>
+        /// This buffer is rebuilt on every domain reload, so without it the window starts
+        /// blank after each recompile and shows nothing that happened before it opened, while
+        /// the console beside it still has all of it. Seeding runs before the sink is
+        /// registered, so nothing can be recorded twice.
+        /// </para>
+        /// </summary>
+        private static void SeedFromConsole() {
+            if (!ConsoleEntryBridge.Available) {
+                return;
+            }
+
+            List<ConsoleEntryBridge.ConsoleEntry> entries = new List<ConsoleEntryBridge.ConsoleEntry>();
+            ConsoleEntryBridge.ReadAll(entries);
+
+            int first = Mathf.Max(0, entries.Count - Instance.Buffer.Capacity);
+            for (int i = first; i < entries.Count; i++) {
+                ConsoleEntryBridge.ConsoleEntry entry = entries[i];
+                SplitMessage(entry.Message, out string message, out string stackTrace);
+
+                Instance.Write(new LogRecord(
+                    LogCore.NextSequence(),
+                    LogCore.ForeignTag,
+                    message,
+                    entry.Level,
+                    LogChannel.Prod,
+                    0.0,
+                    0,
+                    entry.File,
+                    entry.Line,
+                    stackTrace,
+                    entry.InstanceId,
+                    captured: true));
+            }
+        }
+
+        /// <summary>
+        /// A console entry holds the message and its trace in one string. Splitting at the
+        /// first newline matches the shape of a record written through the facade.
+        /// </summary>
+        private static void SplitMessage(string raw, out string message, out string stackTrace) {
+            int newline = raw.IndexOf('\n');
+            if (newline < 0) {
+                message = raw;
+                stackTrace = null;
+                return;
+            }
+            message = raw.Substring(0, newline);
+            stackTrace = raw.Substring(newline + 1).Trim();
+            if (stackTrace.Length == 0) {
+                stackTrace = null;
+            }
         }
 
         private static void OnPlayModeChanged(PlayModeStateChange change) {

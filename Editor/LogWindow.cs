@@ -57,7 +57,7 @@ namespace KenseiLog.Editor {
         private ListView _listView;
         private Label _emptyHint;
         private Label _detailHeader;
-        private TextField _detailBody;
+        private Label _detailBody;
         private Button _sourceButton;
         private Button _pingButton;
         private ToolbarToggle _logToggle;
@@ -561,8 +561,13 @@ namespace KenseiLog.Editor {
             _detailHeader.AddToClassList("kl-detail-header");
             detail.Add(_detailHeader);
 
-            _detailBody = new TextField { multiline = true, isReadOnly = true };
+            // A Label, not a read-only TextField. A TextField carries the whole text editing
+            // apparatus - an edit engine, a selection model, a caret that schedules its own
+            // repaints - and an editor window pays for all of it on every frame it is focused,
+            // whether or not anything is in it. A selectable Label still copies.
+            _detailBody = new Label();
             _detailBody.AddToClassList("kl-detail-body");
+            _detailBody.selection.isSelectable = true;
             detail.Add(_detailBody);
 
             VisualElement actions = new VisualElement();
@@ -956,7 +961,7 @@ namespace KenseiLog.Editor {
             tagLabel.text = ShortTag(record.Tag);
 
             Label messageLabel = (Label)element.ElementAt(4);
-            messageLabel.text = FirstLine(record.Message);
+            messageLabel.text = Clip(FirstLine(record.Message));
             messageLabel.EnableInClassList("kl-level-warning", record.Level == LogLevel.Warning);
             messageLabel.EnableInClassList("kl-level-error", record.Level == LogLevel.Error);
 
@@ -1001,7 +1006,7 @@ namespace KenseiLog.Editor {
         private void OnSelectionChanged(IEnumerable<int> indices) {
             if (!TryGetSelectedRecord(out LogRecord record)) {
                 _detailHeader.text = string.Empty;
-                _detailBody.value = string.Empty;
+                _detailBody.text = string.Empty;
                 _sourceButton.SetEnabled(false);
                 _pingButton.SetEnabled(false);
                 return;
@@ -1018,7 +1023,7 @@ namespace KenseiLog.Editor {
             if (!string.IsNullOrEmpty(record.File)) {
                 body += "\n\n" + record.File + ":" + record.Line;
             }
-            _detailBody.value = body;
+            _detailBody.text = body;
 
             // Enabled for an asset too, not only a source file, so it matches what a
             // double-click will actually do.
@@ -1375,6 +1380,23 @@ namespace KenseiLog.Editor {
         private static string ShortTag(string tag) {
             int dot = tag.LastIndexOf('.');
             return dot < 0 ? tag : tag.Substring(dot + 1);
+        }
+
+        /// <summary>
+        /// Cut a message down before it reaches a row.
+        /// <para>
+        /// The column clips what does not fit, but clipping happens after layout: UI Toolkit
+        /// still measures and builds a mesh for every glyph handed to it. Engine warnings run
+        /// past two hundred characters while about ninety are visible, and the cost is paid on
+        /// every repaint of a focused window, for every visible row.
+        /// </para>
+        /// </summary>
+        private static string Clip(string message) {
+            const int limit = 120;
+            if (message == null || message.Length <= limit) {
+                return message;
+            }
+            return message.Substring(0, limit) + "\u2026";
         }
 
         private static string FirstLine(string message) {

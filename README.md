@@ -123,6 +123,8 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 
+The window also seeds itself from Unity's console when it loads, so it shows what the console shows: entries from before you opened it, and the ones that survived your last recompile. What it does **not** do is read everything from there instead of from the pipeline — a console entry has nowhere to hold a tag or a channel, and reading them from it would cost the two things this package exists for.
+
 The window keeps 8192 records by default. There is no settings UI for that yet; change it from an editor script of your own with `EditorSink.Instance.Capacity`, which is remembered in `EditorPrefs`.
 
 ## Logs from a build

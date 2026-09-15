@@ -45,6 +45,7 @@ namespace KenseiLog.Editor {
         private static FieldInfo _instanceIdField;
         private static FieldInfo _fileField;
         private static FieldInfo _lineField;
+        private static FieldInfo _modeField;
 
         private static Dictionary<string, Entry> _index;
         private static int _indexedCount = -1;
@@ -80,6 +81,99 @@ namespace KenseiLog.Editor {
             file = entry.File;
             line = entry.Line;
             return instanceId != 0 || !string.IsNullOrEmpty(file);
+        }
+
+        /// <summary>
+        /// Every entry the console is holding, oldest first.
+        /// <para>
+        /// Used to seed the window so it shows what the console shows, including what was
+        /// logged before it opened and what survived the last domain reload. Our own records
+        /// keep coming through the pipeline, which is the only place tags and channels exist.
+        /// </para>
+        /// </summary>
+        public static int ReadAll(List<ConsoleEntry> into) {
+            Probe();
+            if (!_available) {
+                return 0;
+            }
+
+            object entry = Activator.CreateInstance(_entryType);
+            object[] args = new object[2];
+
+            int count;
+            try {
+                count = (int)_startGettingEntries.Invoke(null, null);
+            } catch (Exception) {
+                _available = false;
+                return 0;
+            }
+
+            int read = 0;
+            try {
+                for (int row = 0; row < count; row++) {
+                    args[0] = row;
+                    args[1] = entry;
+                    if (!(bool)_getEntryInternal.Invoke(null, args)) {
+                        continue;
+                    }
+                    if (!(_messageField.GetValue(args[1]) is string message) || message.Length == 0) {
+                        continue;
+                    }
+
+                    into.Add(new ConsoleEntry(
+                        message,
+                        LevelFromMode(_modeField != null ? (int)_modeField.GetValue(args[1]) : 0),
+                        (int)_instanceIdField.GetValue(args[1]),
+                        _fileField?.GetValue(args[1]) as string,
+                        _lineField != null ? (int)_lineField.GetValue(args[1]) : 0));
+                    read++;
+                }
+            } catch (Exception) {
+                _available = false;
+                return read;
+            } finally {
+                try {
+                    _endGettingEntries.Invoke(null, null);
+                } catch (Exception) {
+                    _available = false;
+                }
+            }
+
+            return read;
+        }
+
+        /// <summary>
+        /// Unity keeps the severity as bits on the entry. The values are internal, so a
+        /// version that renumbers them costs a wrong icon on seeded rows and nothing more.
+        /// </summary>
+        private static LogLevel LevelFromMode(int mode) {
+            const int errorBits = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 6) | (1 << 8) |
+                                  (1 << 11) | (1 << 13) | (1 << 17);
+            const int warningBits = (1 << 7) | (1 << 9) | (1 << 12);
+
+            if ((mode & errorBits) != 0) {
+                return LogLevel.Error;
+            }
+            if ((mode & warningBits) != 0) {
+                return LogLevel.Warning;
+            }
+            return LogLevel.Log;
+        }
+
+        public readonly struct ConsoleEntry {
+            public readonly string Message;
+            public readonly LogLevel Level;
+            public readonly int InstanceId;
+            public readonly string File;
+            public readonly int Line;
+
+            public ConsoleEntry(string message, LogLevel level, int instanceId, string file, int line) {
+                Message = message;
+                Level = level;
+                InstanceId = instanceId;
+                File = file;
+                Line = line;
+            }
         }
 
         /// <summary>Drops the index so the next lookup reads the console again.</summary>
@@ -198,6 +292,7 @@ namespace KenseiLog.Editor {
                 // Optional: only used to offer a jump when the entry carries a location.
                 _fileField = _entryType.GetField("file", instance);
                 _lineField = _entryType.GetField("line", instance);
+                _modeField = _entryType.GetField("mode", instance);
 
                 _available = _startGettingEntries != null && _endGettingEntries != null &&
                              _getEntryInternal != null && _messageField != null && _instanceIdField != null &&

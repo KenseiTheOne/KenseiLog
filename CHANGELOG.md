@@ -4,6 +4,29 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-16
+
+### Added
+
+- The window seeds itself from Unity's console on load, so it holds what the console holds:
+  entries from before it was opened, and entries that outlived the last domain reload. The
+  buffer is rebuilt on every reload, so without this the window went blank after each
+  recompile while the console beside it kept everything.
+
+  It reads the console rather than replacing the pipeline with it. A console entry has nowhere
+  to carry a tag or a channel, so sourcing the window from it would cost both - the two things
+  the package exists for.
+
+### Changed
+
+- The detail pane is a selectable `Label` instead of a read-only `TextField`. A `TextField`
+  carries a text-editing engine, a selection model and a caret that schedules its own
+  repaints, and a focused editor window pays for that every frame whether or not there is
+  anything in it. Copying still works.
+- Row messages are cut before they reach a label. Clipping happens after layout, so a
+  two-hundred-character engine warning was measured and turned into a mesh in full to show
+  ninety characters of it, on every repaint, for every visible row.
+
 ## [0.11.0] - 2026-09-16
 
 ### Fixed

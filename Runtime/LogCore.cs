@@ -78,6 +78,14 @@ namespace KenseiLog {
             }
         }
 
+        /// <summary>
+        /// The next record id. Public so a view can build records from a source of its own -
+        /// the editor window seeds itself from Unity's console - without colliding with ours.
+        /// </summary>
+        public static long NextSequence() {
+            return Interlocked.Increment(ref _sequence);
+        }
+
         public static void Emit(in LogRecord record) {
             ILogSink[] sinks = _sinks;
             for (int i = 0; i < sinks.Length; i++) {

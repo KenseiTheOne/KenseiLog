@@ -238,6 +238,7 @@
 .kl-detail-body {
     flex-grow: 1;
     margin: 0 6px 0 6px;
+    white-space: normal;
 }
 
 .kl-detail-actions {
