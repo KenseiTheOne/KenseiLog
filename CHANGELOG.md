@@ -4,6 +4,27 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-09-16
+
+### Fixed
+
+- Icons sat on top of button labels. A `Button` paints its own text rather than holding a
+  child label, so an icon inserted beside it overlapped the words; the level toggles were fine
+  because a `Toggle` does hold one. Buttons now move their caption into a label so the two
+  lay out side by side.
+
+### Changed
+
+- The toolbar is grouped and divided: what the view is doing, what it lets through, and what
+  it does to the session. It was one undivided row of fifteen controls.
+- The tree toggle left the toolbar for an arrow on the tree's own right edge, pointing the way
+  it will move. A control called `Tree` sitting next to a `Tag` column told nobody which of
+  the two it hid.
+- `Compact` moved to the corner of the column header beside the column menu, so the two
+  controls that change the list's layout sit together and away from the filters.
+- The list no longer scrolls to the tail or rewrites the level counts on ticks where nothing
+  changed.
+
 ## [0.10.0] - 2026-09-16
 
 ### Fixed

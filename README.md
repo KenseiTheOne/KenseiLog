@@ -102,7 +102,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 ![The Logs window in the Unity editor](Documentation~/images/editor-window.jpg)
 
 - **Tabs are saved filters.** A tab remembers its tags, levels, channels, search text, collapse setting and any isolated frame. One tab is active at a time, so `Combat` and `Net` are a click apart rather than visible at once — but neither has to be rebuilt.
-- **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing. Branches fold, and stay folded across restarts; the **Tree** toggle hides it when the list needs the room.
+- **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing. Branches fold, and stay folded across restarts; the arrow on its right edge hides and shows the whole tree.
 - **Colour means two things, kept apart.** The tag colours the stripe at the left of the row — a stable hue derived from the tag's root segment, so a family shares a hue and descendants differ only in brightness. The level colours the text, following the editor theme's own warning and error colours.
 - **Search looks at the message only.** Tags are a field, so searching for `combat` never pulls in the `Combat` tag by itself.
 - **Double-click** opens what the log points at. Records written through this API carry their
@@ -119,7 +119,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 - **Right-click a row** to isolate its frame, filter by its tag, or copy the message. Isolating a frame is what you want for a bug that only happens on one.
 - **Collapse** folds repeats into one row with a counter, which keeps a stray log in `Update` from drowning the view.
 - **Right-click the column header** — or press the button at its right end — to choose which of frame, time and tag to show. It lives on the header because that is where anyone looks to change the column under it. A window setting rather than a per-tab one: which columns you want is a habit, and having the layout change as you switch tabs would only surprise you.
-- **Compact** hides the tag tree and every column but the message, for when you only want to read. It is a mode over your preferences, not a rewrite of them: it stores nothing, leaving it gives back exactly what you had, and while it is on the controls it overrides are disabled rather than silently ignored.
+- **Compact**, in the corner of the column header beside the column menu, hides the tag tree and every column but the message, for when you only want to read. It is a mode over your preferences, not a rewrite of them: it stores nothing, leaving it gives back exactly what you had, and while it is on the controls it overrides are disabled rather than silently ignored.
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 

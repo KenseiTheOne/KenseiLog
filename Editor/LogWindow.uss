@@ -337,3 +337,43 @@
     margin-right: 3px;
     -unity-background-scale-mode: scale-to-fit;
 }
+
+/* ===================== Grouping and handles ===================== */
+
+.kl-divider {
+    width: 1px;
+    flex-shrink: 0;
+    margin-left: 5px;
+    margin-right: 5px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    background-color: rgba(127, 127, 127, 0.3);
+}
+
+.kl-iconbutton {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+}
+
+.kl-treehandle {
+    width: 13px;
+    flex-shrink: 0;
+    font-size: 9px;
+    -unity-text-align: middle-center;
+    opacity: 0.5;
+    background-color: var(--unity-colors-window-background);
+    border-right-width: 1px;
+    border-right-color: rgba(0, 0, 0, 0.35);
+}
+
+.kl-treehandle:hover {
+    opacity: 1;
+    background-color: rgba(127, 127, 127, 0.2);
+}
+
+.kl-header-compact {
+    margin-left: 6px;
+    margin-right: 2px;
+    font-size: 10px;
+}

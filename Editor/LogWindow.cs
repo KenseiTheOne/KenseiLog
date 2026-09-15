@@ -35,6 +35,7 @@ namespace KenseiLog.Editor {
         private readonly List<TabView> _views = new List<TabView>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly int[] _levelCounts = new int[3];
+        private readonly int[] _renderedCounts = { -1, -1, -1 };
         private readonly HashSet<string> _foldedTags = new HashSet<string>();
         private readonly Dictionary<long, ConsoleContext> _consoleContexts = new Dictionary<long, ConsoleContext>();
 
@@ -74,7 +75,7 @@ namespace KenseiLog.Editor {
         private VisualElement _headerTime;
         private VisualElement _headerTag;
         private ToolbarToggle _compactToggle;
-        private ToolbarToggle _treeToggle;
+        private Label _treeHandle;
         private Label _headerMenuButton;
 
         private LogSession _session;
@@ -183,6 +184,18 @@ namespace KenseiLog.Editor {
             _tagPane.AddToClassList("kl-tagpane");
             body.Add(_tagPane);
 
+            // The control that hides the tree lives against the tree, pointing the way it will
+            // move. In the toolbar it was a word among fifteen others, and "Tree" next to a
+            // "Tag" column told nobody which of the two it meant.
+            _treeHandle = new Label();
+            _treeHandle.AddToClassList("kl-treehandle");
+            _treeHandle.RegisterCallback<PointerDownEvent>(_ => {
+                _showTree = !_showTree;
+                EditorPrefs.SetBool(TreeKey, _showTree);
+                ApplyTagPaneVisibility();
+            });
+            body.Add(_treeHandle);
+
             VisualElement main = new VisualElement();
             main.AddToClassList("kl-main");
             body.Add(main);
@@ -219,6 +232,8 @@ namespace KenseiLog.Editor {
             Toolbar toolbar = new Toolbar();
             toolbar.AddToClassList("kl-toolbar");
 
+            // Three groups, divided: what the view is doing, what it lets through, and what
+            // it does to the whole session. Everything used to sit in one undivided row.
             ToolbarToggle pause = new ToolbarToggle { text = "Pause", tooltip = "Stop updating the view. Recording continues." };
             pause.value = _paused;
             pause.RegisterValueChangedCallback(evt => _paused = evt.newValue);
@@ -229,16 +244,7 @@ namespace KenseiLog.Editor {
             follow.RegisterValueChangedCallback(evt => _followTail = evt.newValue);
             toolbar.Add(follow);
 
-            _searchField = new ToolbarSearchField();
-            _searchField.AddToClassList("kl-search");
-            _searchField.tooltip = "Searches the message text only. Tags are a separate field.";
-            _searchField.RegisterValueChangedCallback(evt => {
-                ActiveFilter.Search = evt.newValue;
-                RebuildActiveView();
-            });
-            toolbar.Add(_searchField);
-
-            toolbar.Add(Spacer());
+            toolbar.Add(Divider());
 
             _logToggle = FilterToggle("Log", value => ActiveFilter.ShowLog = value);
             _warningToggle = FilterToggle("Warn", value => ActiveFilter.ShowWarning = value);
@@ -252,35 +258,26 @@ namespace KenseiLog.Editor {
             toolbar.Add(_warningToggle);
             toolbar.Add(_errorToggle);
 
+            toolbar.Add(Divider());
+
             _devToggle = FilterToggle("Dev", value => ActiveFilter.ShowDev = value);
             _prodToggle = FilterToggle("Prod", value => ActiveFilter.ShowProd = value);
             toolbar.Add(_devToggle);
             toolbar.Add(_prodToggle);
 
+            toolbar.Add(Divider());
+
             _collapseToggle = FilterToggle("Collapse", value => ActiveFilter.Collapse = value);
             toolbar.Add(_collapseToggle);
 
-            // "Tree", not "Tags": there is a Tag column two controls along, and one word
-            // for both left nobody sure which this hid.
-            _treeToggle = new ToolbarToggle {
-                text = "Tree",
-                tooltip = "Show or hide the tag tree on the left."
-            };
-            _treeToggle.SetValueWithoutNotify(_showTree);
-            _treeToggle.RegisterValueChangedCallback(evt => {
-                _showTree = evt.newValue;
-                EditorPrefs.SetBool(TreeKey, _showTree);
-                ApplyTagPaneVisibility();
+            _searchField = new ToolbarSearchField();
+            _searchField.AddToClassList("kl-search");
+            _searchField.tooltip = "Searches the message text only. Tags are a separate field.";
+            _searchField.RegisterValueChangedCallback(evt => {
+                ActiveFilter.Search = evt.newValue;
+                RebuildActiveView();
             });
-            toolbar.Add(_treeToggle);
-
-            _compactToggle = new ToolbarToggle {
-                text = "Compact",
-                tooltip = "Hide the tag tree and every column but the message. Toggling back restores what you had."
-            };
-            _compactToggle.SetValueWithoutNotify(_compact);
-            _compactToggle.RegisterValueChangedCallback(evt => SetCompact(evt.newValue));
-            toolbar.Add(_compactToggle);
+            toolbar.Add(_searchField);
 
             _frameIsolationLabel = new Label();
             _frameIsolationLabel.AddToClassList("kl-frame-pill");
@@ -446,6 +443,15 @@ namespace KenseiLog.Editor {
             header.Add(HeaderCell("Message", "kl-cell-message"));
             header.Add(HeaderCell(string.Empty, "kl-cell-repeats"));
 
+            _compactToggle = new ToolbarToggle {
+                text = "Compact",
+                tooltip = "Hide the tag tree and every column but the message."
+            };
+            _compactToggle.AddToClassList("kl-header-compact");
+            _compactToggle.SetValueWithoutNotify(_compact);
+            _compactToggle.RegisterValueChangedCallback(evt => SetCompact(evt.newValue));
+            header.Add(_compactToggle);
+
             _headerMenuButton = new Label("\u22EE") {
                 tooltip = "Choose which columns to show. Right-clicking the header does the same."
             };
@@ -474,11 +480,14 @@ namespace KenseiLog.Editor {
         }
 
         private void ApplyTagPaneVisibility() {
-            _tagPane.style.display = ShowTree ? DisplayStyle.Flex : DisplayStyle.None;
-            _treeToggle.SetEnabled(!_compact);
-            _treeToggle.tooltip = _compact
-                ? "Compact is hiding the tree. Turn Compact off to choose."
-                : "Show or hide the tag tree on the left.";
+            bool shown = ShowTree;
+            _tagPane.style.display = shown ? DisplayStyle.Flex : DisplayStyle.None;
+
+            _treeHandle.text = shown ? "\u25C0" : "\u25B6";
+            _treeHandle.SetEnabled(!_compact);
+            _treeHandle.tooltip = _compact
+                ? "Compact is hiding the tree."
+                : shown ? "Hide the tag tree" : "Show the tag tree";
         }
 
         private void ApplyColumnVisibility() {
@@ -516,6 +525,21 @@ namespace KenseiLog.Editor {
             element.AddToClassList("kl-icon");
             element.style.backgroundImage = new StyleBackground(icon);
             element.pickingMode = PickingMode.Ignore;
+
+            // A Button draws its own text rather than holding a child label, so an icon
+            // inserted beside it lands on top of the words. Moving the text into a label of
+            // its own gives the two something to lay out against.
+            if (target is Button button && !string.IsNullOrEmpty(button.text)) {
+                string caption = button.text;
+                button.text = string.Empty;
+                button.AddToClassList("kl-iconbutton");
+                button.Add(element);
+                Label label = new Label(caption);
+                label.pickingMode = PickingMode.Ignore;
+                button.Add(label);
+                return;
+            }
+
             target.Insert(0, element);
         }
 
@@ -562,6 +586,12 @@ namespace KenseiLog.Editor {
             VisualElement spacer = new VisualElement();
             spacer.AddToClassList("kl-spacer");
             return spacer;
+        }
+
+        private static VisualElement Divider() {
+            VisualElement divider = new VisualElement();
+            divider.AddToClassList("kl-divider");
+            return divider;
         }
 
         // =====================================================================
@@ -1254,7 +1284,8 @@ namespace KenseiLog.Editor {
             // Rebinding every visible row fifteen times a second costs the same whether or not
             // the tab gained anything, and most ticks it gains nothing.
             int count = ActiveView.Sequences.Count;
-            if (count != _lastRenderedCount) {
+            int previousCount = _lastRenderedCount;
+            if (count != previousCount) {
                 _lastRenderedCount = count;
                 _listView.RefreshItems();
             }
@@ -1263,15 +1294,26 @@ namespace KenseiLog.Editor {
             _emptyHint.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
             if (empty) {
                 _emptyHint.text = EmptyHint();
-            } else if (_followTail && !_paused) {
+            } else if (_followTail && !_paused && count != previousCount) {
                 _listView.ScrollToItem(-1);
             }
         }
 
         private void RefreshLevelCounts() {
-            _logToggle.text = "Log " + _levelCounts[(int)LogLevel.Log];
-            _warningToggle.text = "Warn " + _levelCounts[(int)LogLevel.Warning];
-            _errorToggle.text = "Error " + _levelCounts[(int)LogLevel.Error];
+            // Writing the same three captions back every tick builds three strings and dirties
+            // the toolbar for nothing; most ticks change at most one of the counts.
+            SetCount(_logToggle, LogLevel.Log, "Log ");
+            SetCount(_warningToggle, LogLevel.Warning, "Warn ");
+            SetCount(_errorToggle, LogLevel.Error, "Error ");
+        }
+
+        private void SetCount(ToolbarToggle toggle, LogLevel level, string caption) {
+            int count = _levelCounts[(int)level];
+            if (_renderedCounts[(int)level] == count) {
+                return;
+            }
+            _renderedCounts[(int)level] = count;
+            toggle.text = caption + count.ToString(CultureInfo.InvariantCulture);
         }
 
         private void SyncToolbarToFilter() {
