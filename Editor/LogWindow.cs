@@ -58,6 +58,9 @@ namespace KenseiLog.Editor {
         private ToolbarButton _clearButton;
         private VisualElement _sessionBar;
         private Label _sessionLabel;
+        private VisualElement _headerFrame;
+        private VisualElement _headerTime;
+        private VisualElement _headerTag;
 
         private LogSession _session;
 
@@ -107,6 +110,7 @@ namespace KenseiLog.Editor {
 
             RefreshTabBar();
             RefreshSessionBar();
+            ApplyColumnVisibility();
             SyncToolbarToFilter();
             Ingest(force: true);
         }
@@ -150,6 +154,8 @@ namespace KenseiLog.Editor {
             body.Add(main);
 
             main.Add(BuildToolbar());
+
+            main.Add(BuildColumnHeader());
 
             VisualElement listArea = new VisualElement();
             listArea.AddToClassList("kl-listarea");
@@ -323,11 +329,57 @@ namespace KenseiLog.Editor {
                     bool value = !read();
                     write(value);
                     EditorPrefs.SetBool(key, value);
-                    // Rebuild rather than refresh: display is set while binding, and recycled
-                    // rows keep whatever the last bind gave them until they are bound again.
-                    _listView.Rebuild();
+                    ApplyColumnVisibility();
                 },
                 _ => read() ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
+        }
+
+        /// <summary>
+        /// A fixed header above the list. Its cells carry the same classes as a row's, so the
+        /// two cannot drift apart: change a column width in the stylesheet and both follow.
+        /// </summary>
+        private VisualElement BuildColumnHeader() {
+            VisualElement header = new VisualElement();
+            header.AddToClassList("kl-header");
+
+            // Stands in for the row's tag stripe so the columns line up under it.
+            VisualElement stripeSpacer = new VisualElement();
+            stripeSpacer.AddToClassList("kl-strip");
+            header.Add(stripeSpacer);
+
+            _headerFrame = HeaderCell("Frame", "kl-cell-frame");
+            _headerTime = HeaderCell("Time", "kl-cell-time");
+            _headerTag = HeaderCell("Tag", "kl-cell-tag");
+            header.Add(_headerFrame);
+            header.Add(_headerTime);
+            header.Add(_headerTag);
+            header.Add(HeaderCell("Message", "kl-cell-message"));
+            header.Add(HeaderCell(string.Empty, "kl-cell-repeats"));
+
+            // The list reserves room for its vertical scroller; without the same gap here the
+            // last column would sit a few pixels right of the values under it.
+            VisualElement scrollerSpacer = new VisualElement();
+            scrollerSpacer.AddToClassList("kl-header-scroller-gap");
+            header.Add(scrollerSpacer);
+
+            return header;
+        }
+
+        private static Label HeaderCell(string text, string cellClass) {
+            Label label = new Label(text);
+            label.AddToClassList(cellClass);
+            label.AddToClassList("kl-header-cell");
+            return label;
+        }
+
+        private void ApplyColumnVisibility() {
+            _headerFrame.style.display = _showFrame ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerTime.style.display = _showTime ? DisplayStyle.Flex : DisplayStyle.None;
+            _headerTag.style.display = _showTag ? DisplayStyle.Flex : DisplayStyle.None;
+
+            // Rebuild rather than refresh: a row's visibility is set while binding, and
+            // recycled rows keep whatever the last bind gave them until bound again.
+            _listView.Rebuild();
         }
 
         private ToolbarToggle FilterToggle(string label, Action<bool> apply) {

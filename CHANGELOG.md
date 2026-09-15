@@ -4,6 +4,14 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-09-16
+
+### Added
+
+- A fixed header above the list names the columns. Its cells carry the same classes as a
+  row's, so a width change in the stylesheet moves both and they cannot drift apart. Hiding a
+  column through the **Columns** menu hides its heading with it.
+
 ## [0.5.1] - 2026-09-16
 
 ### Fixed

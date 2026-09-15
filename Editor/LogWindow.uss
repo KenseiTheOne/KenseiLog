@@ -272,3 +272,27 @@
 .kl-session-live {
     margin: 1px 0 1px 6px;
 }
+
+/* ===================== Column header ===================== */
+
+.kl-header {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    height: 19px;
+    background-color: var(--unity-colors-toolbar-background);
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(0, 0, 0, 0.35);
+}
+
+.kl-header-cell {
+    font-size: 10px;
+    -unity-font-style: bold;
+    opacity: 0.55;
+}
+
+/* Matches the width the list keeps for its vertical scroller. */
+.kl-header-scroller-gap {
+    width: 13px;
+    flex-shrink: 0;
+}
