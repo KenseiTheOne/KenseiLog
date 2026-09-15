@@ -31,6 +31,7 @@ public static class SmokeRunner {
         MemorySinkStoresAndVersions();
         TagColoursAreStableAndDistinct();
         FileSettingsApplyAfterTheSinkExists();
+        SourcePathsResolveAcrossMachines();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -368,6 +369,40 @@ public static class SmokeRunner {
         Check("dev record is written once the option is turned on later", sawAfter);
 
         sink.Dispose();
+    }
+
+    /// <summary>
+    /// CallerFilePath records the path of the machine that compiled the code. Matching it only
+    /// against this project's root meant a session file from someone else's build could never
+    /// open its source, and the failure was silent.
+    /// </summary>
+    private static void SourcePathsResolveAcrossMachines() {
+        const string root = "D:/Work/MyGame";
+
+        Check("path under this project resolves",
+            LogWindow.TryResolveAssetPath("D:/Work/MyGame/Assets/Scripts/Player.cs", root, out string a) &&
+            a == "Assets/Scripts/Player.cs");
+
+        Check("windows separators are handled",
+            LogWindow.TryResolveAssetPath(@"D:\Work\MyGame\Assets\Scripts\Player.cs", root, out string b) &&
+            b == "Assets/Scripts/Player.cs");
+
+        Check("path from another machine resolves by its Assets segment",
+            LogWindow.TryResolveAssetPath("/Users/someone/Projects/MyGame/Assets/Scripts/Player.cs", root, out string c) &&
+            c == "Assets/Scripts/Player.cs");
+
+        Check("path from a package resolves",
+            LogWindow.TryResolveAssetPath("/Users/someone/MyGame/Packages/com.kensei.log/Runtime/Log.cs", root, out string d) &&
+            d == "Packages/com.kensei.log/Runtime/Log.cs");
+
+        Check("an already relative path is kept",
+            LogWindow.TryResolveAssetPath("Assets/Scripts/Player.cs", root, out string e) &&
+            e == "Assets/Scripts/Player.cs");
+
+        Check("a path with nothing to anchor on is refused",
+            !LogWindow.TryResolveAssetPath("/tmp/scratch/Thing.cs", root, out _));
+
+        Check("an empty path is refused", !LogWindow.TryResolveAssetPath(null, root, out _));
     }
 
     // =====================================================================

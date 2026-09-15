@@ -768,19 +768,66 @@ namespace KenseiLog.Editor {
         /// to the project root. Anything outside the project - a package referenced by path,
         /// for instance - falls back to opening in the external editor.
         /// </summary>
-        private static void OpenSource(string file, int line) {
+        private void OpenSource(string file, int line) {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName.Replace('\\', '/');
-            string normalized = file.Replace('\\', '/');
 
-            if (normalized.StartsWith(projectRoot + "/", StringComparison.OrdinalIgnoreCase)) {
-                string relative = normalized.Substring(projectRoot.Length + 1);
+            if (TryResolveAssetPath(file, projectRoot, out string relative)) {
                 UnityEngine.Object asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(relative);
                 if (asset != null) {
                     AssetDatabase.OpenAsset(asset, line);
                     return;
                 }
             }
-            InternalEditorUtility.OpenFileAtLineExternal(file, line);
+
+            string normalized = file.Replace('\\', '/');
+            if (File.Exists(normalized)) {
+                InternalEditorUtility.OpenFileAtLineExternal(normalized, line);
+                return;
+            }
+
+            // Doing nothing would be the worst answer: the row plainly shows a file and a line,
+            // so the only readings left are "the window is broken" or "the line is a lie".
+            ShowNotification(new GUIContent("Cannot find " + Path.GetFileName(normalized)));
+        }
+
+        /// <summary>
+        /// Turn a recorded source path into one this project can open.
+        /// <para>
+        /// The path was captured wherever the code was compiled, which is not necessarily this
+        /// machine - a session file from someone else's build carries their directories, and
+        /// their drive letter or home folder means nothing here. Everything from the last
+        /// <c>Assets/</c> or <c>Packages/</c> segment onwards still addresses the same file.
+        /// </para>
+        /// </summary>
+        public static bool TryResolveAssetPath(string recordedPath, string projectRoot, out string relative) {
+            relative = null;
+            if (string.IsNullOrEmpty(recordedPath)) {
+                return false;
+            }
+
+            string normalized = recordedPath.Replace('\\', '/');
+            if (!string.IsNullOrEmpty(projectRoot)) {
+                string root = projectRoot.Replace('\\', '/').TrimEnd('/');
+                if (normalized.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase)) {
+                    relative = normalized.Substring(root.Length + 1);
+                    return true;
+                }
+            }
+
+            int cut = Mathf.Max(
+                normalized.LastIndexOf("/Assets/", StringComparison.OrdinalIgnoreCase),
+                normalized.LastIndexOf("/Packages/", StringComparison.OrdinalIgnoreCase));
+            if (cut >= 0) {
+                relative = normalized.Substring(cut + 1);
+                return true;
+            }
+
+            if (normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) ||
+                normalized.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase)) {
+                relative = normalized;
+                return true;
+            }
+            return false;
         }
 
         // =====================================================================

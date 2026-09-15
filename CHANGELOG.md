@@ -4,6 +4,19 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-09-16
+
+### Fixed
+
+- Jumping to the source of a record logged on another machine did nothing at all. The
+  recorded path comes from `CallerFilePath`, which captures wherever the code was compiled,
+  and it was only ever matched against this project's root - so a session file from someone
+  else's build, or a path with a different drive letter or home folder, fell through to an
+  external open of a path that does not exist here. The path is now anchored on its last
+  `Assets/` or `Packages/` segment, which addresses the same file in any project.
+- When the source still cannot be found, the window says so instead of doing nothing. The row
+  shows a file and a line, so silence reads as either a broken window or a lying line number.
+
 ## [0.3.7] - 2026-09-15
 
 ### Fixed
