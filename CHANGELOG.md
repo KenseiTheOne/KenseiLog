@@ -4,6 +4,28 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-16
+
+### Fixed
+
+- Moving the cursor over the list froze the editor on Windows, flickering both displays as
+  something opened and closed. Every row carried a tooltip with its full tag, and a tooltip in
+  UI Toolkit is a real operating-system window: crossing rows created and destroyed one per
+  row, which on Windows stalls the compositor across every display. macOS shows no symptom,
+  which is why this looked like a Windows-only mystery. Rows and tag-tree entries no longer
+  carry tooltips; the full tag is in the detail pane when a row is selected.
+- Double-click had nothing to open for a log the engine raised against an asset, because it
+  only ever looked for source. It now opens the asset, matching Unity's console, and the
+  button says `Open` rather than `Open source` since it is no longer only about source.
+- The list stopped rebinding every visible row fifteen times a second when the tab had gained
+  nothing, which it usually has not.
+
+### Added
+
+- The editor's own icons on the level toggles, Clear, Open file, Open and Ping. A missing icon
+  name is ignored, since those move between Unity versions and the labels already carry the
+  meaning.
+
 ## [0.9.0] - 2026-09-16
 
 ### Fixed

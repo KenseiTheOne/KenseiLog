@@ -105,9 +105,11 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 - **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing. Branches fold, and stay folded across restarts; the **Tree** toggle hides it when the list needs the room.
 - **Colour means two things, kept apart.** The tag colours the stripe at the left of the row — a stable hue derived from the tag's root segment, so a family shares a hue and descendants differ only in brightness. The level colours the text, following the editor theme's own warning and error colours.
 - **Search looks at the message only.** Tags are a field, so searching for `combat` never pulls in the `Combat` tag by itself.
-- **Double-click** opens the source at the exact line. Records written through this API carry
-  their call site from the compiler; captured ones carry none, so the first project frame in
-  their stack trace is used instead — the same thing Unity's own console navigates by.
+- **Double-click** opens what the log points at. Records written through this API carry their
+  call site from the compiler; captured ones carry none, so the first project frame in their
+  stack trace is used instead. When a log has no source at all because the engine raised it
+  against an asset — a USS warning naming a StyleSheet — the asset opens, which is what
+  Unity's own console does.
 - **Ping** highlights the related object. Logs the engine raised against an asset rather than
   a script — a USS warning naming a StyleSheet — reach it too: the capture callback passes no
   context object, so the window asks Unity's own console store for it. That store is internal,

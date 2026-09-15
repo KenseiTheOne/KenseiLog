@@ -327,3 +327,13 @@
     opacity: 1;
     background-color: rgba(127, 127, 127, 0.25);
 }
+
+/* ===================== Icons ===================== */
+
+.kl-icon {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    margin-right: 3px;
+    -unity-background-scale-mode: scale-to-fit;
+}

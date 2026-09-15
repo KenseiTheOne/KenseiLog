@@ -49,6 +49,7 @@ namespace KenseiLog.Editor {
         private bool _showTag = true;
         private bool _showTree = true;
         private bool _compact;
+        private int _lastRenderedCount = -1;
 
         private VisualElement _tabBar;
         private ScrollView _tagPane;
@@ -242,6 +243,11 @@ namespace KenseiLog.Editor {
             _logToggle = FilterToggle("Log", value => ActiveFilter.ShowLog = value);
             _warningToggle = FilterToggle("Warn", value => ActiveFilter.ShowWarning = value);
             _errorToggle = FilterToggle("Error", value => ActiveFilter.ShowError = value);
+
+            // The console's own three, so the severity reads before the word does.
+            AddIcon(_logToggle, "console.infoicon.sml");
+            AddIcon(_warningToggle, "console.warnicon.sml");
+            AddIcon(_errorToggle, "console.erroricon.sml");
             toolbar.Add(_logToggle);
             toolbar.Add(_warningToggle);
             toolbar.Add(_errorToggle);
@@ -292,12 +298,14 @@ namespace KenseiLog.Editor {
                 text = "Open file",
                 tooltip = "Open a log file written by a build and browse it like a live run."
             };
+            AddIcon(openFile, "Project");
             toolbar.Add(openFile);
 
             _clearButton = new ToolbarButton(() => {
                 EditorSink.Instance.Clear();
                 ResetIngest();
             }) { text = "Clear" };
+            AddIcon(_clearButton, "TreeEditor.Trash");
             toolbar.Add(_clearButton);
 
             ToolbarToggle clearOnPlay = new ToolbarToggle { text = "Clear on Play" };
@@ -481,7 +489,34 @@ namespace KenseiLog.Editor {
 
             // Rebuild rather than refresh: a row's visibility is set while binding, and
             // recycled rows keep whatever the last bind gave them until bound again.
+            _lastRenderedCount = -1;
             _listView.Rebuild();
+        }
+
+        /// <summary>
+        /// Put one of the editor's own icons on a control.
+        /// <para>
+        /// Icon names move between Unity versions and skins, so a miss is silent and leaves
+        /// the control with its text - the label already says what the button does, and the
+        /// icon only makes it quicker to find.
+        /// </para>
+        /// </summary>
+        private static void AddIcon(VisualElement target, string iconName) {
+            Texture2D icon = null;
+            try {
+                icon = EditorGUIUtility.IconContent(iconName)?.image as Texture2D;
+            } catch (Exception) {
+                return;
+            }
+            if (icon == null) {
+                return;
+            }
+
+            VisualElement element = new VisualElement();
+            element.AddToClassList("kl-icon");
+            element.style.backgroundImage = new StyleBackground(icon);
+            element.pickingMode = PickingMode.Ignore;
+            target.Insert(0, element);
         }
 
         private ToolbarToggle FilterToggle(string label, Action<bool> apply) {
@@ -510,8 +545,13 @@ namespace KenseiLog.Editor {
             actions.AddToClassList("kl-detail-actions");
             detail.Add(actions);
 
-            _sourceButton = new Button(OpenSelectedSource) { text = "Open source" };
+            _sourceButton = new Button(OpenSelectedSource) {
+                text = "Open",
+                tooltip = "Open the call site, or the asset the log was raised against."
+            };
             _pingButton = new Button(PingSelectedContext) { text = "Ping" };
+            AddIcon(_sourceButton, "ScriptableObject Icon");
+            AddIcon(_pingButton, "d_Search Icon");
             actions.Add(_sourceButton);
             actions.Add(_pingButton);
 
@@ -623,6 +663,7 @@ namespace KenseiLog.Editor {
         }
 
         private void RebuildView(TabView view) {
+            _lastRenderedCount = -1;
             view.Clear();
             LogRingBuffer buffer = Source;
             int copied = buffer.CopyNewerThan(0, _scratch);
@@ -786,7 +827,6 @@ namespace KenseiLog.Editor {
 
             Label label = new Label(node.Segment);
             label.AddToClassList("kl-tagname");
-            label.tooltip = node.FullTag;
             row.Add(label);
 
             Label count = new Label(node.Count.ToString(CultureInfo.InvariantCulture));
@@ -884,7 +924,6 @@ namespace KenseiLog.Editor {
 
             Label tagLabel = (Label)element.ElementAt(3);
             tagLabel.text = ShortTag(record.Tag);
-            tagLabel.tooltip = record.Tag;
 
             Label messageLabel = (Label)element.ElementAt(4);
             messageLabel.text = FirstLine(record.Message);
@@ -951,7 +990,9 @@ namespace KenseiLog.Editor {
             }
             _detailBody.value = body;
 
-            _sourceButton.SetEnabled(TryGetSourceLocation(in record, out _, out _));
+            // Enabled for an asset too, not only a source file, so it matches what a
+            // double-click will actually do.
+            _sourceButton.SetEnabled(TryGetSourceLocation(in record, out _, out _) || ResolveContextId(in record) != 0);
 
             int contextId = ResolveContextId(in record);
 
@@ -982,7 +1023,24 @@ namespace KenseiLog.Editor {
             }
             if (TryGetSourceLocation(in record, out string file, out int line)) {
                 OpenSource(file, line);
+                return;
             }
+
+            // No source to go to. Unity's console opens the asset the engine logged against -
+            // the StyleSheet named in a USS warning - so follow it there instead of stopping
+            // at "this record has no file".
+            int contextId = ResolveContextId(in record);
+            if (contextId != 0) {
+                if (AssetDatabase.OpenAsset(contextId)) {
+                    return;
+                }
+                UnityEngine.Object target = EditorUtility.InstanceIDToObject(contextId);
+                if (target != null) {
+                    EditorGUIUtility.PingObject(target);
+                    return;
+                }
+            }
+            ShowNotification(new GUIContent("Nothing to open for this record"));
         }
 
         /// <summary>
@@ -1192,7 +1250,14 @@ namespace KenseiLog.Editor {
 
         private void RefreshList() {
             _listView.itemsSource = ActiveView.Sequences;
-            _listView.RefreshItems();
+
+            // Rebinding every visible row fifteen times a second costs the same whether or not
+            // the tab gained anything, and most ticks it gains nothing.
+            int count = ActiveView.Sequences.Count;
+            if (count != _lastRenderedCount) {
+                _lastRenderedCount = count;
+                _listView.RefreshItems();
+            }
 
             bool empty = ActiveView.Sequences.Count == 0;
             _emptyHint.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
