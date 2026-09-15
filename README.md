@@ -94,8 +94,33 @@ private static void SetUpLogging() {
 | `CaptureStackTraceOnError` | `true` | Unwind a stack trace for `Error` records |
 | `MirrorToUnityConsole` | `false` | Also write each record through `Debug.Log` |
 | `CaptureForeignLogs` | `true` | Fold logs from outside this API into the pipeline |
+| `WriteToFile` | `true` | Write a rolling JSONL file under `persistentDataPath/logs` |
+| `FileSizeLimitKb` | `5120` | Rotate the current file once it passes this size |
+| `RetainedFileCount` | `3` | How many rotated files to keep |
+| `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once |
+| `FileIncludesDevChannel` | `false` | Also write dev records to the file |
 
 How many records the window keeps is an editor setting, not a build one, and lives in `EditorPrefs`.
+
+## Logs from a build
+
+A shipped build has no console, so the prod channel goes to disk:
+
+```
+<persistentDataPath>/logs/current.jsonl    the running session
+<persistentDataPath>/logs/log.1.jsonl      the previous one
+<persistentDataPath>/logs/log.2.jsonl      ...
+```
+
+Every run starts a new file and pushes the old ones down, so a report is never a blend of two sessions. Each file opens with a header line naming the app version, Unity version, platform, device model and start time — the answer to "reproduced on what?", which is always the first question.
+
+Lines are buffered, but an **error flushes immediately**, as does the app being paused. On mobile that pause is the last signal you get before the process is killed, and it is usually the one that matters.
+
+In the editor the file sink only runs during play mode. Otherwise every script recompile would start a new session and push the real history out within a few reloads.
+
+To read a file back: **Window → Kensei → Logs → Open file**. It loads into the same window with the same tabs, tags and filters as a live run, including files that are still being written.
+
+Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — flip `FileIncludesDevChannel` if you want them.
 
 ## Writing your own sink
 
@@ -110,10 +135,6 @@ LogCore.AddSink(new MySink());
 ## Requirements
 
 Unity 2022.3 or newer. No third-party dependencies.
-
-## Not here yet
-
-A rolling JSONL file sink for shipped builds, and opening such a file back in the window as a session. The record model and the pipeline were built with it in mind.
 
 ## License
 

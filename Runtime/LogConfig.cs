@@ -25,11 +25,39 @@ namespace KenseiLog {
         /// </summary>
         public bool CaptureForeignLogs;
 
+        /// <summary>
+        /// Write records to a rolling JSONL file under persistentDataPath/logs. This is the
+        /// only diagnostics a shipped build has, so it is on by default.
+        /// </summary>
+        public bool WriteToFile;
+
+        /// <summary>Rotate the current file once it passes this size.</summary>
+        public int FileSizeLimitKb;
+
+        /// <summary>How many rotated files to keep alongside the current one.</summary>
+        public int RetainedFileCount;
+
+        /// <summary>
+        /// How long buffered lines may sit unwritten. Errors bypass this and flush at once.
+        /// </summary>
+        public float FileFlushIntervalSeconds;
+
+        /// <summary>
+        /// Also write dev records to the file. Off by default: in a release build there are no
+        /// dev records at all, and in the editor they would bury the prod events worth keeping.
+        /// </summary>
+        public bool FileIncludesDevChannel;
+
         public static LogConfig Default() {
             return new LogConfig {
                 CaptureStackTraceOnError = true,
                 MirrorToUnityConsole = false,
-                CaptureForeignLogs = true
+                CaptureForeignLogs = true,
+                WriteToFile = true,
+                FileSizeLimitKb = 5 * 1024,
+                RetainedFileCount = 3,
+                FileFlushIntervalSeconds = 5f,
+                FileIncludesDevChannel = false
             };
         }
     }

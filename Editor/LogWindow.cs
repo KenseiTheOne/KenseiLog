@@ -48,10 +48,18 @@ namespace KenseiLog.Editor {
         private ToolbarToggle _collapseToggle;
         private ToolbarSearchField _searchField;
         private Label _frameIsolationLabel;
+        private ToolbarButton _clearButton;
+        private VisualElement _sessionBar;
+        private Label _sessionLabel;
+
+        private LogSession _session;
 
         private TabFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
 
         private TabView ActiveView => _views[Mathf.Clamp(_activeTab, 0, _views.Count - 1)];
+
+        /// <summary>Live records, or the ones loaded from a session file.</summary>
+        private LogRingBuffer Source => _session != null ? _session.Buffer : EditorSink.Instance.Buffer;
 
         [MenuItem("Window/Kensei/Logs")]
         private static void Open() {
@@ -73,7 +81,7 @@ namespace KenseiLog.Editor {
             if (_filters.Count == 0) {
                 _filters.Add(new TabFilter { Name = "All" });
             }
-            _scratch = new LogRecord[EditorSink.Instance.Buffer.Capacity];
+            _scratch = new LogRecord[Source.Capacity];
             RebuildViews();
 
             StyleSheet sheet = LoadStyleSheet();
@@ -83,11 +91,28 @@ namespace KenseiLog.Editor {
             rootVisualElement.AddToClassList("kl-root");
 
             BuildTabBar();
+            BuildSessionBar();
             BuildBody();
 
             RefreshTabBar();
+            RefreshSessionBar();
             SyncToolbarToFilter();
             Ingest(force: true);
+        }
+
+        private void BuildSessionBar() {
+            _sessionBar = new VisualElement();
+            _sessionBar.AddToClassList("kl-sessionbar");
+
+            _sessionLabel = new Label();
+            _sessionLabel.AddToClassList("kl-session-label");
+            _sessionBar.Add(_sessionLabel);
+
+            Button live = new Button(GoLive) { text = "Back to live" };
+            live.AddToClassList("kl-session-live");
+            _sessionBar.Add(live);
+
+            rootVisualElement.Add(_sessionBar);
         }
 
         // =====================================================================
@@ -191,11 +216,17 @@ namespace KenseiLog.Editor {
 
             toolbar.Add(Spacer());
 
-            ToolbarButton clear = new ToolbarButton(() => {
+            ToolbarButton openFile = new ToolbarButton(OpenSessionFile) {
+                text = "Open file",
+                tooltip = "Open a log file written by a build and browse it like a live run."
+            };
+            toolbar.Add(openFile);
+
+            _clearButton = new ToolbarButton(() => {
                 EditorSink.Instance.Clear();
                 ResetIngest();
             }) { text = "Clear" };
-            toolbar.Add(clear);
+            toolbar.Add(_clearButton);
 
             ToolbarToggle clearOnPlay = new ToolbarToggle { text = "Clear on Play" };
             clearOnPlay.value = EditorSink.ClearOnPlay;
@@ -203,6 +234,53 @@ namespace KenseiLog.Editor {
             toolbar.Add(clearOnPlay);
 
             return toolbar;
+        }
+
+        // =====================================================================
+        // Session files
+        // =====================================================================
+
+        private void OpenSessionFile() {
+            string startIn = LogCore.File != null ? LogCore.File.LogDirectory : Application.persistentDataPath;
+            string path = EditorUtility.OpenFilePanel("Open log session", startIn, "jsonl");
+            if (string.IsNullOrEmpty(path)) {
+                return;
+            }
+
+            if (!LogSessionReader.TryRead(path, out LogSession session, out string error)) {
+                EditorUtility.DisplayDialog("Kensei Log", "Could not read this file.\n\n" + error, "OK");
+                return;
+            }
+
+            _session = session;
+            OnSourceChanged();
+        }
+
+        private void GoLive() {
+            if (_session == null) {
+                return;
+            }
+            _session = null;
+            OnSourceChanged();
+        }
+
+        private void OnSourceChanged() {
+            _scratch = new LogRecord[Mathf.Max(64, Source.Capacity)];
+            ResetIngest();
+            RefreshSessionBar();
+            Ingest(force: true);
+        }
+
+        private void RefreshSessionBar() {
+            bool viewingFile = _session != null;
+            _sessionBar.style.display = viewingFile ? DisplayStyle.Flex : DisplayStyle.None;
+            _clearButton.SetEnabled(!viewingFile);
+
+            if (!viewingFile) {
+                return;
+            }
+            _sessionLabel.text = _session.Describe() +
+                                 (_session.SkippedLines > 0 ? "   (" + _session.SkippedLines + " unreadable lines skipped)" : string.Empty);
         }
 
         private ToolbarToggle FilterToggle(string label, Action<bool> apply) {
@@ -250,7 +328,8 @@ namespace KenseiLog.Editor {
         // =====================================================================
 
         private void OnEditorUpdate() {
-            if (_listView == null || EditorSink.Instance == null) {
+            // A loaded file never changes, so there is nothing to poll for.
+            if (_listView == null || _session != null || EditorSink.Instance == null) {
                 return;
             }
             int version = EditorSink.Instance.Version;
@@ -271,7 +350,7 @@ namespace KenseiLog.Editor {
                 return;
             }
 
-            LogRingBuffer buffer = EditorSink.Instance.Buffer;
+            LogRingBuffer buffer = Source;
 
             // A cleared or resized buffer restarts below our watermark; start over rather than
             // waiting for the sequence counter to catch up.
@@ -343,7 +422,7 @@ namespace KenseiLog.Editor {
 
         private void RebuildView(TabView view) {
             view.Clear();
-            LogRingBuffer buffer = EditorSink.Instance.Buffer;
+            LogRingBuffer buffer = Source;
             int copied = buffer.CopyNewerThan(0, _scratch);
             for (int i = 0; i < copied; i++) {
                 view.Append(in _scratch[i]);
@@ -532,7 +611,7 @@ namespace KenseiLog.Editor {
             }
             element.userData = index;
 
-            if (!EditorSink.Instance.Buffer.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
+            if (!Source.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
                 ((Label)element.ElementAt(1)).text = string.Empty;
                 ((Label)element.ElementAt(2)).text = string.Empty;
                 ((Label)element.ElementAt(3)).text = string.Empty;
@@ -567,7 +646,7 @@ namespace KenseiLog.Editor {
             if (index >= view.Sequences.Count) {
                 return;
             }
-            if (!EditorSink.Instance.Buffer.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
+            if (!Source.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
                 return;
             }
 
@@ -624,7 +703,7 @@ namespace KenseiLog.Editor {
             if (index < 0 || index >= view.Sequences.Count) {
                 return false;
             }
-            return EditorSink.Instance.Buffer.TryGetBySequence(view.Sequences[index], out record);
+            return Source.TryGetBySequence(view.Sequences[index], out record);
         }
 
         private void OpenSelectedSource() {

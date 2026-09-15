@@ -4,6 +4,36 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-15
+
+### Added
+
+- `FileSink`: rolling JSONL files under `persistentDataPath/logs`. Each run starts a new file
+  and pushes the previous ones down, so a report is never a blend of two sessions. Every file
+  opens with a header naming app version, Unity version, platform, device and start time.
+- Errors flush to disk immediately, and so does an app being paused - on mobile that is the
+  last signal before the process is killed.
+- `IFlushableSink` and `LogCore.FlushSinks`, driven by `LogLifecycleHooks` for the pause and
+  quit callbacks that have no static equivalent.
+- **Open file** in the log window loads a build's log as a session, with the same tabs, tags
+  and filters as a live run - including a file the running app still has open.
+- `LogJson` writes records by hand in invariant culture; a decimal-comma locale would
+  otherwise produce lines that are not valid JSON.
+
+### Changed
+
+- `LogRingBuffer` looks records up by binary search instead of arithmetic on the oldest
+  sequence. Sequences are only guaranteed to rise, not to be contiguous: the file sink skips
+  the dev channel, so a loaded session has gaps where the old lookup silently missed.
+- In the editor the file sink only runs during play mode. Otherwise every script recompile
+  would start a session and rotate the real history away within a few reloads.
+
+### Fixed
+
+- Reading a log file that was still being written failed with a sharing violation. The reader
+  now opens with `FileShare.ReadWrite` and streams the file instead of slurping it, so a torn
+  last line is counted and skipped rather than failing the whole read.
+
 ## [0.1.1] - 2026-09-15
 
 ### Fixed

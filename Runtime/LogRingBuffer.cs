@@ -63,16 +63,12 @@ namespace KenseiLog {
 
         public bool TryGetBySequence(long sequence, out LogRecord record) {
             lock (_lock) {
-                if (_count == 0) {
+                int index = Find(sequence);
+                if (index < 0) {
                     record = default;
                     return false;
                 }
-                long offset = sequence - _records[_head].Sequence;
-                if (offset < 0 || offset >= _count) {
-                    record = default;
-                    return false;
-                }
-                record = _records[(_head + (int)offset) % _records.Length];
+                record = At(index);
                 return true;
             }
         }
@@ -88,18 +84,45 @@ namespace KenseiLog {
                 if (_count == 0) {
                     return 0;
                 }
-                long oldest = _records[_head].Sequence;
-                long firstWanted = sequence + 1;
-                int start = firstWanted <= oldest ? 0 : (int)(firstWanted - oldest);
+                int found = Find(sequence + 1);
+                int start = found < 0 ? ~found : found;
                 if (start >= _count) {
                     return 0;
                 }
                 int written = Math.Min(_count - start, destination.Length);
                 for (int i = 0; i < written; i++) {
-                    destination[i] = _records[(_head + start + i) % _records.Length];
+                    destination[i] = At(start + i);
                 }
                 return written;
             }
         }
+
+        /// <summary>
+        /// Logical index of the record with this sequence, or the bitwise complement of where
+        /// it would go. Binary search rather than arithmetic on the oldest sequence, because
+        /// sequences are only guaranteed to rise, not to be contiguous: a file sink that skips
+        /// the dev channel produces gaps, and a session loaded from such a file has them too.
+        /// Caller holds the lock.
+        /// </summary>
+        private int Find(long sequence) {
+            int low = 0;
+            int high = _count - 1;
+            while (low <= high) {
+                int mid = low + ((high - low) >> 1);
+                long midSequence = At(mid).Sequence;
+                if (midSequence == sequence) {
+                    return mid;
+                }
+                if (midSequence < sequence) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            return ~low;
+        }
+
+        private LogRecord At(int logicalIndex) =>
+            _records[(_head + logicalIndex) % _records.Length];
     }
 }

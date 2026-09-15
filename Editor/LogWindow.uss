@@ -246,3 +246,29 @@
     height: 24px;
     padding-right: 6px;
 }
+
+/* ===================== Session bar ===================== */
+
+.kl-sessionbar {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    height: 22px;
+    padding-left: 8px;
+    padding-right: 4px;
+    background-color: var(--unity-colors-highlight-background-inactive);
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(0, 0, 0, 0.35);
+}
+
+.kl-session-label {
+    flex-grow: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    -unity-font-style: italic;
+}
+
+.kl-session-live {
+    margin: 1px 0 1px 6px;
+}

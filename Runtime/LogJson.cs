@@ -1,0 +1,141 @@
+using System.Globalization;
+using System.Text;
+
+namespace KenseiLog {
+    /// <summary>
+    /// Writes records as one JSON object per line.
+    /// <para>
+    /// A delimited format would be shorter, but stack traces are multi-line and any parser
+    /// reading them back would lose the plot on the first one. JSON handles the escaping.
+    /// </para>
+    /// <para>
+    /// Written by hand rather than through JsonUtility: that would need a serializable object
+    /// per record, which is an allocation on a path that runs whenever anything is logged.
+    /// Reading back is a cold, editor-only path and does use JsonUtility.
+    /// </para>
+    /// </summary>
+    public static class LogJson {
+        public const string SessionKey = "session";
+
+        public static void AppendRecord(StringBuilder builder, in LogRecord record) {
+            builder.Append('{');
+
+            AppendKey(builder, "t");
+            // Invariant culture is not optional here: under a locale that uses a decimal comma
+            // the number would be written as 128,44 and the line would stop being valid JSON.
+            builder.Append(record.TimeMs.ToString("0.###", CultureInfo.InvariantCulture));
+
+            builder.Append(",");
+            AppendKey(builder, "sq");
+            builder.Append(record.Sequence.ToString(CultureInfo.InvariantCulture));
+
+            builder.Append(",");
+            AppendKey(builder, "f");
+            builder.Append(record.Frame.ToString(CultureInfo.InvariantCulture));
+
+            builder.Append(",");
+            AppendKey(builder, "lv");
+            builder.Append(((int)record.Level).ToString(CultureInfo.InvariantCulture));
+
+            builder.Append(",");
+            AppendKey(builder, "ch");
+            builder.Append(((int)record.Channel).ToString(CultureInfo.InvariantCulture));
+
+            if (record.Captured) {
+                builder.Append(",");
+                AppendKey(builder, "cap");
+                builder.Append("true");
+            }
+
+            builder.Append(",");
+            AppendKey(builder, "tag");
+            AppendString(builder, record.Tag);
+
+            builder.Append(",");
+            AppendKey(builder, "msg");
+            AppendString(builder, record.Message);
+
+            if (!string.IsNullOrEmpty(record.File)) {
+                builder.Append(",");
+                AppendKey(builder, "file");
+                AppendString(builder, record.File);
+
+                builder.Append(",");
+                AppendKey(builder, "ln");
+                builder.Append(record.Line.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!string.IsNullOrEmpty(record.StackTrace)) {
+                builder.Append(",");
+                AppendKey(builder, "st");
+                AppendString(builder, record.StackTrace);
+            }
+
+            builder.Append('}');
+        }
+
+        public static void AppendSessionHeader(StringBuilder builder, string sessionId, string app,
+                                               string unity, string platform, string device, string startedUtc) {
+            builder.Append('{');
+            AppendKey(builder, SessionKey);
+            AppendString(builder, sessionId);
+            builder.Append(",");
+            AppendKey(builder, "app");
+            AppendString(builder, app);
+            builder.Append(",");
+            AppendKey(builder, "unity");
+            AppendString(builder, unity);
+            builder.Append(",");
+            AppendKey(builder, "platform");
+            AppendString(builder, platform);
+            builder.Append(",");
+            AppendKey(builder, "device");
+            AppendString(builder, device);
+            builder.Append(",");
+            AppendKey(builder, "started");
+            AppendString(builder, startedUtc);
+            builder.Append('}');
+        }
+
+        private static void AppendKey(StringBuilder builder, string key) {
+            builder.Append('"').Append(key).Append("\":");
+        }
+
+        private static void AppendString(StringBuilder builder, string value) {
+            if (value == null) {
+                builder.Append("null");
+                return;
+            }
+
+            builder.Append('"');
+            for (int i = 0; i < value.Length; i++) {
+                char c = value[i];
+                switch (c) {
+                    case '"':
+                        builder.Append("\\\"");
+                        break;
+                    case '\\':
+                        builder.Append("\\\\");
+                        break;
+                    case '\n':
+                        builder.Append("\\n");
+                        break;
+                    case '\r':
+                        builder.Append("\\r");
+                        break;
+                    case '\t':
+                        builder.Append("\\t");
+                        break;
+                    default:
+                        if (c < ' ') {
+                            builder.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                        } else {
+                            builder.Append(c);
+                        }
+                        break;
+                }
+            }
+            builder.Append('"');
+        }
+    }
+}

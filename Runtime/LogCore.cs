@@ -19,6 +19,7 @@ namespace KenseiLog {
 
         private static ILogSink[] _sinks = Array.Empty<ILogSink>();
         private static UnityConsoleSink _consoleSink;
+        private static FileSink _fileSink;
         private static LogConfig _config = LogConfig.Default();
         private static long _sequence;
         private static int _mainThreadId;
@@ -121,6 +122,48 @@ namespace KenseiLog {
             } else if (_consoleSink != null) {
                 RemoveSink(_consoleSink);
                 _consoleSink = null;
+            }
+
+            Application.quitting -= OnQuitting;
+            Application.quitting += OnQuitting;
+
+            // isPlaying gates the file sink because in the editor this runs again on every
+            // domain reload, and each new sink starts a session by rotating the files. Without
+            // the gate a few script recompiles would push every real log out of the history.
+            // In a build isPlaying is always true, so devices are unaffected.
+            if (_config.WriteToFile && Application.isPlaying) {
+                if (_fileSink == null) {
+                    _fileSink = new FileSink(in _config);
+                    AddSink(_fileSink);
+                    LogLifecycleHooks.Ensure();
+                }
+            } else if (_fileSink != null) {
+                RemoveSink(_fileSink);
+                _fileSink.Dispose();
+                _fileSink = null;
+            }
+        }
+
+        private static void OnQuitting() {
+            FlushSinks();
+            if (_fileSink == null) {
+                return;
+            }
+            RemoveSink(_fileSink);
+            _fileSink.Dispose();
+            _fileSink = null;
+        }
+
+        /// <summary>The active file sink, or null when file logging is off.</summary>
+        public static FileSink File => _fileSink;
+
+        /// <summary>Pushes every buffering sink to its destination.</summary>
+        public static void FlushSinks() {
+            ILogSink[] sinks = _sinks;
+            for (int i = 0; i < sinks.Length; i++) {
+                if (sinks[i] is IFlushableSink flushable) {
+                    flushable.Flush();
+                }
             }
         }
 
