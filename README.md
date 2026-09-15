@@ -102,7 +102,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 ![The Logs window in the Unity editor](Documentation~/images/editor-window.jpg)
 
 - **Tabs are saved filters.** A tab remembers its tags, levels, channels, search text, collapse setting and any isolated frame. One tab is active at a time, so `Combat` and `Net` are a click apart rather than visible at once — but neither has to be rebuilt.
-- **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing.
+- **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing. Branches fold, and stay folded across restarts; the **Tags** toggle hides the whole tree when the list needs the room.
 - **Colour means two things, kept apart.** The tag colours the stripe at the left of the row — a stable hue derived from the tag's root segment, so a family shares a hue and descendants differ only in brightness. The level colours the text, following the editor theme's own warning and error colours.
 - **Search looks at the message only.** Tags are a field, so searching for `combat` never pulls in the `Combat` tag by itself.
 - **Double-click** opens the source at the exact line. Records written through this API carry

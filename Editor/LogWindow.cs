@@ -21,6 +21,12 @@ namespace KenseiLog.Editor {
         private const string FrameKey = "KenseiLog.Columns.Frame";
         private const string TimeKey = "KenseiLog.Columns.Time";
         private const string TagKey = "KenseiLog.Columns.Tag";
+        private const string FoldedTagsKey = "KenseiLog.FoldedTags";
+
+        /// <summary>Joins folded tag names in EditorPrefs. A tag can hold no vertical bar.</summary>
+        private const string FoldSeparator = "|";
+
+        private const string TagPaneKey = "KenseiLog.TagPane";
 
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
@@ -28,6 +34,7 @@ namespace KenseiLog.Editor {
         private readonly List<TabView> _views = new List<TabView>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly int[] _levelCounts = new int[3];
+        private readonly HashSet<string> _foldedTags = new HashSet<string>();
 
         private LogRecord[] _scratch;
         private long _lastSequence;
@@ -38,6 +45,7 @@ namespace KenseiLog.Editor {
         private bool _showFrame = true;
         private bool _showTime = true;
         private bool _showTag = true;
+        private bool _showTagPane = true;
 
         private VisualElement _tabBar;
         private ScrollView _tagPane;
@@ -94,6 +102,12 @@ namespace KenseiLog.Editor {
             _showFrame = EditorPrefs.GetBool(FrameKey, true);
             _showTime = EditorPrefs.GetBool(TimeKey, true);
             _showTag = EditorPrefs.GetBool(TagKey, true);
+            _showTagPane = EditorPrefs.GetBool(TagPaneKey, true);
+            string[] folded = EditorPrefs.GetString(FoldedTagsKey, string.Empty)
+                .Split(new[] { FoldSeparator }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < folded.Length; i++) {
+                _foldedTags.Add(folded[i]);
+            }
 
             _scratch = new LogRecord[Source.Capacity];
             RebuildViews();
@@ -111,6 +125,7 @@ namespace KenseiLog.Editor {
             RefreshTabBar();
             RefreshSessionBar();
             ApplyColumnVisibility();
+            ApplyTagPaneVisibility();
             SyncToolbarToFilter();
             Ingest(force: true);
         }
@@ -220,6 +235,18 @@ namespace KenseiLog.Editor {
 
             _collapseToggle = FilterToggle("Collapse", value => ActiveFilter.Collapse = value);
             toolbar.Add(_collapseToggle);
+
+            ToolbarToggle tagPane = new ToolbarToggle {
+                text = "Tags",
+                tooltip = "Show or hide the tag tree."
+            };
+            tagPane.SetValueWithoutNotify(_showTagPane);
+            tagPane.RegisterValueChangedCallback(evt => {
+                _showTagPane = evt.newValue;
+                EditorPrefs.SetBool(TagPaneKey, _showTagPane);
+                ApplyTagPaneVisibility();
+            });
+            toolbar.Add(tagPane);
 
             toolbar.Add(BuildColumnsMenu());
 
@@ -370,6 +397,10 @@ namespace KenseiLog.Editor {
             label.AddToClassList(cellClass);
             label.AddToClassList("kl-header-cell");
             return label;
+        }
+
+        private void ApplyTagPaneVisibility() {
+            _tagPane.style.display = _showTagPane ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
         private void ApplyColumnVisibility() {
@@ -646,8 +677,9 @@ namespace KenseiLog.Editor {
         }
 
         private void AddTagRow(TagNode node, int depth) {
-            LogFilter filter = ActiveFilter;
-            bool selected = filter.Tags.Contains(node.FullTag);
+            bool selected = ActiveFilter.Tags.Contains(node.FullTag);
+            bool hasChildren = node.Children.Count > 0;
+            bool folded = _foldedTags.Contains(node.FullTag);
 
             VisualElement row = new VisualElement();
             row.AddToClassList("kl-tagrow");
@@ -655,6 +687,24 @@ namespace KenseiLog.Editor {
                 row.AddToClassList("kl-tagrow--selected");
             }
             row.style.paddingLeft = 4f + depth * 12f;
+
+            if (hasChildren) {
+                // The arrow swallows the click so folding a branch does not also select it -
+                // two different intentions land within a few pixels of each other.
+                Label arrow = new Label(folded ? "▸" : "▾");
+                arrow.AddToClassList("kl-fold");
+                arrow.RegisterCallback<PointerDownEvent>(evt => {
+                    evt.StopPropagation();
+                    ToggleFold(node.FullTag);
+                });
+                row.Add(arrow);
+            } else {
+                // Keeps leaf names on the same left edge as their folding siblings.
+                VisualElement spacer = new VisualElement();
+                spacer.AddToClassList("kl-fold");
+                row.Add(spacer);
+            }
+
             row.RegisterCallback<PointerDownEvent>(_ => ToggleTag(node.FullTag));
 
             VisualElement swatch = new VisualElement();
@@ -667,15 +717,26 @@ namespace KenseiLog.Editor {
             label.tooltip = node.FullTag;
             row.Add(label);
 
-            Label count = new Label(node.Count.ToString());
+            Label count = new Label(node.Count.ToString(CultureInfo.InvariantCulture));
             count.AddToClassList("kl-tagcount");
             row.Add(count);
 
             _tagPane.Add(row);
 
+            if (folded) {
+                return;
+            }
             for (int i = 0; i < node.Children.Count; i++) {
                 AddTagRow(node.Children[i], depth + 1);
             }
+        }
+
+        private void ToggleFold(string fullTag) {
+            if (!_foldedTags.Remove(fullTag)) {
+                _foldedTags.Add(fullTag);
+            }
+            EditorPrefs.SetString(FoldedTagsKey, string.Join(FoldSeparator, _foldedTags));
+            RefreshTagPane();
         }
 
         private void ToggleTag(string fullTag) {

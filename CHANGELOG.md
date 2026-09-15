@@ -4,6 +4,17 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-16
+
+### Added
+
+- Branches in the tag tree fold. A parent carries an arrow, and the arrow swallows its own
+  click so folding a branch does not also select it - the two intentions sit a few pixels
+  apart. Leaves get an aligned spacer so names keep one left edge. Folded branches are
+  remembered in `EditorPrefs`.
+- A **Tags** toggle in the toolbar hides the tree entirely, matching what the in-game overlay
+  has always had.
+
 ## [0.5.2] - 2026-09-16
 
 ### Added
