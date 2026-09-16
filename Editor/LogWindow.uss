@@ -363,8 +363,7 @@
 .kl-treehandle {
     width: 13px;
     flex-shrink: 0;
-    font-size: 9px;
-    -unity-text-align: middle-center;
+    align-items: center;
     opacity: 0.5;
     background-color: var(--unity-colors-window-background);
     border-right-width: 1px;
@@ -374,6 +373,17 @@
 .kl-treehandle:hover {
     opacity: 1;
     background-color: rgba(127, 127, 127, 0.2);
+}
+
+/* The arrow, and the only part of the strip with a tooltip. A tooltip belongs to something
+   the size of a control: on the strip itself it covered a column running the whole height of
+   the window, in the lane the pointer takes between the tree and the list. */
+.kl-treehandle-arrow {
+    width: 100%;
+    height: 22px;
+    margin-top: 4px;
+    font-size: 9px;
+    -unity-text-align: middle-center;
 }
 
 .kl-header-compact {

@@ -18,16 +18,22 @@ namespace KenseiLog.Editor {
     public sealed class LogWindow : EditorWindow {
         private const double RefreshInterval = 1.0 / 15.0;
         private const float RowHeight = 20f;
-        private const string FrameKey = "KenseiLog.Columns.Frame.v2";
-        private const string TimeKey = "KenseiLog.Columns.Time.v2";
-        private const string TagKey = "KenseiLog.Columns.Tag.v2";
-        private const string FoldedTagsKey = "KenseiLog.FoldedTags";
+
+        /// <summary>
+        /// How long the search box waits before filtering. A keystroke rebuilds the tab from
+        /// the whole buffer and reassembles the tag tree, and nobody types one character.
+        /// </summary>
+        private const long SearchDebounceMs = 150;
 
         /// <summary>Joins folded tag names in EditorPrefs. A tag can hold no vertical bar.</summary>
         private const string FoldSeparator = "|";
 
-        private const string TreeKey = "KenseiLog.Tree.v2";
-        private const string CompactKey = "KenseiLog.Compact";
+        private static readonly string _frameKey = ProjectPrefs.Key("Columns.Frame.v2");
+        private static readonly string _timeKey = ProjectPrefs.Key("Columns.Time.v2");
+        private static readonly string _tagKey = ProjectPrefs.Key("Columns.Tag.v2");
+        private static readonly string _foldedTagsKey = ProjectPrefs.Key("FoldedTags");
+        private static readonly string _treeKey = ProjectPrefs.Key("Tree.v2");
+        private static readonly string _compactKey = ProjectPrefs.Key("Compact");
 
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
@@ -38,6 +44,7 @@ namespace KenseiLog.Editor {
         private readonly int[] _renderedCounts = { -1, -1, -1 };
         private readonly HashSet<string> _foldedTags = new HashSet<string>();
         private readonly Dictionary<long, ConsoleContext> _consoleContexts = new Dictionary<long, ConsoleContext>();
+        private readonly Dictionary<string, Label> _tagCountLabels = new Dictionary<string, Label>();
 
         private LogRecord[] _scratch;
         private long _lastSequence;
@@ -50,7 +57,7 @@ namespace KenseiLog.Editor {
         private bool _showTag = true;
         private bool _showTree = true;
         private bool _compact;
-        private int _lastRenderedCount = -1;
+        private int _lastRenderedRevision = -1;
 
         private VisualElement _tabBar;
         private ScrollView _tagPane;
@@ -75,10 +82,20 @@ namespace KenseiLog.Editor {
         private VisualElement _headerTime;
         private VisualElement _headerTag;
         private ToolbarToggle _compactToggle;
-        private Label _treeHandle;
+        private VisualElement _treeHandle;
+        private Label _treeHandleArrow;
         private Label _headerMenuButton;
+        private IVisualElementScheduledItem _searchDebounce;
 
         private LogSession _session;
+
+        /// <summary>
+        /// The file the window is showing, kept so it can be reopened after a domain reload.
+        /// LogSession itself is a plain object and neither the reference nor its contents
+        /// survive one, so a recompile used to drop the window back to live logs without
+        /// saying so.
+        /// </summary>
+        [SerializeField] private string _sessionPath;
 
         private LogFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
 
@@ -118,18 +135,19 @@ namespace KenseiLog.Editor {
             if (_filters.Count == 0) {
                 _filters.Add(new LogFilter { Name = "All" });
             }
-            _showFrame = EditorPrefs.GetBool(FrameKey, true);
-            _showTime = EditorPrefs.GetBool(TimeKey, true);
-            _showTag = EditorPrefs.GetBool(TagKey, true);
-            _showTree = EditorPrefs.GetBool(TreeKey, true);
-            _compact = EditorPrefs.GetBool(CompactKey, false);
-            string[] folded = EditorPrefs.GetString(FoldedTagsKey, string.Empty)
+            RestoreSession();
+            _showFrame = EditorPrefs.GetBool(_frameKey, true);
+            _showTime = EditorPrefs.GetBool(_timeKey, true);
+            _showTag = EditorPrefs.GetBool(_tagKey, true);
+            _showTree = EditorPrefs.GetBool(_treeKey, true);
+            _compact = EditorPrefs.GetBool(_compactKey, false);
+            string[] folded = EditorPrefs.GetString(_foldedTagsKey, string.Empty)
                 .Split(new[] { FoldSeparator }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < folded.Length; i++) {
                 _foldedTags.Add(folded[i]);
             }
 
-            _scratch = new LogRecord[Source.Capacity];
+            EnsureScratch();
             RebuildViews();
 
             StyleSheet sheet = LoadStyleSheet();
@@ -187,13 +205,23 @@ namespace KenseiLog.Editor {
             // The control that hides the tree lives against the tree, pointing the way it will
             // move. In the toolbar it was a word among fifteen others, and "Tree" next to a
             // "Tag" column told nobody which of the two it meant.
-            _treeHandle = new Label();
+            _treeHandle = new VisualElement();
             _treeHandle.AddToClassList("kl-treehandle");
             _treeHandle.RegisterCallback<PointerDownEvent>(_ => {
                 _showTree = !_showTree;
-                EditorPrefs.SetBool(TreeKey, _showTree);
+                EditorPrefs.SetBool(_treeKey, _showTree);
                 ApplyTagPaneVisibility();
             });
+
+            // The arrow carries the tooltip, and it is the size of a button. On the strip
+            // itself the tooltip belonged to a 13px column running the full height of the
+            // window, standing where the pointer crosses between the tree and the list: a
+            // tooltip in UI Toolkit is a real OS window, and building and tearing one down per
+            // crossing is what froze the editor on Windows. It is the fault the row tooltips
+            // had, in a shape that outlived the fix for them.
+            _treeHandleArrow = new Label();
+            _treeHandleArrow.AddToClassList("kl-treehandle-arrow");
+            _treeHandle.Add(_treeHandleArrow);
             body.Add(_treeHandle);
 
             VisualElement main = new VisualElement();
@@ -236,7 +264,15 @@ namespace KenseiLog.Editor {
             // it does to the whole session. Everything used to sit in one undivided row.
             ToolbarToggle pause = new ToolbarToggle { text = "Pause", tooltip = "Stop updating the view. Recording continues." };
             pause.value = _paused;
-            pause.RegisterValueChangedCallback(evt => _paused = evt.newValue);
+            pause.RegisterValueChangedCallback(evt => {
+                _paused = evt.newValue;
+                if (!_paused) {
+                    // Records kept arriving while the view was paused, and the poll marked them
+                    // seen without taking them. Nothing was lost, but nothing was reachable
+                    // either until the next log line happened to land.
+                    Ingest(force: true);
+                }
+            });
             toolbar.Add(pause);
 
             ToolbarToggle follow = new ToolbarToggle { text = "Follow", tooltip = "Keep scrolling to the newest record." };
@@ -275,10 +311,12 @@ namespace KenseiLog.Editor {
             _searchField = new ToolbarSearchField();
             _searchField.AddToClassList("kl-search");
             _searchField.tooltip = "Searches the message text only. Tags are a separate field.";
-            _searchField.RegisterValueChangedCallback(evt => {
-                ActiveFilter.Search = evt.newValue;
-                RebuildActiveView();
-            });
+            // Every keystroke used to refilter the whole buffer and reassemble the tag tree.
+            // Typing a six-letter tag name did that six times, and only the last of them was
+            // the search anyone asked for.
+            _searchDebounce = _searchField.schedule.Execute(ApplySearch);
+            _searchDebounce.Pause();
+            _searchField.RegisterValueChangedCallback(_ => _searchDebounce.ExecuteLater(SearchDebounceMs));
             toolbar.Add(_searchField);
 
             _frameIsolationLabel = new Label();
@@ -332,6 +370,7 @@ namespace KenseiLog.Editor {
             }
 
             _session = session;
+            _sessionPath = path;
             OnSourceChanged();
         }
 
@@ -340,11 +379,29 @@ namespace KenseiLog.Editor {
                 return;
             }
             _session = null;
+            _sessionPath = null;
             OnSourceChanged();
         }
 
+        /// <summary>
+        /// Reopens the file the window was on before a domain reload. Only the path survives
+        /// one - LogSession is a plain object Unity does not serialise - so the file is read
+        /// again. A file that has since gone away drops the window back to live logs, which is
+        /// what it did silently on every recompile before.
+        /// </summary>
+        private void RestoreSession() {
+            if (string.IsNullOrEmpty(_sessionPath)) {
+                return;
+            }
+            if (LogSessionReader.TryRead(_sessionPath, out LogSession session, out _)) {
+                _session = session;
+                return;
+            }
+            _sessionPath = null;
+        }
+
         private void OnSourceChanged() {
-            _scratch = new LogRecord[Mathf.Max(64, Source.Capacity)];
+            EnsureScratch();
             ResetIngest();
             RefreshSessionBar();
             Ingest(force: true);
@@ -373,17 +430,17 @@ namespace KenseiLog.Editor {
         /// </summary>
         private void ShowColumnMenu() {
             GenericMenu menu = new GenericMenu();
-            AppendColumnItem(menu, "Frame", _showFrame, value => _showFrame = value, FrameKey);
-            AppendColumnItem(menu, "Time", _showTime, value => _showTime = value, TimeKey);
-            AppendColumnItem(menu, "Tag", _showTag, value => _showTag = value, TagKey);
+            AppendColumnItem(menu, "Frame", _showFrame, value => _showFrame = value, _frameKey);
+            AppendColumnItem(menu, "Time", _showTime, value => _showTime = value, _timeKey);
+            AppendColumnItem(menu, "Tag", _showTag, value => _showTag = value, _tagKey);
             menu.AddSeparator(string.Empty);
             if (_compact) {
                 menu.AddDisabledItem(new GUIContent("Compact is hiding these"), true);
             } else {
                 menu.AddItem(new GUIContent("Show all"), false, () => {
-                    SetColumn(value => _showFrame = value, FrameKey, true);
-                    SetColumn(value => _showTime = value, TimeKey, true);
-                    SetColumn(value => _showTag = value, TagKey, true);
+                    SetColumn(value => _showFrame = value, _frameKey, true);
+                    SetColumn(value => _showTime = value, _timeKey, true);
+                    SetColumn(value => _showTag = value, _tagKey, true);
                     ApplyColumnVisibility();
                 });
             }
@@ -417,7 +474,7 @@ namespace KenseiLog.Editor {
         /// </summary>
         private void SetCompact(bool compact) {
             _compact = compact;
-            EditorPrefs.SetBool(CompactKey, compact);
+            EditorPrefs.SetBool(_compactKey, compact);
             _compactToggle.SetValueWithoutNotify(compact);
             ApplyColumnVisibility();
             ApplyTagPaneVisibility();
@@ -485,9 +542,9 @@ namespace KenseiLog.Editor {
             bool shown = ShowTree;
             _tagPane.style.display = shown ? DisplayStyle.Flex : DisplayStyle.None;
 
-            _treeHandle.text = shown ? "\u25C0" : "\u25B6";
+            _treeHandleArrow.text = shown ? "\u25C0" : "\u25B6";
             _treeHandle.SetEnabled(!_compact);
-            _treeHandle.tooltip = _compact
+            _treeHandleArrow.tooltip = _compact
                 ? "Compact is hiding the tree."
                 : shown ? "Hide the tag tree" : "Show the tag tree";
         }
@@ -500,7 +557,7 @@ namespace KenseiLog.Editor {
 
             // Rebuild rather than refresh: a row's visibility is set while binding, and
             // recycled rows keep whatever the last bind gave them until bound again.
-            _lastRenderedCount = -1;
+            _lastRenderedRevision = -1;
             _listView.Rebuild();
         }
 
@@ -543,6 +600,14 @@ namespace KenseiLog.Editor {
             }
 
             target.Insert(0, element);
+        }
+
+        private void ApplySearch() {
+            if (string.Equals(ActiveFilter.Search, _searchField.value, StringComparison.Ordinal)) {
+                return;
+            }
+            ActiveFilter.Search = _searchField.value;
+            RebuildActiveView();
         }
 
         private ToolbarToggle FilterToggle(string label, Action<bool> apply) {
@@ -623,11 +688,28 @@ namespace KenseiLog.Editor {
             Ingest(force: false);
         }
 
+        /// <summary>
+        /// Keeps the copy buffer as large as the source.
+        /// <para>
+        /// CopyNewerThan stops when the destination is full and returns the oldest of what it
+        /// had, so a scratch smaller than the buffer silently loses the newest records - which
+        /// is what raising EditorSink.Capacity used to do, since the array was sized once when
+        /// the window was built.
+        /// </para>
+        /// </summary>
+        private void EnsureScratch() {
+            int capacity = Mathf.Max(64, Source.Capacity);
+            if (_scratch == null || _scratch.Length < capacity) {
+                _scratch = new LogRecord[capacity];
+            }
+        }
+
         private void Ingest(bool force) {
             if (_paused && !force) {
                 return;
             }
 
+            EnsureScratch();
             LogRingBuffer buffer = Source;
 
             // A cleared or resized buffer restarts below our watermark; start over rather than
@@ -667,6 +749,11 @@ namespace KenseiLog.Editor {
 
             if (tagsChanged) {
                 RefreshTagPane();
+            } else if (copied > 0) {
+                // A known tag whose count went up used to change nothing on screen: the pane
+                // was only ever rebuilt when a tag appeared for the first time, so every
+                // number beside a tag froze at whatever it held when it was first seen.
+                RefreshTagCounts();
             }
             RefreshList();
             RefreshLevelCounts();
@@ -700,7 +787,8 @@ namespace KenseiLog.Editor {
         }
 
         private void RebuildView(TabView view) {
-            _lastRenderedCount = -1;
+            _lastRenderedRevision = -1;
+            EnsureScratch();
             view.Clear();
             LogRingBuffer buffer = Source;
             int copied = buffer.CopyNewerThan(0, _scratch);
@@ -741,6 +829,8 @@ namespace KenseiLog.Editor {
 
         private void SelectTab(int index) {
             _activeTab = index;
+            // Revisions count per view, so one tab's number says nothing about another's.
+            _lastRenderedRevision = -1;
             _listView.itemsSource = ActiveView.Sequences;
             RefreshTabBar();
             SyncToolbarToFilter();
@@ -803,13 +893,23 @@ namespace KenseiLog.Editor {
         private void DeleteTab(int index) {
             _filters.RemoveAt(index);
             _views.RemoveAt(index);
+            // Everything after the deleted tab shifts down by one, so an active tab beyond it
+            // has to move with them - clamping alone kept the index and landed on the tab that
+            // slid into its place.
+            if (index < _activeTab) {
+                _activeTab--;
+            }
             _activeTab = Mathf.Clamp(_activeTab, 0, _filters.Count - 1);
             SelectTab(_activeTab);
         }
 
         private void RenameTab(int index) {
-            TabRenamePopup.Show(this, _filters[index].Name, name => {
-                _filters[index].Name = name;
+            // Captures the tab itself. An index goes stale the moment another tab is deleted
+            // while the popup is open, and the rename then lands on whichever tab took its
+            // place.
+            LogFilter filter = _filters[index];
+            TabRenamePopup.Show(this, filter.Name, name => {
+                filter.Name = name;
                 RefreshTabBar();
             });
         }
@@ -820,9 +920,35 @@ namespace KenseiLog.Editor {
 
         private void RefreshTagPane() {
             _tagPane.Clear();
+            _tagCountLabels.Clear();
             List<TagNode> roots = TagTree.Build(_tagCounts);
             for (int i = 0; i < roots.Count; i++) {
                 AddTagRow(roots[i], 0);
+            }
+        }
+
+        /// <summary>
+        /// Writes the current totals into the rows that are already there. Rebuilding the pane
+        /// instead would throw away its scroll position several times a second while logs are
+        /// arriving, which is exactly when someone is reading it.
+        /// </summary>
+        private void RefreshTagCounts() {
+            List<TagNode> roots = TagTree.Build(_tagCounts);
+            for (int i = 0; i < roots.Count; i++) {
+                ApplyTagCount(roots[i]);
+            }
+        }
+
+        private void ApplyTagCount(TagNode node) {
+            // A folded branch has no rows for its children, so a miss here is ordinary.
+            if (_tagCountLabels.TryGetValue(node.FullTag, out Label label)) {
+                string text = node.Count.ToString(CultureInfo.InvariantCulture);
+                if (label.text != text) {
+                    label.text = text;
+                }
+            }
+            for (int i = 0; i < node.Children.Count; i++) {
+                ApplyTagCount(node.Children[i]);
             }
         }
 
@@ -869,6 +995,7 @@ namespace KenseiLog.Editor {
             Label count = new Label(node.Count.ToString(CultureInfo.InvariantCulture));
             count.AddToClassList("kl-tagcount");
             row.Add(count);
+            _tagCountLabels[node.FullTag] = count;
 
             _tagPane.Add(row);
 
@@ -884,7 +1011,7 @@ namespace KenseiLog.Editor {
             if (!_foldedTags.Remove(fullTag)) {
                 _foldedTags.Add(fullTag);
             }
-            EditorPrefs.SetString(FoldedTagsKey, string.Join(FoldSeparator, _foldedTags));
+            EditorPrefs.SetString(_foldedTagsKey, string.Join(FoldSeparator, _foldedTags));
             RefreshTagPane();
         }
 
@@ -943,10 +1070,22 @@ namespace KenseiLog.Editor {
             element.userData = index;
 
             if (!Source.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
+                // Rows are recycled, so everything the record that had this one set has to be
+                // put back as well as the text: its tag colour on the stripe, its severity on
+                // the message, and whichever columns were showing when it was bound.
+                element.ElementAt(0).style.backgroundColor = Color.clear;
+                element.ElementAt(1).style.display = ShowFrame ? DisplayStyle.Flex : DisplayStyle.None;
+                element.ElementAt(2).style.display = ShowTime ? DisplayStyle.Flex : DisplayStyle.None;
+                element.ElementAt(3).style.display = ShowTag ? DisplayStyle.Flex : DisplayStyle.None;
                 ((Label)element.ElementAt(1)).text = string.Empty;
                 ((Label)element.ElementAt(2)).text = string.Empty;
                 ((Label)element.ElementAt(3)).text = string.Empty;
-                ((Label)element.ElementAt(4)).text = "(record expired)";
+
+                Label expired = (Label)element.ElementAt(4);
+                expired.text = "(record expired)";
+                expired.EnableInClassList("kl-level-warning", false);
+                expired.EnableInClassList("kl-level-error", false);
+
                 ((Label)element.ElementAt(5)).text = string.Empty;
                 return;
             }
@@ -1289,11 +1428,14 @@ namespace KenseiLog.Editor {
             _listView.itemsSource = ActiveView.Sequences;
 
             // Rebinding every visible row fifteen times a second costs the same whether or not
-            // the tab gained anything, and most ticks it gains nothing.
-            int count = ActiveView.Sequences.Count;
-            int previousCount = _lastRenderedCount;
-            if (count != previousCount) {
-                _lastRenderedCount = count;
+            // the tab changed, and most ticks it does not. The view's revision is what says so:
+            // the row count cannot, because a full ring buffer drops one record for every
+            // record it takes - the count holds still while the contents move under it, and
+            // the list stopped repainting exactly when the logs were busiest.
+            int revision = ActiveView.Revision;
+            bool changed = revision != _lastRenderedRevision;
+            if (changed) {
+                _lastRenderedRevision = revision;
                 _listView.RefreshItems();
             }
 
@@ -1301,7 +1443,7 @@ namespace KenseiLog.Editor {
             _emptyHint.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
             if (empty) {
                 _emptyHint.text = EmptyHint();
-            } else if (_followTail && !_paused && count != previousCount) {
+            } else if (_followTail && !_paused && changed) {
                 _listView.ScrollToItem(-1);
             }
         }
@@ -1374,9 +1516,28 @@ namespace KenseiLog.Editor {
             // Resolved from this script's own location so the package works wherever it is
             // installed: a path reference outside the project, an embedded folder, or Library.
             MonoScript script = MonoScript.FromScriptableObject(this);
-            string scriptPath = AssetDatabase.GetAssetPath(script);
-            string directory = Path.GetDirectoryName(scriptPath).Replace('\\', '/');
-            return AssetDatabase.LoadAssetAtPath<StyleSheet>(directory + "/LogWindow.uss");
+            string scriptPath = script != null ? AssetDatabase.GetAssetPath(script) : null;
+            if (!string.IsNullOrEmpty(scriptPath)) {
+                string directory = Path.GetDirectoryName(scriptPath)?.Replace('\\', '/');
+                if (!string.IsNullOrEmpty(directory)) {
+                    StyleSheet beside = AssetDatabase.LoadAssetAtPath<StyleSheet>(directory + "/LogWindow.uss");
+                    if (beside != null) {
+                        return beside;
+                    }
+                }
+            }
+
+            // A package compiled into a DLL has no script asset to find the sheet beside, and
+            // the path was dereferenced without asking - which threw out of CreateGUI and left
+            // a window with no contents at all rather than an unstyled one.
+            string[] found = AssetDatabase.FindAssets("LogWindow t:StyleSheet");
+            for (int i = 0; i < found.Length; i++) {
+                StyleSheet sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(AssetDatabase.GUIDToAssetPath(found[i]));
+                if (sheet != null) {
+                    return sheet;
+                }
+            }
+            return null;
         }
 
         private static string ShortTag(string tag) {

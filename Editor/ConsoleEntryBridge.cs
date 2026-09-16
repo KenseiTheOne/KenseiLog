@@ -97,11 +97,17 @@ namespace KenseiLog.Editor {
                 return 0;
             }
 
-            object entry = Activator.CreateInstance(_entryType);
             object[] args = new object[2];
 
+            // Inside the guard with the rest of it. This is a type found by reflection, so
+            // its constructor is no more ours to count on than the methods below - and this
+            // call is the only one that was left outside, which put an exception from it into
+            // the InitializeOnLoadMethod that seeds the window, before the sink is registered.
+            // The window then opened looking healthy and recorded nothing, once per reload.
+            object entry;
             int count;
             try {
+                entry = Activator.CreateInstance(_entryType);
                 count = (int)_startGettingEntries.Invoke(null, null);
             } catch (Exception) {
                 _available = false;
@@ -198,11 +204,12 @@ namespace KenseiLog.Editor {
 
         private static void BuildIndex(double now) {
             Dictionary<string, Entry> index = new Dictionary<string, Entry>(StringComparer.Ordinal);
-            object entry = Activator.CreateInstance(_entryType);
             object[] args = new object[2];
 
+            object entry;
             int count;
             try {
+                entry = Activator.CreateInstance(_entryType);
                 count = (int)_startGettingEntries.Invoke(null, null);
             } catch (Exception) {
                 _available = false;

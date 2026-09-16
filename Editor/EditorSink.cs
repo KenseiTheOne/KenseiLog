@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using UnityEditor;
@@ -12,9 +13,19 @@ namespace KenseiLog.Editor {
     /// </para>
     /// </summary>
     public sealed class EditorSink : ILogSink {
-        private const string CapacityKey = "KenseiLog.Capacity";
-        private const string ClearOnPlayKey = "KenseiLog.ClearOnPlay";
+        private static readonly string _capacityKey = ProjectPrefs.Key("Capacity");
+        private static readonly string _clearOnPlayKey = ProjectPrefs.Key("ClearOnPlay");
+
         private const int DefaultCapacity = 8192;
+
+        /// <summary>
+        /// Bounds on the buffer. The floor is the point below which the window stops being a
+        /// log viewer; the ceiling is around a hundred megabytes of records, by which point
+        /// the answer is a log file rather than a bigger buffer.
+        /// </summary>
+        private const int MinimumCapacity = 64;
+
+        private const int MaximumCapacity = 1 << 20;
 
         private LogRingBuffer _buffer;
         private int _version;
@@ -31,18 +42,26 @@ namespace KenseiLog.Editor {
         public int Version => _version;
 
         public static bool ClearOnPlay {
-            get => EditorPrefs.GetBool(ClearOnPlayKey, true);
-            set => EditorPrefs.SetBool(ClearOnPlayKey, value);
+            get => EditorPrefs.GetBool(_clearOnPlayKey, true);
+            set => EditorPrefs.SetBool(_clearOnPlayKey, value);
         }
 
+        /// <summary>
+        /// How many records the window keeps. Clamped, and clamped before it is stored: an
+        /// out-of-range value used to be written to EditorPrefs and only then handed to the
+        /// buffer, which threw - leaving a capacity of zero saved, so the sink threw again on
+        /// construction on every domain reload and the window stayed dead until someone
+        /// cleared the preference by hand.
+        /// </summary>
         public int Capacity {
             get => _buffer.Capacity;
             set {
-                if (value == _buffer.Capacity) {
+                int capacity = Mathf.Clamp(value, MinimumCapacity, MaximumCapacity);
+                if (capacity == _buffer.Capacity) {
                     return;
                 }
-                EditorPrefs.SetInt(CapacityKey, value);
-                _buffer = new LogRingBuffer(value);
+                EditorPrefs.SetInt(_capacityKey, capacity);
+                _buffer = new LogRingBuffer(capacity);
                 Interlocked.Increment(ref _version);
             }
         }
@@ -59,8 +78,21 @@ namespace KenseiLog.Editor {
 
         [InitializeOnLoadMethod]
         private static void Install() {
-            Instance = new EditorSink(EditorPrefs.GetInt(CapacityKey, DefaultCapacity));
-            SeedFromConsole();
+            // Clamped on the way in as well as on the way out, so a preference already holding
+            // a bad value from an earlier version repairs itself instead of throwing here.
+            int capacity = Mathf.Clamp(EditorPrefs.GetInt(_capacityKey, DefaultCapacity), MinimumCapacity, MaximumCapacity);
+            Instance = new EditorSink(capacity);
+
+            // Seeding reads Unity's console through reflection. Whatever it makes of a version
+            // that has moved things, it must not cost us the two lines below it: without them
+            // the sink is never registered and the window records nothing at all, while still
+            // opening and looking perfectly healthy.
+            try {
+                SeedFromConsole();
+            } catch (Exception exception) {
+                Debug.LogWarning("KenseiLog: could not seed the window from the console (" + exception.Message + ")");
+            }
+
             LogCore.AddSink(Instance);
             LogCore.Initialize();
             EditorApplication.playModeStateChanged += OnPlayModeChanged;

@@ -17,6 +17,20 @@ namespace KenseiLog.Editor {
             popup.ShowUtility();
         }
 
+        /// <summary>
+        /// A domain reload leaves this window standing with nothing to call: the callback is a
+        /// delegate, the field is not serialised, and confirming afterwards threw instead of
+        /// renaming. A recompile while a one-line popup is open is not something anyone is
+        /// waiting on, so it closes.
+        /// </summary>
+        private void OnEnable() {
+            AssemblyReloadEvents.beforeAssemblyReload += Close;
+        }
+
+        private void OnDisable() {
+            AssemblyReloadEvents.beforeAssemblyReload -= Close;
+        }
+
         private void CreateGUI() {
             TextField field = new TextField { value = _initial };
             field.style.marginTop = 6f;
@@ -43,7 +57,7 @@ namespace KenseiLog.Editor {
         }
 
         private void Confirm(string value) {
-            if (!string.IsNullOrWhiteSpace(value)) {
+            if (_onConfirm != null && !string.IsNullOrWhiteSpace(value)) {
                 _onConfirm(value.Trim());
             }
             Close();
