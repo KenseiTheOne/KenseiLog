@@ -76,16 +76,25 @@ namespace KenseiLog {
                 LogJson.AppendRecord(_builder, in record);
                 string line = _builder.ToString();
 
-                _writer.Write(line);
-                _writer.Write('\n');
-                _bytesWritten += Encoding.UTF8.GetByteCount(line) + 1;
+                // Writing is where the disk actually gets touched, so it is where a full volume,
+                // an ejected card or a revoked permission shows up. None of that may reach the
+                // caller: this runs inside whatever code called Log, and a diagnostic tool that
+                // can abort a frame of gameplay is worse than no diagnostic tool.
+                try {
+                    _writer.Write(line);
+                    _writer.Write('\n');
+                    _bytesWritten += Encoding.UTF8.GetByteCount(line) + 1;
 
-                double now = _clock.Elapsed.TotalSeconds;
-                // An error is usually the reason the file exists at all. If the app dies right
-                // after one, a buffered line is exactly the line you cannot afford to lose.
-                if (record.Level == LogLevel.Error || now - _lastFlush >= _flushInterval) {
-                    _writer.Flush();
-                    _lastFlush = now;
+                    double now = _clock.Elapsed.TotalSeconds;
+                    // An error is usually the reason the file exists at all. If the app dies right
+                    // after one, a buffered line is exactly the line you cannot afford to lose.
+                    if (record.Level == LogLevel.Error || now - _lastFlush >= _flushInterval) {
+                        _writer.Flush();
+                        _lastFlush = now;
+                    }
+                } catch (Exception exception) {
+                    StopWriting("file logging is off, could not write to", exception);
+                    return;
                 }
 
                 if (_bytesWritten >= _sizeLimitBytes) {
@@ -117,9 +126,30 @@ namespace KenseiLog {
                 if (_writer == null) {
                     return;
                 }
-                _writer.Flush();
-                _lastFlush = _clock.Elapsed.TotalSeconds;
+                try {
+                    _writer.Flush();
+                    _lastFlush = _clock.Elapsed.TotalSeconds;
+                } catch (Exception exception) {
+                    // The usual caller is the quit or pause hook. Throwing here would abort the
+                    // teardown of everything that had not been flushed yet.
+                    StopWriting("file logging is off, could not flush", exception);
+                }
             }
+        }
+
+        /// <summary>
+        /// Gives up on the file after an IO failure. The handle is released and the sink goes
+        /// quiet rather than throwing once per record for the rest of the run. Caller holds the
+        /// lock.
+        /// </summary>
+        private void StopWriting(string what, Exception exception) {
+            try {
+                _writer?.Dispose();
+            } catch (Exception) {
+                // Already failing; there is nothing useful left to do with it.
+            }
+            _writer = null;
+            Warn(what, exception);
         }
 
         public void Dispose() {
@@ -137,7 +167,7 @@ namespace KenseiLog {
                         ShiftFiles();
                     }
                 } catch (Exception exception) {
-                    Warn(exception);
+                    Warn("file logging is off, could not prepare", exception);
                     return;
                 }
                 OpenWriter();
@@ -149,7 +179,14 @@ namespace KenseiLog {
             try {
                 ShiftFiles();
             } catch (Exception exception) {
-                Warn(exception);
+                // Shifting can fail for reasons that pass: on Windows the log window holds the
+                // current file open while it reads, and a rotation landing in that moment is
+                // refused. Reopening anyway keeps logging alive - the file grows past its limit
+                // and the next rotation tries again, which is a far better failure than the
+                // silence that followed returning here, where the writer stayed closed and
+                // every later record was dropped for the rest of the run.
+                Warn("could not rotate, still writing to", exception);
+                OpenWriter(startSession: false);
                 return;
             }
             OpenWriter();
@@ -171,49 +208,90 @@ namespace KenseiLog {
             }
         }
 
-        private void OpenWriter() {
+        /// <summary>
+        /// Opens the current file. <paramref name="startSession"/> is false only when a rotation
+        /// could not shift the files aside: the existing log is then still the one being written,
+        /// so it is opened for append and left without a second header - truncating it would
+        /// throw away the very records the rotation was trying to preserve.
+        /// </summary>
+        private void OpenWriter(bool startSession = true) {
+            FileStream stream = null;
             try {
-                FileStream stream = new FileStream(CurrentFilePath, FileMode.Create, FileAccess.Write, FileShare.Read, 4096);
+                stream = new FileStream(
+                    CurrentFilePath,
+                    startSession ? FileMode.Create : FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    4096);
                 _writer = new StreamWriter(stream, new UTF8Encoding(false));
+                stream = null;
+
+                if (startSession) {
+                    _builder.Length = 0;
+                    LogJson.AppendSessionHeader(
+                        _builder,
+                        Guid.NewGuid().ToString("N"),
+                        _app,
+                        _unity,
+                        _platform,
+                        _device,
+                        DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+
+                    string header = _builder.ToString();
+                    _writer.Write(header);
+                    _writer.Write('\n');
+                    _writer.Flush();
+                    _bytesWritten = Encoding.UTF8.GetByteCount(header) + 1;
+                } else {
+                    // Counting from zero rather than from the size the file already has is what
+                    // keeps a stuck rotation cheap. The file is past its limit by definition
+                    // here, so carrying that figure over would make every single later record
+                    // attempt a rotation, fail it, and warn about it. Starting again means one
+                    // attempt per size limit of new logs until whatever held the file lets go.
+                    _bytesWritten = 0;
+                }
             } catch (Exception exception) {
+                // The writer owns the stream once it is constructed; before that it is ours to
+                // close, or the handle stays open with nothing referencing it.
+                stream?.Dispose();
                 _writer = null;
-                Warn(exception);
+                Warn("file logging is off, could not open", exception);
                 return;
+            } finally {
+                _lastFlush = _clock.Elapsed.TotalSeconds;
             }
-
-            _builder.Length = 0;
-            LogJson.AppendSessionHeader(
-                _builder,
-                Guid.NewGuid().ToString("N"),
-                _app,
-                _unity,
-                _platform,
-                _device,
-                DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
-
-            string header = _builder.ToString();
-            _writer.Write(header);
-            _writer.Write('\n');
-            _writer.Flush();
-
-            _bytesWritten = Encoding.UTF8.GetByteCount(header) + 1;
-            _lastFlush = _clock.Elapsed.TotalSeconds;
         }
 
         private void CloseWriter() {
             if (_writer == null) {
                 return;
             }
-            _writer.Flush();
-            _writer.Dispose();
-            _writer = null;
+            try {
+                _writer.Flush();
+                _writer.Dispose();
+            } catch (Exception exception) {
+                Warn("could not close", exception);
+            } finally {
+                _writer = null;
+            }
         }
 
         private string IndexedPath(int index) =>
             Path.Combine(LogDirectory, "log." + index.ToString(CultureInfo.InvariantCulture) + ".jsonl");
 
-        private void Warn(Exception exception) {
-            Debug.LogWarning("KenseiLog: file logging is off, " + CurrentFilePath + " could not be opened (" + exception.Message + ")");
+        private void Warn(string what, Exception exception) {
+            // Rotate calls this from inside Write, which is inside Emit. Without the flag the
+            // warning comes straight back through the foreign-log handler, takes the next
+            // sequence, and reaches the later sinks ahead of the record we are still writing -
+            // leaving the viewers' buffers out of order. UnityConsoleSink raises it for the
+            // same reason; every Debug call made from inside a sink has to.
+            bool suppressed = LogCore.SuppressForeignCapture;
+            LogCore.SuppressForeignCapture = true;
+            try {
+                Debug.LogWarning("KenseiLog: " + what + ", " + CurrentFilePath + " (" + exception.Message + ")");
+            } finally {
+                LogCore.SuppressForeignCapture = suppressed;
+            }
         }
     }
 }

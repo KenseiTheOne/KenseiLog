@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
@@ -156,7 +157,11 @@ namespace KenseiLog {
             int copied = buffer.CopyNewerThan(_lastSequence, _scratch);
             for (int i = 0; i < copied; i++) {
                 LogRecord record = _scratch[i];
-                _lastSequence = record.Sequence;
+                // Never let the watermark walk backwards. The buffer keeps itself in order, so
+                // this should not come up - but if anything ever did hand back an out-of-order
+                // batch, assigning blindly would re-copy it on the next poll and keep doing so,
+                // growing the list without end. Clamping turns that into a duplicated row.
+                _lastSequence = Math.Max(_lastSequence, record.Sequence);
                 _levelCounts[(int)record.Level]++;
                 _tagCounts.TryGetValue(record.Tag, out int seen);
                 _tagCounts[record.Tag] = seen + 1;

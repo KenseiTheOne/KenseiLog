@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -19,6 +20,7 @@ namespace KenseiLog {
 
         private static readonly object _sinkLock = new object();
         private static readonly Stopwatch _clock = new Stopwatch();
+        private static readonly HashSet<ILogSink> _failedSinks = new HashSet<ILogSink>();
 
         private static ILogSink[] _sinks = Array.Empty<ILogSink>();
         private static UnityConsoleSink _consoleSink;
@@ -31,6 +33,11 @@ namespace KenseiLog {
         private static bool _sceneSystemsReady;
 
         [ThreadStatic] private static bool _suppressForeignCapture;
+
+        // Reporting a broken sink goes through Debug, which comes back through the foreign-log
+        // handler and out to the sinks again. Thread-local for the same reason as the flag
+        // above: a plain static would let one thread's report silence another thread's.
+        [ThreadStatic] private static bool _reportingSinkFailure;
 
         public static LogConfig Config => _config;
 
@@ -75,6 +82,9 @@ namespace KenseiLog {
                 Array.Copy(_sinks, 0, updated, 0, index);
                 Array.Copy(_sinks, index + 1, updated, index, _sinks.Length - index - 1);
                 _sinks = updated;
+                // A sink that is taken out and put back gets another chance to report, rather
+                // than staying silently on the failed list for the rest of the app domain.
+                _failedSinks.Remove(sink);
             }
         }
 
@@ -89,7 +99,51 @@ namespace KenseiLog {
         public static void Emit(in LogRecord record) {
             ILogSink[] sinks = _sinks;
             for (int i = 0; i < sinks.Length; i++) {
-                sinks[i].Write(in record);
+                // Sinks are isolated from each other on purpose. They are visited in
+                // registration order, so without this a sink that throws on some record would
+                // take the file sink down with it - and the file is the only diagnostic a
+                // shipped build has, which makes the records around a fault exactly the ones
+                // that would go missing. Letting it through would also abort the caller's
+                // frame: a logging call must not be able to break the code that logs.
+                try {
+                    sinks[i].Write(in record);
+                } catch (Exception exception) {
+                    ReportSinkFailure(sinks[i], exception);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Reports a throwing sink once and then stays quiet about it. A sink that fails on one
+        /// record usually fails on all of them, and a report per record would be a second flood
+        /// on top of the first - through the same machinery that is already misbehaving.
+        /// </summary>
+        private static void ReportSinkFailure(ILogSink sink, Exception exception) {
+            if (_reportingSinkFailure) {
+                return;
+            }
+
+            lock (_sinkLock) {
+                if (!_failedSinks.Add(sink)) {
+                    return;
+                }
+            }
+
+            bool suppressed = _suppressForeignCapture;
+            _reportingSinkFailure = true;
+            _suppressForeignCapture = true;
+            try {
+                UnityEngine.Debug.LogError(
+                    "KenseiLog: sink " + sink.GetType().Name + " threw and will not be reported again this session (" +
+                    exception.Message + ")");
+            } catch (Exception) {
+                // Nothing left to report through.
+            } finally {
+                // Restored rather than cleared: a sink that throws from inside its own Debug
+                // call leaves the flag raised, and clearing it here would hand the rest of that
+                // sink's work a flag it never set.
+                _suppressForeignCapture = suppressed;
+                _reportingSinkFailure = false;
             }
         }
 
@@ -101,8 +155,12 @@ namespace KenseiLog {
 
             LogRecord record = new LogRecord(
                 Interlocked.Increment(ref _sequence),
-                tag,
-                message,
+                // Normalised here rather than at each call site. A null tag is easy to pass by
+                // accident - Log.Prod(config?.NetTag, ...) is enough - and it survives all the
+                // way to the viewers, where it throws out of a dictionary lookup or a palette
+                // hash with a stack that never mentions the call that caused it.
+                string.IsNullOrEmpty(tag) ? UntaggedTag : tag,
+                message ?? string.Empty,
                 level,
                 channel,
                 _clock.Elapsed.TotalMilliseconds,
@@ -207,7 +265,14 @@ namespace KenseiLog {
             ILogSink[] sinks = _sinks;
             for (int i = 0; i < sinks.Length; i++) {
                 if (sinks[i] is IFlushableSink flushable) {
-                    flushable.Flush();
+                    // Isolated for the same reason as Emit, and it matters more here: the usual
+                    // caller is the quit hook, so one sink throwing would skip the flush of
+                    // every sink after it at the one moment there is no next chance.
+                    try {
+                        flushable.Flush();
+                    } catch (Exception exception) {
+                        ReportSinkFailure(sinks[i], exception);
+                    }
                 }
             }
         }
