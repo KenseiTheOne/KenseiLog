@@ -215,14 +215,32 @@ namespace KenseiLog {
 #if UNITY_EDITOR
             return file;
 #else
+            return ProjectRelativePath(file);
+#endif
+        }
+
+        /// <summary>
+        /// The part of a path from Assets or Packages onwards, or the file name alone when it
+        /// is under neither - a package in the global cache, say, which still identifies itself
+        /// by name to whoever is reading the log.
+        /// <para>
+        /// Public, and compiled everywhere, because the trimming that uses it only runs in a
+        /// build - where nothing can check it. The window's stack trace parsing is public for
+        /// the same reason.
+        /// </para>
+        /// </summary>
+        public static string ProjectRelativePath(string file) {
             if (string.IsNullOrEmpty(file)) {
                 return file;
             }
 
-            int projectRelative = -1;
+            // A path that is already project-relative has no separator in front of its first
+            // segment, so the start of the string counts as one. A later anchor overrides it:
+            // a checkout inside another project's Assets folder is a path with two.
+            int projectRelative = IsSegment(file, 0, "Assets") || IsSegment(file, 0, "Packages") ? 0 : -1;
             int lastSeparator = -1;
             for (int i = 0; i < file.Length; i++) {
-                if (file[i] != '/' && file[i] != '\') {
+                if (file[i] != '/' && file[i] != '\\') {
                     continue;
                 }
                 lastSeparator = i;
@@ -234,13 +252,9 @@ namespace KenseiLog {
             if (projectRelative >= 0) {
                 return file.Substring(projectRelative);
             }
-            // Somewhere outside the project - a package in the global cache, say. The file name
-            // on its own still identifies it to whoever is reading the log.
             return lastSeparator < 0 ? file : file.Substring(lastSeparator + 1);
-#endif
         }
 
-#if !UNITY_EDITOR
         private static bool IsSegment(string path, int start, string segment) {
             if (start + segment.Length >= path.Length) {
                 return false;
@@ -251,9 +265,8 @@ namespace KenseiLog {
                 }
             }
             char next = path[start + segment.Length];
-            return next == '/' || next == '\';
+            return next == '/' || next == '\\';
         }
-#endif
 
         /// <summary>
         /// Second pass, once the scene systems exist. Sinks are set up as early as possible so

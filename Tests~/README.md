@@ -28,6 +28,7 @@ Any empty Unity project (2022.3 or newer) will do.
    | `DemoSceneBuilder.cs` | `Assets/Editor/` | same |
    | `ScreenshotRunner.cs` | `Assets/Demo/` | a `MonoBehaviour`, must not live under `Editor` |
    | `ReadmeSnippets.cs` | `Assets/Editor/` | nothing runs it; it only has to compile |
+   | `CompileCheck.cs` | `Assets/Editor/` | reaches the build pipeline |
 
 ## The checks
 
@@ -36,7 +37,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-126 assertions over everything that does not need a GUI: the ring buffer including gapped and
+133 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -70,6 +71,23 @@ Each regression check names the bug it guards, because the interesting ones were
 - a null tag, which reached the viewers and threw there
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
+
+## The branches a build takes
+
+```
+Unity.exe -projectPath <project> -batchmode -quit -nographics \
+          -executeMethod CompileCheck.Run -logFile <log>
+```
+
+Compiles the package for Standalone, WebGL and Android, and prints `COMPILE RESULT: PASS` or
+`FAIL (n)`. The editor compiles with `UNITY_EDITOR` defined and for no target in particular, so
+the code that only exists in a build is never seen there: the call site trimmed outside the
+editor, the file sink turned off on WebGL. It compiles rather than builds - seconds against
+minutes, and a build would need a scene and an icon to say the same thing about a compiler
+error. A target whose module is not installed is reported and skipped.
+
+It earned itself on the first run, on a `#if !UNITY_EDITOR` block that did not parse. Nothing
+in the editor had ever looked at it.
 
 ## The README
 

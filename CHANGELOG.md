@@ -22,6 +22,12 @@ behaviour simply stayed where it was.
 - `Tests~/ReadmeSnippets.cs`: the README's code, compiled. Nothing runs it; it exists so a
   snippet that has stopped matching the API cannot sit in the README looking authoritative.
   It found one immediately - see below.
+- `Tests~/CompileCheck.cs`: compiles the package for Standalone, WebGL and Android. The editor
+  compiles with `UNITY_EDITOR` defined and for no target in particular, so the branches that
+  only exist in a build - the trimmed call site, the WebGL default below - were never compiled
+  by anything until someone built. It found one that did not parse.
+- `LogCore.ProjectRelativePath`, which is that trimming, public and compiled everywhere so it
+  can be checked. It only runs in a build, where nothing can look at it.
 - `Documentation~/index.md`, and `documentationUrl`, `changelogUrl` and `licensesUrl` in
   `package.json`.
 
@@ -119,7 +125,7 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  126 assertions, up from 62, and everything it writes goes to a scratch directory it deletes
+  133 assertions, up from 62, and everything it writes goes to a scratch directory it deletes
   afterwards.
 
 ## [0.12.1] - 2026-09-16

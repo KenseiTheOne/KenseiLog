@@ -45,6 +45,7 @@ public static class SmokeRunner {
         Scenario(FileSettingsApplyAfterTheSinkExists);
         Scenario(FileDirectoryMovesWithTheConfiguration);
         Scenario(SourcePathsResolveAcrossMachines);
+        Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
         Scenario(ScopedLoggerCarriesItsTag);
         Scenario(CapturedLogsNavigateByTheirStackTrace);
@@ -590,6 +591,37 @@ public static class SmokeRunner {
 
         Check("every sequence is still addressable",
             buffer.TryGetBySequence(1, out _) && buffer.TryGetBySequence(2, out _) && buffer.TryGetBySequence(3, out _));
+    }
+
+
+    /// <summary>
+    /// CallerFilePath is resolved by the compiler, so a release build carries the absolute path
+    /// of the machine that built it and writes it into the file a tester sends back. Outside
+    /// the editor the path is trimmed to what the window navigates by; this is the trimming,
+    /// which otherwise only ever runs where nothing can look at it.
+    /// </summary>
+    private static void CallSitesAreTrimmedForABuild() {
+        Check("a windows build path keeps the project-relative part",
+            LogCore.ProjectRelativePath(@"C:\build\agent\_work\1\s\Assets\Scripts\Net\Client.cs") ==
+            @"Assets\Scripts\Net\Client.cs");
+
+        Check("a unix build path does too",
+            LogCore.ProjectRelativePath("/home/runner/work/game/Assets/Scripts/Boot.cs") == "Assets/Scripts/Boot.cs");
+
+        Check("a package path is kept from Packages",
+            LogCore.ProjectRelativePath("/home/runner/work/game/Packages/com.kensei.log/Runtime/Log.cs") ==
+            "Packages/com.kensei.log/Runtime/Log.cs");
+
+        Check("the last anchor wins",
+            LogCore.ProjectRelativePath("/build/Assets/old/checkout/Assets/Scripts/Boot.cs") == "Assets/Scripts/Boot.cs");
+
+        Check("a path under neither keeps only its file name",
+            LogCore.ProjectRelativePath(@"C:\Users\builder\Library\PackageCache\com.other\Thing.cs") == "Thing.cs");
+
+        Check("an already relative path is left alone",
+            LogCore.ProjectRelativePath("Assets/Scripts/Boot.cs") == "Assets/Scripts/Boot.cs");
+
+        Check("nothing is not a path", LogCore.ProjectRelativePath(null) == null && LogCore.ProjectRelativePath("") == "");
     }
 
     /// <summary>
