@@ -29,9 +29,12 @@ public sealed class HoverRepro : EditorWindow {
 
     private readonly List<int> _items = new List<int>();
 
-    private VisualElement _host;
-    private ListView _list;
-    private Label _readout;
+    // Assigned in CreateGUI, which is the only place they can be built. The suppressions keep
+    // the file quiet in a project that compiles with -nullable:enable, and mean nothing in one
+    // that does not.
+    private VisualElement _host = null!;
+    private ListView _list = null!;
+    private Label _readout = null!;
 
     private bool _rowTooltip;
     private bool _sixCells = true;
