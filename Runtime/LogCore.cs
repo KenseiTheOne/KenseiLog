@@ -189,9 +189,13 @@ namespace KenseiLog {
                 }
             }
 
-            bool suppressed = _suppressForeignCapture;
+            // Deliberately not suppressed. The report used to be kept out of the pipeline so it
+            // could not come back through the foreign-log handler and take a sequence ahead of
+            // the record still being written - but the flag above already ends the recursion,
+            // and the ring buffer settles a late arrival back into place, so both hazards are
+            // covered twice over. Suppressed, this reached only Player.log: the one channel this
+            // package exists to replace, and never the file a tester sends back.
             _reportingSinkFailure = true;
-            _suppressForeignCapture = true;
             try {
                 UnityEngine.Debug.LogError(
                     "KenseiLog: sink " + sink.GetType().Name + " threw and will not be reported again this session (" +
@@ -199,10 +203,6 @@ namespace KenseiLog {
             } catch (Exception) {
                 // Nothing left to report through.
             } finally {
-                // Restored rather than cleared: a sink that throws from inside its own Debug
-                // call leaves the flag raised, and clearing it here would hand the rest of that
-                // sink's work a flag it never set.
-                _suppressForeignCapture = suppressed;
                 _reportingSinkFailure = false;
             }
         }

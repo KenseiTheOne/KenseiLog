@@ -21,9 +21,13 @@ namespace KenseiLog {
     public sealed class LogOverlay : MonoBehaviour {
         private const float RowHeight = 22f;
         private const float BarHeight = 28f;
-        // Squared once here because it is compared against a squared delta. Comparing the two
-        // directly made the real threshold sqrt(6) - about 2.5px - so a finger that trembled
-        // during a tap turned it into a drag and the tap was dropped.
+        // Measured from where the finger went down, not from one event to the next. A single
+        // frame's movement is a flick detector: at a phone's scale six units in one event is
+        // most of a thousand pixels a second, so a slow deliberate scroll never crossed it and
+        // the release selected a row the reader meant only to pass. Displacement rather than
+        // distance travelled, so that a long press with a tremor in it stays a press.
+        //
+        // Squared once here because it is compared against a squared length.
         private const float DragThresholdSquared = 6f * 6f;
 
         private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
@@ -61,6 +65,7 @@ namespace KenseiLog {
         private Vector2 _bubble = new Vector2(12f, 12f);
         private bool _draggingBubble;
         private bool _didDrag;
+        private Vector2 _pressPosition;
 
         private GUIStyle _panel;
         private GUIStyle _pane;
@@ -363,7 +368,9 @@ namespace KenseiLog {
             Event current = Event.current;
             if (current.type == EventType.MouseDown) {
                 _didDrag = false;
-            } else if (current.type == EventType.MouseDrag && current.delta.sqrMagnitude > DragThresholdSquared) {
+                _pressPosition = current.mousePosition;
+            } else if (current.type == EventType.MouseDrag &&
+                       (current.mousePosition - _pressPosition).sqrMagnitude > DragThresholdSquared) {
                 _didDrag = true;
             }
         }

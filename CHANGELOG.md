@@ -13,6 +13,21 @@ behaviour simply stayed where it was.
 
 ### Added
 
+- Compiler messages reach the window as the compiler raises them, through
+  `CompilationPipeline.assemblyCompilationFinished`. Nothing else could: a failed compile does
+  not reload the domain, so the seeding at load never runs for it, and by the time a later
+  compile succeeds Unity has removed those errors from the console. Read at load or polled from
+  the console, a compile error would never have appeared here at all - which is the one thing
+  someone using this window instead of the Console cannot do without. They go into the buffer
+  rather than the file, so they live exactly as long as the Console's own copies.
+- The session's boundaries are marked in the log: `Editor started`, `Scripts reloaded`,
+  `Entered play mode`, `Exited play mode`, each carrying the wall-clock time. The clock is a
+  static and starts again from zero with every domain, so the Time column read 812.33, 812.40,
+  0.05 with nothing to say why. Carrying the clock across would have made the column continuous
+  and false, hiding a recompile that took eight seconds; this leaves the reset where it is and
+  explains it. The wall clock in the text also makes every row's absolute time derivable, and
+  keeps Collapse from folding every reload of a session into one row.
+
 - The window reads its own history back from the session file when the domain reloads, instead
   of starting empty and recovering what it can from Unity's console. The difference is what
   comes back: a record from the file keeps its tag, its channel, its frame and its call site,
@@ -129,6 +144,23 @@ behaviour simply stayed where it was.
 
 ### Fixed
 
+- The report about a sink that threw reaches the sinks. It was kept out of the pipeline so it
+  could not come back through the foreign-log handler and take a sequence ahead of the record
+  still being written - but the re-entrancy flag already ends that recursion and the ring buffer
+  settles a late arrival back into place, so both hazards are covered without it. Suppressed, the
+  one diagnostic about a broken sink reached `Player.log` and never the file a tester sends back.
+- The overlay measures a drag from where the finger went down rather than from one event to the
+  next. A single frame's movement is a flick detector: at a phone's scale the threshold came to
+  most of a thousand pixels a second, so a slow deliberate scroll never crossed it and the
+  release selected a row the reader meant only to pass.
+- The window keeps its place when the ring buffer drops rows from under it. The list addresses
+  rows by position, so on a full buffer the contents slid up under a reader who had scrolled
+  back - and the selection moved with them, leaving the highlight and the Open button on one
+  record while the detail pane showed another, since a changed selected index raises no event.
+  Both are followed by sequence across the prune.
+- The Ping button no longer claims a record was written without a related object when what
+  actually happened is that the object did not survive a domain reload.
+
 - A list row bound from one source and reused for another kept the text it already had. Every
   source numbers its records from one - a loaded file, a fresh editor - so a pooled row matched
   by sequence and took the rebind for a no-op, leaving a whole page of a build's log on screen
@@ -227,7 +259,7 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  166 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
+  167 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
   claiming 62 for some time - and everything it writes goes to a scratch directory it deletes
   afterwards.
 

@@ -65,6 +65,7 @@ namespace KenseiLog.Editor {
         private VisualElement _tabBar;
         private ScrollView _tagPane;
         private ListView _listView;
+        private ScrollView _listScroll;
         private Label _emptyHint;
         private Label _detailHeader;
         private ScrollView _detailScroll;
@@ -758,8 +759,20 @@ namespace KenseiLog.Editor {
                 }
             }
 
+            // What the reader is looking at, and what they have selected, are both held by
+            // position - and the prune takes rows out from underneath both. Remembered by
+            // sequence across it, which is the only identity a row has that survives.
+            TabView active = ActiveView;
+            int countBefore = active.Count;
+            long anchorSequence = TopVisibleSequence(active);
+            long selectedSequence = SelectedSequence(active);
+
             for (int t = 0; t < _views.Count; t++) {
                 _views[t].PruneBelow(oldest);
+            }
+
+            if (active.Count != countBefore) {
+                RestoreView(active, anchorSequence, selectedSequence);
             }
 
             if (tagsChanged) {
@@ -769,6 +782,63 @@ namespace KenseiLog.Editor {
             }
             RefreshList();
             RefreshLevelCounts();
+        }
+
+        /// <summary>
+        /// The sequence of the row at the top of the viewport, or -1 when the list is empty or
+        /// following the tail - where holding the position is the opposite of what is wanted.
+        /// </summary>
+        private long TopVisibleSequence(TabView view) {
+            if (_followTail || view.Count == 0) {
+                return -1;
+            }
+
+            ScrollView scroll = ListScroll();
+            if (scroll == null) {
+                return -1;
+            }
+
+            int first = Mathf.Clamp(Mathf.FloorToInt(scroll.scrollOffset.y / RowHeight), 0, view.Count - 1);
+            return view.Sequences[first];
+        }
+
+        private long SelectedSequence(TabView view) {
+            int index = _listView.selectedIndex;
+            return index >= 0 && index < view.Count ? view.Sequences[index] : -1;
+        }
+
+        /// <summary>
+        /// Puts the view back where it was after rows were dropped from under it.
+        /// <para>
+        /// The list addresses rows by position, so a prune slides the contents up under a reader
+        /// who had scrolled back to look at something - and moves the selection off the record
+        /// the detail pane is showing, since a changed selected index raises no event. Both are
+        /// followed by sequence instead. A row that was itself pruned cannot be followed; the
+        /// view then stays where the list puts it.
+        /// </para>
+        /// </summary>
+        private void RestoreView(TabView view, long anchorSequence, long selectedSequence) {
+            if (anchorSequence >= 0) {
+                int index = view.Sequences.IndexOf(anchorSequence);
+                ScrollView scroll = ListScroll();
+                if (index >= 0 && scroll != null) {
+                    scroll.scrollOffset = new Vector2(scroll.scrollOffset.x, index * RowHeight);
+                }
+            }
+
+            if (selectedSequence < 0) {
+                return;
+            }
+            int selected = view.Sequences.IndexOf(selectedSequence);
+            if (selected != _listView.selectedIndex) {
+                // Without notify: the selection has not changed, only where it sits, and the
+                // detail pane is already showing that record.
+                _listView.SetSelectionWithoutNotify(selected < 0 ? new int[0] : new[] { selected });
+            }
+        }
+
+        private ScrollView ListScroll() {
+            return _listScroll ?? (_listScroll = _listView.Q<ScrollView>());
         }
 
         private void ResetIngest() {
@@ -1280,7 +1350,7 @@ namespace KenseiLog.Editor {
             bool canPing = contextId != 0 && EditorUtility.InstanceIDToObject(contextId) != null;
             _pingButton.SetEnabled(canPing);
             _pingButton.tooltip = contextId == 0
-                ? "This log was written without a related object."
+                ? "No related object was recorded, or it did not survive a domain reload."
                 : canPing
                     ? "Highlight the related object in the hierarchy."
                     : "The object this log referred to no longer exists.";

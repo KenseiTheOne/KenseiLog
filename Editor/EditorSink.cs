@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace KenseiLog.Editor {
@@ -35,6 +36,12 @@ namespace KenseiLog.Editor {
 
         /// <summary>Kept apart from the runs, which own the directory above it.</summary>
         private const string EditorLogFolder = "editor";
+
+        /// <summary>
+        /// Tag for the session boundaries. Top level on purpose: under the engine's own tag they
+        /// would be folded away, or filtered out, along with the noise somebody was hiding.
+        /// </summary>
+        private const string MarkerTag = "Editor";
 
         /// <summary>
         /// How much of the session file is read back when the domain reloads. Bounded because
@@ -180,11 +187,19 @@ namespace KenseiLog.Editor {
             LogCore.AddSink(Instance);
             LogCore.Initialize();
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
+            CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
 
             // Continuing the file makes sense only if its records came back. When the read
             // failed, carrying on with it would put records numbered from one after records
             // numbered in the hundreds - an unsorted file, and every lookup into it wrong.
             OpenSessionFile(continueExistingFile: continuing && seeded);
+
+            // After the sink is open, so the marker reaches the file as well as the window. Not
+            // when entering play mode: that has a marker of its own a moment later, and this one
+            // would be wiped by Clear on Play in between.
+            if (!EditorApplication.isPlayingOrWillChangePlaymode) {
+                Mark(continuing ? "Scripts reloaded" : "Editor started");
+            }
         }
 
         /// <summary>
@@ -424,10 +439,87 @@ namespace KenseiLog.Editor {
             }
         }
 
-        private static void OnPlayModeChanged(PlayModeStateChange change) {
-            if (change == PlayModeStateChange.EnteredPlayMode && ClearOnPlay) {
-                Instance.Clear();
+        /// <summary>
+        /// Takes the compiler's own messages as it finishes with each assembly.
+        /// <para>
+        /// Nothing else can. A compile that fails does not reload the domain, so the seeding at
+        /// load never runs for it - and by the time a later compile succeeds and the domain does
+        /// reload, Unity has removed those errors from the console. Read at load or polled from
+        /// the console, a compile error would never appear in this window at all, which is the
+        /// one thing someone using it instead of the Console cannot do without.
+        /// </para>
+        /// <para>
+        /// Straight into the buffer rather than through the pipeline, so they are not written to
+        /// the session file and read back after the reload that fixed them - they live exactly
+        /// as long as the Console's own copies do.
+        /// </para>
+        /// </summary>
+        private static void OnAssemblyCompiled(string assemblyPath, CompilerMessage[] messages) {
+            if (messages == null || Instance == null) {
+                return;
             }
+
+            for (int i = 0; i < messages.Length; i++) {
+                CompilerMessage message = messages[i];
+                Instance.Write(new LogRecord(
+                    LogCore.NextSequence(),
+                    LogCore.ForeignTag,
+                    message.message,
+                    LevelOf(message.type),
+                    LogChannel.Prod,
+                    0.0,
+                    0,
+                    message.file,
+                    message.line,
+                    null,
+                    0,
+                    captured: true));
+            }
+        }
+
+        private static LogLevel LevelOf(CompilerMessageType type) {
+            switch (type) {
+                case CompilerMessageType.Error:
+                    return LogLevel.Error;
+                case CompilerMessageType.Warning:
+                    return LogLevel.Warning;
+                default:
+                    return LogLevel.Log;
+            }
+        }
+
+        private static void OnPlayModeChanged(PlayModeStateChange change) {
+            if (change == PlayModeStateChange.EnteredPlayMode) {
+                if (ClearOnPlay) {
+                    Instance.Clear();
+                }
+                // After the clear, so it survives it and is the first line of the run - and so
+                // its sequence is above the watermark a clear leaves behind.
+                Mark("Entered play mode");
+            } else if (change == PlayModeStateChange.EnteredEditMode) {
+                Mark("Exited play mode");
+            }
+        }
+
+        /// <summary>
+        /// Writes a line marking a boundary in the session: a reload, or play mode starting and
+        /// stopping.
+        /// <para>
+        /// The clock is a static, so it starts again from zero with every domain, and the Time
+        /// column reads 812.33, 812.40, 0.05 with nothing to say why. Carrying the clock across
+        /// instead would make the column continuous and false, hiding a recompile that took
+        /// eight seconds. This leaves the reset where it is and explains it.
+        /// </para>
+        /// <para>
+        /// The wall clock goes in the text, which makes every row's absolute time derivable -
+        /// this marker plus the row's own elapsed - and which is also what stops Collapse
+        /// folding every reload of the session into one row.
+        /// </para>
+        /// </summary>
+        private static void Mark(string what) {
+            // file: null so that Open on the marker does not offer to show this line of this
+            // file, which is not where anything happened.
+            Log.Dev(MarkerTag, what + " at " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture), null, null, 0);
         }
     }
 }

@@ -983,7 +983,23 @@ public static class SmokeRunner {
         }
 
         Check("the broken sink was actually asked", bad.Calls > 0);
-        Check("the sink behind it still got the record", behind.Buffer.Count == 1);
+        Check("the sink behind it still got the record", Holds(behind, "past a broken sink"));
+
+        // The report is the diagnostic, and it used to be kept out of the pipeline - so it
+        // reached Player.log and never the file a tester sends back.
+        Check("and the report about the failure reaches the sinks too",
+            Holds(behind, "threw and will not be reported again"));
+    }
+
+    private static bool Holds(MemorySink sink, string text) {
+        LogRecord[] scratch = new LogRecord[sink.Buffer.Capacity];
+        int copied = sink.Buffer.CopyNewerThan(0, scratch);
+        for (int i = 0; i < copied; i++) {
+            if (scratch[i].Message != null && scratch[i].Message.Contains(text)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private sealed class ThrowingSink : ILogSink {
