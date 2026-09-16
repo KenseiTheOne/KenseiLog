@@ -105,7 +105,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 
 **Window → Kensei → Logs**
 
-![The Logs window in the Unity editor](Documentation~/images/editor-window.jpg)
+![The Logs window in the Unity editor](Documentation~/images/editor-window.png)
 
 - **Tabs are saved filters.** A tab remembers its tags, levels, channels, search text, collapse setting and any isolated frame. One tab is active at a time, so `Combat` and `Net` are a click apart rather than visible at once — but neither has to be rebuilt.
 - **The tag tree** on the left is built from the tags actually seen this session, with counts, and fills in the parents: log `Combat.Damage` and `Combat` appears above it. A typo'd tag shows up there as its own branch instead of silently vanishing. Branches fold, and stay folded across restarts; the arrow on its right edge hides and shows the whole tree.
