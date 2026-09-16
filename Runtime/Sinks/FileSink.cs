@@ -19,7 +19,11 @@ namespace KenseiLog {
         private const string DirectoryName = "logs";
 
         private readonly object _lock = new object();
-        private readonly StringBuilder _builder = new StringBuilder(512);
+
+        // Thread-local so that building a line needs no lock. A shared builder was what forced
+        // the lock to span the whole of Write - every thread that logged waited not only on the
+        // disk but on another thread's JSON.
+        [ThreadStatic] private static StringBuilder _lineBuilder;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private long _sizeLimitBytes;
         private int _retainedFiles;
@@ -66,14 +70,19 @@ namespace KenseiLog {
                 return;
             }
 
+            // Built outside the lock: this is the expensive half of a write, and holding the
+            // lock across it made every other logging thread wait for it as well as for the
+            // disk. The byte count comes with it for the same reason.
+            StringBuilder builder = LineBuilder();
+            builder.Length = 0;
+            LogJson.AppendRecord(builder, in record);
+            string line = builder.ToString();
+            long bytes = Encoding.UTF8.GetByteCount(line) + 1;
+
             lock (_lock) {
                 if (_writer == null) {
                     return;
                 }
-
-                _builder.Length = 0;
-                LogJson.AppendRecord(_builder, in record);
-                string line = _builder.ToString();
 
                 // Writing is where the disk actually gets touched, so it is where a full volume,
                 // an ejected card or a revoked permission shows up. None of that may reach the
@@ -82,7 +91,7 @@ namespace KenseiLog {
                 try {
                     _writer.Write(line);
                     _writer.Write('\n');
-                    _bytesWritten += Encoding.UTF8.GetByteCount(line) + 1;
+                    _bytesWritten += bytes;
 
                     double now = _clock.Elapsed.TotalSeconds;
                     // An error is usually the reason the file exists at all. If the app dies right
@@ -194,8 +203,16 @@ namespace KenseiLog {
                         ShiftFiles();
                     }
                 } catch (Exception exception) {
-                    Warn("file logging is off, could not prepare", exception);
-                    return;
+                    // The housekeeping failed, not the ability to write - and returning here
+                    // left the run with no file at all, which is the worst of the outcomes on
+                    // offer. It opens anyway, with a session header of its own.
+                    //
+                    // Unlike a failed rotation mid-run, this one truncates: what is in the file
+                    // belongs to a previous run that could not be shifted aside, and a file
+                    // holding two runs under the first one's header would describe the wrong
+                    // device, the wrong version and the wrong start time. That previous run was
+                    // one successful rotation away from being deleted in any case.
+                    Warn("could not shift the previous run aside, starting a new file at", exception);
                 }
                 OpenWriter();
             }
@@ -251,9 +268,10 @@ namespace KenseiLog {
                 stream = null;
 
                 if (startSession) {
-                    _builder.Length = 0;
+                    StringBuilder builder = LineBuilder();
+                    builder.Length = 0;
                     LogJson.AppendSessionHeader(
-                        _builder,
+                        builder,
                         Guid.NewGuid().ToString("N"),
                         _app,
                         _unity,
@@ -261,7 +279,7 @@ namespace KenseiLog {
                         _device,
                         DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
 
-                    string header = _builder.ToString();
+                    string header = builder.ToString();
                     _writer.Write(header);
                     _writer.Write('\n');
                     _writer.Flush();
@@ -312,8 +330,15 @@ namespace KenseiLog {
             string[] existing = Directory.GetFiles(LogDirectory, "log.*.jsonl");
             for (int i = 0; i < existing.Length; i++) {
                 int index = IndexOfFile(existing[i]);
-                if (index >= _retainedFiles) {
+                if (index < _retainedFiles) {
+                    continue;
+                }
+                try {
                     File.Delete(existing[i]);
+                } catch (Exception) {
+                    // One stale file held open by a sync agent, a scanner or another instance
+                    // must not cost the run its log. It is tried again at the next rotation,
+                    // and the shift below only needs the slots inside the retained count.
                 }
             }
         }
@@ -327,6 +352,9 @@ namespace KenseiLog {
             }
             return index;
         }
+
+        private static StringBuilder LineBuilder() =>
+            _lineBuilder ?? (_lineBuilder = new StringBuilder(512));
 
         private string IndexedPath(int index) =>
             Path.Combine(LogDirectory, "log." + index.ToString(CultureInfo.InvariantCulture) + ".jsonl");

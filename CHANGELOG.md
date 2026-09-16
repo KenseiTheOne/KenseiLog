@@ -33,6 +33,31 @@ behaviour simply stayed where it was.
 
 ### Changed
 
+- A record is not built for a channel nothing will take. In a development build the sink list
+  is the file sink with the dev channel off, so every `Log.Dev` call built a record - and
+  unwound a stack trace, if it was an error - only to be dropped by the first sink that looked
+  at it. A development build is what gets profiled on a device, so it was the one build type
+  that misreported what logging costs.
+- The file sink builds its JSON line before taking its lock rather than inside it. A shared
+  `StringBuilder` was what forced the lock to span the whole write, so every thread that logged
+  waited on another thread's formatting as well as on the disk. The flush on an error stays
+  where it is.
+- The window's tag tree is rebuilt when a tag appears for the first time, and an arriving
+  record adds one to the nodes its tag passes through. Rebuilding the tree to read its own
+  totals cost a node, a list and a substring per segment per tag, fifteen times a second, for
+  as long as anything was logging.
+- A row already showing a record is left alone instead of being bound to it again. A rebind
+  takes a lock on the ring, binary-searches it and formats five strings, and every visible row
+  is rebound whenever anything in the tab changes.
+- A failed shift at the start of a run no longer leaves the run with no file at all: it warns
+  and starts a new file. Unlike a rotation that fails mid-run, this one truncates - what is in
+  the file belongs to a run that could not be moved aside, and keeping it under the wrong
+  header would describe the wrong device and the wrong start time. A stale file that cannot be
+  deleted during housekeeping is skipped rather than taking the run's log with it.
+- The trimmed call site is worked out once per call site rather than once per record. The
+  compiler hands the same interned string to every call from a given line, so it can be looked
+  up by reference.
+
 - The file sink is off by default on WebGL. `persistentDataPath` there is a virtual filesystem
   inside the page, so at the default limits the rolling history held around twenty megabytes
   of browser heap for a build with no way to fetch any of it back.
@@ -131,7 +156,7 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  135 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
+  140 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
   claiming 62 for some time - and everything it writes goes to a scratch directory it deletes
   afterwards.
 

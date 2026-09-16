@@ -29,6 +29,7 @@ public static class SmokeRunner {
         Scenario(TagTreeBuildsHierarchyWithRollupCounts);
         Scenario(FacadeReachesTheEditorSink);
         Scenario(ANullTagBecomesUntagged);
+        Scenario(DevRecordsStillReachASinkThatWantsThem);
         Scenario(ForeignLogsAreMarkedAsCaptured);
         Scenario(ConsoleSinkSkipsCapturedRecords);
         Scenario(RingBufferHandlesGappedSequences);
@@ -758,6 +759,65 @@ public static class SmokeRunner {
         LogFilter filter = new LogFilter { Name = "Probe" };
         filter.Tags.Add("Combat");
         Check("the filter can test it without throwing", copied == 1 && !filter.Matches(in scratch[0]));
+    }
+
+
+    /// <summary>
+    /// A record is no longer built for a channel nothing will take - in a development build the
+    /// list is the file sink with the dev channel off, and every Log.Dev call there was building
+    /// a record, unwinding a stack trace if it was an error, and being dropped on arrival.
+    /// <para>
+    /// What must not follow is a dev record going missing from something that did want it. That
+    /// is what this checks, because a silently dropped record is the failure this package is
+    /// most afraid of.
+    /// </para>
+    /// </summary>
+    private static void DevRecordsStillReachASinkThatWantsThem() {
+        // The editor's own sink takes every channel, so it has to stand aside to leave the
+        // pipeline in the shape a build has.
+        LogCore.RemoveSink(EditorSink.Instance);
+
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = ScratchDirectory("devchannel");
+        config.FileIncludesDevChannel = false;
+        FileSink file = new FileSink(in config);
+        MemorySink watcher = new MemorySink(8);
+
+        try {
+            LogCore.AddSink(file);
+
+            Log.Dev("Probe", "dev, with only a file sink that does not want it");
+            Log.Prod("Probe", "prod, which the file sink does want");
+            file.Flush();
+
+            string written = ReadWhileOpen(file.CurrentFilePath);
+            Check("a prod record still reaches the file", written.Contains("which the file sink does want"));
+            Check("a dev record still stays out of it", !written.Contains("does not want it"));
+
+            // Registering something that takes the dev channel has to bring dev records back.
+            LogCore.AddSink(watcher);
+            Log.Dev("Probe", "dev, now that something wants it");
+            Check("a dev record reaches a sink that wants it", watcher.Buffer.Count == 1);
+
+            LogCore.RemoveSink(watcher);
+            Log.Dev("Probe", "dev, with the watcher gone again");
+            Check("and stops when that sink goes away", watcher.Buffer.Count == 1);
+
+            // The same, through the setting rather than through the sink list.
+            config.FileIncludesDevChannel = true;
+            file.Reconfigure(in config);
+            LogCore.Configure(in config);
+            Log.Dev("Probe", "dev, once the file sink is told to take the channel");
+            file.Flush();
+
+            Check("turning the channel on in the config brings them back",
+                ReadWhileOpen(file.CurrentFilePath).Contains("told to take the channel"));
+        } finally {
+            LogCore.RemoveSink(watcher);
+            LogCore.RemoveSink(file);
+            file.Dispose();
+            LogCore.AddSink(EditorSink.Instance);
+        }
     }
 
     /// <summary>

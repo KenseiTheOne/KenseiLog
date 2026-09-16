@@ -45,7 +45,9 @@ namespace KenseiLog.Editor {
         private readonly HashSet<string> _foldedTags = new HashSet<string>();
         private readonly Dictionary<long, ConsoleContext> _consoleContexts = new Dictionary<long, ConsoleContext>();
         private readonly Dictionary<string, Label> _tagCountLabels = new Dictionary<string, Label>();
+        private readonly List<TagNode> _dirtyTagNodes = new List<TagNode>();
 
+        private List<TagNode> _tagRoots = new List<TagNode>();
         private LogRecord[] _scratch;
         private long _lastSequence;
         private int _lastVersion = -1;
@@ -557,7 +559,9 @@ namespace KenseiLog.Editor {
             _headerMenuButton.SetEnabled(!_compact);
 
             // Rebuild rather than refresh: a row's visibility is set while binding, and
-            // recycled rows keep whatever the last bind gave them until bound again.
+            // recycled rows keep whatever the last bind gave them until bound again. Rebuild
+            // also discards the row elements, and with them the record each one remembers, so
+            // the bind that follows cannot take itself for a no-op.
             _lastRenderedRevision = -1;
             _listView.Rebuild();
         }
@@ -742,6 +746,7 @@ namespace KenseiLog.Editor {
 
                 if (_tagCounts.TryGetValue(record.Tag, out int seen)) {
                     _tagCounts[record.Tag] = seen + 1;
+                    BumpTagNodes(record.Tag);
                 } else {
                     _tagCounts[record.Tag] = 1;
                     tagsChanged = true;
@@ -758,11 +763,8 @@ namespace KenseiLog.Editor {
 
             if (tagsChanged) {
                 RefreshTagPane();
-            } else if (copied > 0) {
-                // A known tag whose count went up used to change nothing on screen: the pane
-                // was only ever rebuilt when a tag appeared for the first time, so every
-                // number beside a tag froze at whatever it held when it was first seen.
-                RefreshTagCounts();
+            } else if (_dirtyTagNodes.Count > 0) {
+                FlushTagCounts();
             }
             RefreshList();
             RefreshLevelCounts();
@@ -930,35 +932,82 @@ namespace KenseiLog.Editor {
         private void RefreshTagPane() {
             _tagPane.Clear();
             _tagCountLabels.Clear();
-            List<TagNode> roots = TagTree.Build(_tagCounts);
-            for (int i = 0; i < roots.Count; i++) {
-                AddTagRow(roots[i], 0);
+            _dirtyTagNodes.Clear();
+            _tagRoots = TagTree.Build(_tagCounts);
+            for (int i = 0; i < _tagRoots.Count; i++) {
+                AddTagRow(_tagRoots[i], 0);
             }
         }
 
         /// <summary>
-        /// Writes the current totals into the rows that are already there. Rebuilding the pane
-        /// instead would throw away its scroll position several times a second while logs are
-        /// arriving, which is exactly when someone is reading it.
+        /// Adds one record to the counts held in the tree, without rebuilding it.
+        /// <para>
+        /// The tree's shape only changes when a tag is seen for the first time, and that
+        /// already rebuilds the pane. Everything else is a number going up on the two or three
+        /// nodes that the record's tag passes through, so that is all this does - where
+        /// rebuilding the whole tree to read its totals cost a node, a list and a substring per
+        /// segment per tag, fifteen times a second, for as long as anything was logging.
+        /// </para>
+        /// <para>
+        /// A tag with no node yet is one the pane has not been rebuilt for, which is about to
+        /// happen in this same tick; the rebuild counts it from the authoritative totals.
+        /// </para>
         /// </summary>
-        private void RefreshTagCounts() {
-            List<TagNode> roots = TagTree.Build(_tagCounts);
-            for (int i = 0; i < roots.Count; i++) {
-                ApplyTagCount(roots[i]);
+        private void BumpTagNodes(string tag) {
+            List<TagNode> level = _tagRoots;
+            int start = 0;
+
+            while (true) {
+                int dot = tag.IndexOf('.', start);
+                int end = dot < 0 ? tag.Length : dot;
+
+                TagNode node = FindSegment(level, tag, start, end - start);
+                if (node == null) {
+                    return;
+                }
+
+                node.Count++;
+                if (!_dirtyTagNodes.Contains(node)) {
+                    _dirtyTagNodes.Add(node);
+                }
+
+                if (dot < 0) {
+                    return;
+                }
+                level = node.Children;
+                start = dot + 1;
             }
         }
 
-        private void ApplyTagCount(TagNode node) {
-            // A folded branch has no rows for its children, so a miss here is ordinary.
-            if (_tagCountLabels.TryGetValue(node.FullTag, out Label label)) {
-                string text = node.Count.ToString(CultureInfo.InvariantCulture);
-                if (label.text != text) {
-                    label.text = text;
+        /// <summary>
+        /// The node for one segment of a tag, matched without cutting the segment out of it.
+        /// </summary>
+        private static TagNode FindSegment(List<TagNode> level, string tag, int start, int length) {
+            for (int i = 0; i < level.Count; i++) {
+                TagNode node = level[i];
+                if (node.Segment.Length == length &&
+                    string.CompareOrdinal(node.Segment, 0, tag, start, length) == 0) {
+                    return node;
                 }
             }
-            for (int i = 0; i < node.Children.Count; i++) {
-                ApplyTagCount(node.Children[i]);
+            return null;
+        }
+
+        /// <summary>
+        /// Writes the totals that moved into the rows already on screen - once per tick rather
+        /// than once per record, and never for a row that did not change. Rebuilding the pane
+        /// instead would throw away its scroll position several times a second while logs are
+        /// arriving, which is exactly when someone is reading it.
+        /// </summary>
+        private void FlushTagCounts() {
+            for (int i = 0; i < _dirtyTagNodes.Count; i++) {
+                TagNode node = _dirtyTagNodes[i];
+                // A folded branch has no rows for its children, so a miss here is ordinary.
+                if (_tagCountLabels.TryGetValue(node.FullTag, out Label label)) {
+                    label.text = node.Count.ToString(CultureInfo.InvariantCulture);
+                }
             }
+            _dirtyTagNodes.Clear();
         }
 
         private void AddTagRow(TagNode node, int depth) {
@@ -1039,9 +1088,24 @@ namespace KenseiLog.Editor {
         // Rows
         // =====================================================================
 
+        /// <summary>
+        /// What a row is currently showing, so that binding it to the same thing again can stop
+        /// before it starts. A rebind costs a lock on the ring, a binary search and five
+        /// formatted strings, and the list rebinds every visible row on every tick that changed
+        /// anything at all - while scrolled back, or with the tail still, most of those rows are
+        /// being handed exactly what they already hold.
+        /// </summary>
+        private sealed class RowState {
+            public int Index = -1;
+            public long Sequence = -1;
+            public int Repeats = -1;
+            public bool Expired;
+        }
+
         private VisualElement MakeRow() {
             VisualElement row = new VisualElement();
             row.AddToClassList("kl-row");
+            row.userData = new RowState();
 
             VisualElement strip = new VisualElement();
             strip.AddToClassList("kl-strip");
@@ -1076,9 +1140,22 @@ namespace KenseiLog.Editor {
             if (index >= view.Sequences.Count) {
                 return;
             }
-            element.userData = index;
 
-            if (!Source.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
+            RowState state = (RowState)element.userData;
+            long sequence = view.Sequences[index];
+            int repeats = view.Repeats[index];
+            bool unchanged = state.Sequence == sequence && state.Repeats == repeats && !state.Expired;
+
+            state.Index = index;
+            state.Sequence = sequence;
+            state.Repeats = repeats;
+
+            if (unchanged) {
+                return;
+            }
+
+            if (!Source.TryGetBySequence(sequence, out LogRecord record)) {
+                state.Expired = true;
                 // Rows are recycled, so everything the record that had this one set has to be
                 // put back as well as the text: its tag colour on the stripe, its severity on
                 // the message, and whichever columns were showing when it was bound.
@@ -1099,13 +1176,14 @@ namespace KenseiLog.Editor {
                 return;
             }
 
+            state.Expired = false;
             element.ElementAt(1).style.display = ShowFrame ? DisplayStyle.Flex : DisplayStyle.None;
             element.ElementAt(2).style.display = ShowTime ? DisplayStyle.Flex : DisplayStyle.None;
             element.ElementAt(3).style.display = ShowTag ? DisplayStyle.Flex : DisplayStyle.None;
 
             element.ElementAt(0).style.backgroundColor = TagColor.For(record.Tag);
             ((Label)element.ElementAt(1)).text = record.Frame.ToString();
-            ((Label)element.ElementAt(2)).text = (record.TimeMs / 1000.0).ToString("0.00");
+            ((Label)element.ElementAt(2)).text = (record.TimeMs / 1000.0).ToString("0.00", CultureInfo.InvariantCulture);
 
             Label tagLabel = (Label)element.ElementAt(3);
             tagLabel.text = ShortTag(record.Tag);
@@ -1115,20 +1193,18 @@ namespace KenseiLog.Editor {
             messageLabel.EnableInClassList("kl-level-warning", record.Level == LogLevel.Warning);
             messageLabel.EnableInClassList("kl-level-error", record.Level == LogLevel.Error);
 
-            Label repeats = (Label)element.ElementAt(5);
-            int count = view.Repeats[index];
-            repeats.text = count > 1 ? "x" + count : string.Empty;
+            ((Label)element.ElementAt(5)).text = repeats > 1 ? "x" + repeats : string.Empty;
         }
 
         private void BuildRowMenu(ContextualMenuPopulateEvent evt, VisualElement row) {
-            if (!(row.userData is int index)) {
+            if (!(row.userData is RowState state) || state.Index < 0) {
                 return;
             }
             TabView view = ActiveView;
-            if (index >= view.Sequences.Count) {
+            if (state.Index >= view.Sequences.Count) {
                 return;
             }
-            if (!Source.TryGetBySequence(view.Sequences[index], out LogRecord record)) {
+            if (!Source.TryGetBySequence(view.Sequences[state.Index], out LogRecord record)) {
                 return;
             }
 

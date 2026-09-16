@@ -31,6 +31,7 @@ namespace KenseiLog {
         private static int _mainThreadId;
         private static int _lastKnownFrame;
         private static bool _sceneSystemsReady;
+        private static bool _devChannelWanted = true;
 
         [ThreadStatic] private static bool _suppressForeignCapture;
 
@@ -75,6 +76,7 @@ namespace KenseiLog {
                 Array.Copy(_sinks, updated, _sinks.Length);
                 updated[_sinks.Length] = sink;
                 _sinks = updated;
+                RefreshDevChannelInterest();
             }
         }
 
@@ -91,7 +93,35 @@ namespace KenseiLog {
                 // A sink that is taken out and put back gets another chance to report, rather
                 // than staying silently on the failed list for the rest of the app domain.
                 _failedSinks.Remove(sink);
+                RefreshDevChannelInterest();
             }
+        }
+
+        /// <summary>
+        /// Works out whether anything registered would take a Dev record.
+        /// <para>
+        /// The only sink that turns a channel away is the file sink, and this class is the one
+        /// that knows whether it is turning the dev channel away at the moment - so the
+        /// question is answerable without asking the sinks anything and without guessing about
+        /// a sink somebody else wrote, which is assumed to want everything.
+        /// </para>
+        /// <para>
+        /// The case worth catching is a development build with the defaults: the list there is
+        /// exactly the file sink with the dev channel off, and every Log.Dev call was building
+        /// a record - unwinding a stack trace, for an error - that was dropped on arrival. A
+        /// development build is what gets profiled on a device, so it was the one build type
+        /// that misreported what logging costs.
+        /// </para>
+        /// </summary>
+        private static void RefreshDevChannelInterest() {
+            ILogSink[] sinks = _sinks;
+            for (int i = 0; i < sinks.Length; i++) {
+                if (!ReferenceEquals(sinks[i], _fileSink) || _config.FileIncludesDevChannel) {
+                    _devChannelWanted = true;
+                    return;
+                }
+            }
+            _devChannelWanted = false;
         }
 
         /// <summary>
@@ -155,6 +185,14 @@ namespace KenseiLog {
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         internal static void Write(string tag, string message, LogLevel level, LogChannel channel, Object context, string file, int line) {
+            // Before the stack trace, which is the expensive part. Nothing registered, or
+            // nothing that would take this channel, means the record is built only to be
+            // dropped by the first sink that looks at it. Returning here also leaves no gap in
+            // the sequence, since the number is taken below.
+            if (_sinks.Length == 0 || (channel == LogChannel.Dev && !_devChannelWanted)) {
+                return;
+            }
+
             string stackTrace = _config.CaptureStackTraceOnError && level == LogLevel.Error
                 ? new StackTrace(2, true).ToString()
                 : null;
@@ -215,9 +253,38 @@ namespace KenseiLog {
 #if UNITY_EDITOR
             return file;
 #else
-            return ProjectRelativePath(file);
+            if (string.IsNullOrEmpty(file)) {
+                return file;
+            }
+
+            // The compiler hands the same interned string to every call from a given line, so
+            // the answer can be looked up by reference and the substring paid for once per call
+            // site rather than once per record. Thread-local, so logging from several threads
+            // needs no lock to read it; a miss only costs the work that used to happen anyway.
+            Dictionary<string, string> cache = _callSites ?? (_callSites = new Dictionary<string, string>(ReferenceComparer.Instance));
+            if (cache.TryGetValue(file, out string trimmed)) {
+                return trimmed;
+            }
+
+            trimmed = ProjectRelativePath(file);
+            cache[file] = trimmed;
+            return trimmed;
 #endif
         }
+
+#if !UNITY_EDITOR
+        [ThreadStatic] private static Dictionary<string, string> _callSites;
+
+        private sealed class ReferenceComparer : IEqualityComparer<string> {
+            public static readonly ReferenceComparer Instance = new ReferenceComparer();
+
+            public bool Equals(string left, string right) =>
+                ReferenceEquals(left, right);
+
+            public int GetHashCode(string value) =>
+                RuntimeHelpers.GetHashCode(value);
+        }
+#endif
 
         /// <summary>
         /// The part of a path from Assets or Packages onwards, or the file name alone when it
@@ -358,6 +425,8 @@ namespace KenseiLog {
             } else if (_overlaySink != null) {
                 LogOverlay.Remove();
             }
+
+            RefreshDevChannelInterest();
         }
 
         /// <summary>
