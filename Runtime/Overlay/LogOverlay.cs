@@ -21,15 +21,20 @@ namespace KenseiLog {
     public sealed class LogOverlay : MonoBehaviour {
         private const float RowHeight = 22f;
         private const float BarHeight = 28f;
-        private const float DragThreshold = 6f;
+        // Squared once here because it is compared against a squared delta. Comparing the two
+        // directly made the real threshold sqrt(6) - about 2.5px - so a finger that trembled
+        // during a tap turned it into a drag and the tap was dropped.
+        private const float DragThresholdSquared = 6f * 6f;
 
         private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
+        private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
 
         private static LogOverlay _instance;
 
         private readonly LogFilter _filter = new LogFilter { Name = "Overlay" };
         private readonly List<Row> _visible = new List<Row>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
+        private readonly List<TagRow> _tagRows = new List<TagRow>();
         private readonly int[] _levelCounts = new int[3];
 
         private MemorySink _sink;
@@ -39,8 +44,15 @@ namespace KenseiLog {
         private float _configuredScale;
 
         private bool _open;
+        private bool _listBuilt;
         private bool _showTags;
+        private bool _followTail = true;
         private long _selected = -1;
+        private long _detailSequence = -1;
+        private string _detailBody;
+        private string _bubbleLabel;
+        private bool _bubbleLabelDirty = true;
+        private bool _tagRowsDirty;
         private Vector2 _scroll;
         private Vector2 _tagScroll;
         private Vector2 _bubble = new Vector2(12f, 12f);
@@ -71,9 +83,22 @@ namespace KenseiLog {
                 DontDestroyOnLoad(host);
                 _instance = host.AddComponent<LogOverlay>();
             }
-            _instance._sink = sink;
-            _instance._configuredScale = scale;
-            _instance._scratch = new LogRecord[sink.Buffer.Capacity];
+            _instance.Attach(sink, scale);
+        }
+
+        private void Attach(MemorySink sink, float scale) {
+            _configuredScale = scale;
+            if (!ReferenceEquals(_sink, sink)) {
+                // A different sink means a different session: its sequences start again from the
+                // bottom, so the watermark and everything counted from the old one have to go
+                // with it or the viewer shows a mixture of the two and ingests nothing new.
+                _sink = sink;
+                _lastVersion = -1;
+                Reset();
+            }
+            if (_scratch == null || _scratch.Length < sink.Buffer.Capacity) {
+                _scratch = new LogRecord[sink.Buffer.Capacity];
+            }
         }
 
         /// <summary>Open or close the viewer, for wiring into a debug menu of your own.</summary>
@@ -81,7 +106,7 @@ namespace KenseiLog {
             get => _instance != null && _instance._open;
             set {
                 if (_instance != null) {
-                    _instance._open = value;
+                    _instance.SetOpen(value);
                 }
             }
         }
@@ -105,21 +130,46 @@ namespace KenseiLog {
                 return;
             }
             LogOverlay overlay = _instance;
+            if (!overlay._listBuilt) {
+                overlay.RebuildVisible();
+            }
             for (int i = overlay._visible.Count - 1; i >= 0; i--) {
                 if (overlay._visible[i].Level == level) {
                     overlay._selected = overlay._visible[i].Sequence;
                     overlay._scroll.y = Mathf.Max(0f, i * RowHeight - RowHeight * 4f);
+                    // The caller asked for this record specifically; following the tail would
+                    // scroll it back off the screen on the next log line.
+                    overlay._followTail = false;
                     return;
                 }
             }
         }
 
         public static void Remove() {
+            // The sink goes with the viewer. Left registered it would keep filling a buffer
+            // nothing displays, and LogCore would then see an overlay sink already in place and
+            // skip building one the next time the overlay is switched back on.
+            LogCore.DetachOverlaySink();
             if (_instance == null) {
                 return;
             }
             Destroy(_instance.gameObject);
             _instance = null;
+        }
+
+        private void SetOpen(bool value) {
+            if (_open == value) {
+                return;
+            }
+            _open = value;
+            if (value) {
+                if (!_listBuilt) {
+                    RebuildVisible();
+                }
+            } else {
+                _visible.Clear();
+                _listBuilt = false;
+            }
         }
 
         private void Update() {
@@ -166,9 +216,17 @@ namespace KenseiLog {
                 _tagCounts.TryGetValue(record.Tag, out int seen);
                 _tagCounts[record.Tag] = seen + 1;
 
-                if (_filter.Matches(in record)) {
+                // A row costs a colour conversion, two substrings and a concatenation, and
+                // while the bubble is collapsed nothing reads one. The list is built from the
+                // buffer when the viewer opens instead, so a build shipped with the overlay
+                // enabled pays for the counts and nothing else.
+                if (_listBuilt && _filter.Matches(in record)) {
                     _visible.Add(new Row(in record));
                 }
+            }
+            if (copied > 0) {
+                _bubbleLabelDirty = true;
+                _tagRowsDirty = true;
             }
 
             int drop = 0;
@@ -177,20 +235,39 @@ namespace KenseiLog {
             }
             if (drop > 0) {
                 _visible.RemoveRange(0, drop);
+                // Rows left the top of the list, so the same offset now points further down it.
+                // Without this the content slides under the finger every time the ring wraps,
+                // which on a busy scene is continuous.
+                _scroll.y = Mathf.Max(0f, _scroll.y - drop * RowHeight);
+            }
+
+            if (_followTail) {
+                _scroll.y = float.MaxValue;
             }
         }
 
         private void Reset() {
             _visible.Clear();
             _tagCounts.Clear();
+            _tagRows.Clear();
             _lastSequence = 0;
             _selected = -1;
+            _detailSequence = -1;
+            _detailBody = null;
+            _bubbleLabelDirty = true;
+            _tagRowsDirty = true;
+            _followTail = true;
+            _scroll = Vector2.zero;
             for (int i = 0; i < _levelCounts.Length; i++) {
                 _levelCounts[i] = 0;
             }
         }
 
-        private void Refilter() {
+        /// <summary>
+        /// Rebuilds the visible list from the buffer: after a filter change, and when the viewer
+        /// opens, since nothing is kept up to date while it is collapsed.
+        /// </summary>
+        private void RebuildVisible() {
             _visible.Clear();
             int copied = _sink.Buffer.CopyNewerThan(0, _scratch);
             for (int i = 0; i < copied; i++) {
@@ -198,6 +275,8 @@ namespace KenseiLog {
                     _visible.Add(new Row(in _scratch[i]));
                 }
             }
+            _listBuilt = true;
+            _followTail = true;
             _scroll.y = float.MaxValue;
         }
 
@@ -216,11 +295,19 @@ namespace KenseiLog {
                 ? _configuredScale
                 : Mathf.Clamp(Screen.dpi > 1f ? Screen.dpi / 160f : Screen.height / 720f, 1f, 4f);
 
+            // Laid out inside the safe area. Clear and Close sit in the corners, which on a
+            // phone with a cutout or a home indicator is exactly where the system takes the
+            // touches - a button under one cannot be pressed at all. safeArea is y-up from the
+            // bottom of the screen and GUI is y-down from the top, hence the flip.
+            Rect safe = Screen.safeArea;
             Matrix4x4 previous = GUI.matrix;
-            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
+            GUI.matrix = Matrix4x4.TRS(
+                new Vector3(safe.xMin, Screen.height - safe.yMax, 0f),
+                Quaternion.identity,
+                new Vector3(scale, scale, 1f));
 
-            float width = Screen.width / scale;
-            float height = Screen.height / scale;
+            float width = safe.width / scale;
+            float height = safe.height / scale;
 
             TrackDrag();
 
@@ -241,7 +328,7 @@ namespace KenseiLog {
             Event current = Event.current;
             if (current.type == EventType.MouseDown) {
                 _didDrag = false;
-            } else if (current.type == EventType.MouseDrag && current.delta.sqrMagnitude > DragThreshold) {
+            } else if (current.type == EventType.MouseDrag && current.delta.sqrMagnitude > DragThresholdSquared) {
                 _didDrag = true;
             }
         }
@@ -265,16 +352,21 @@ namespace KenseiLog {
 
             int errors = _levelCounts[(int)LogLevel.Error];
             int warnings = _levelCounts[(int)LogLevel.Warning];
-            int total = _levelCounts[0] + _levelCounts[1] + _levelCounts[2];
-            string label = errors > 0
-                ? errors + " error" + (errors == 1 ? string.Empty : "s")
-                : warnings > 0
-                    ? warnings + " warning" + (warnings == 1 ? string.Empty : "s")
-                    : total + " logs";
+            // Rebuilt when a record arrives rather than per pass: this is the state the overlay
+            // is in for almost all of a session, and OnGUI runs at least twice a frame.
+            if (_bubbleLabelDirty) {
+                int total = _levelCounts[0] + _levelCounts[1] + _levelCounts[2];
+                _bubbleLabel = errors > 0
+                    ? errors + " error" + (errors == 1 ? string.Empty : "s")
+                    : warnings > 0
+                        ? warnings + " warning" + (warnings == 1 ? string.Empty : "s")
+                        : total + " logs";
+                _bubbleLabelDirty = false;
+            }
             GUI.color = errors > 0 ? new Color(1f, 0.45f, 0.4f) : warnings > 0 ? new Color(1f, 0.8f, 0.3f) : Color.white;
 
-            if (GUI.Button(rect, label, _button) && !_draggingBubble) {
-                _open = true;
+            if (GUI.Button(rect, _bubbleLabel, _button) && !_draggingBubble) {
+                SetOpen(true);
             }
             GUI.color = Color.white;
 
@@ -290,14 +382,19 @@ namespace KenseiLog {
             DrawBar(width);
 
             float detailHeight = _selected >= 0 ? Mathf.Min(height * 0.35f, 180f) : 0f;
-            Rect list = new Rect(0f, BarHeight, width, height - BarHeight - detailHeight);
-            DrawList(list);
+            float tagWidth = _showTags ? Mathf.Min(200f, width * 0.5f) : 0f;
+            float bodyHeight = height - BarHeight - detailHeight;
+
+            // The pane takes its width out of the list instead of covering it. IMGUI gives a
+            // press to the first control drawn under the pointer, so a pane drawn on top of the
+            // list was visible but dead: the row button underneath took every tap first.
+            if (tagWidth > 0f) {
+                DrawTagPane(new Rect(0f, BarHeight, tagWidth, bodyHeight));
+            }
+            DrawList(new Rect(tagWidth, BarHeight, width - tagWidth, bodyHeight));
 
             if (detailHeight > 0f) {
                 DrawDetail(new Rect(0f, height - detailHeight, width, detailHeight));
-            }
-            if (_showTags) {
-                DrawTagPane(new Rect(0f, BarHeight, Mathf.Min(200f, width * 0.5f), height - BarHeight));
             }
         }
 
@@ -318,7 +415,7 @@ namespace KenseiLog {
 
             if (_filter.Tags.Count > 0 && GUI.Button(new Rect(x, 3f, 54f, BarHeight - 6f), "All tags", _button)) {
                 _filter.Tags.Clear();
-                Refilter();
+                RebuildVisible();
             }
 
             if (GUI.Button(new Rect(width - 118f, 3f, 54f, BarHeight - 6f), "Clear", _button)) {
@@ -326,7 +423,7 @@ namespace KenseiLog {
                 Reset();
             }
             if (GUI.Button(new Rect(width - 60f, 3f, 54f, BarHeight - 6f), "Close", _button)) {
-                _open = false;
+                SetOpen(false);
             }
         }
 
@@ -335,7 +432,7 @@ namespace KenseiLog {
             GUI.color = shown ? LevelColor(level) : new Color(0.45f, 0.45f, 0.45f);
             if (GUI.Button(new Rect(x, 3f, 58f, BarHeight - 6f), label + " " + _levelCounts[(int)level], _button)) {
                 _filter.SetLevel(level, !shown);
-                Refilter();
+                RebuildVisible();
             }
             GUI.color = Color.white;
             return 60f;
@@ -344,6 +441,10 @@ namespace KenseiLog {
         private void DrawList(Rect area) {
             float content = _visible.Count * RowHeight;
             _scroll = GUI.BeginScrollView(area, _scroll, new Rect(0f, 0f, area.width - 16f, content));
+
+            // Sticking to the newest line is the point of a log viewer on a device, but only
+            // while the reader has not scrolled away from it to look at something.
+            _followTail = content <= area.height || _scroll.y >= content - area.height - 1f;
 
             int first = Mathf.Max(0, Mathf.FloorToInt(_scroll.y / RowHeight));
             int last = Mathf.Min(_visible.Count, first + Mathf.CeilToInt(area.height / RowHeight) + 1);
@@ -391,9 +492,27 @@ namespace KenseiLog {
             GUI.Box(area, GUIContent.none, _bar);
             if (!_sink.Buffer.TryGetBySequence(_selected, out LogRecord record)) {
                 _selected = -1;
+                _detailSequence = -1;
+                _detailBody = null;
                 return;
             }
 
+            // Built once per selection. Reassembling it per pass meant two or more copies of
+            // the record and its stack trace every frame - on a 4KB trace, about a megabyte of
+            // garbage a second for as long as the record stayed open.
+            if (_detailSequence != _selected) {
+                _detailBody = DetailText(in record);
+                _detailSequence = _selected;
+            }
+
+            GUI.Label(new Rect(area.x + 6f, area.y + 4f, area.width - 70f, area.height - 8f), _detailBody, _detail);
+
+            if (GUI.Button(new Rect(area.xMax - 60f, area.y + 4f, 54f, 24f), "Copy", _button)) {
+                GUIUtility.systemCopyBuffer = _detailBody;
+            }
+        }
+
+        private static string DetailText(in LogRecord record) {
             string body = record.Tag + "  ·  " + record.Level + "  ·  " + record.Channel +
                           "  ·  frame " + record.Frame + "  ·  " + Seconds(record.TimeMs) + "s" +
                           "\n" + record.Message;
@@ -403,12 +522,7 @@ namespace KenseiLog {
             if (!string.IsNullOrEmpty(record.StackTrace)) {
                 body += "\n" + record.StackTrace;
             }
-
-            GUI.Label(new Rect(area.x + 6f, area.y + 4f, area.width - 70f, area.height - 8f), body, _detail);
-
-            if (GUI.Button(new Rect(area.xMax - 60f, area.y + 4f, 54f, 24f), "Copy", _button)) {
-                GUIUtility.systemCopyBuffer = body;
-            }
+            return body;
         }
 
         private void DrawTagPane(Rect area) {
@@ -418,12 +532,17 @@ namespace KenseiLog {
             GUI.color = new Color(0f, 0f, 0f, 0.5f);
             GUI.DrawTexture(new Rect(area.xMax - 1f, area.y, 1f, area.height), _chipTex);
             GUI.color = Color.white;
-            float content = _tagCounts.Count * RowHeight;
+            if (_tagRowsDirty) {
+                RebuildTagRows();
+            }
+
+            float content = _tagRows.Count * RowHeight;
             _tagScroll = GUI.BeginScrollView(area, _tagScroll, new Rect(0f, 0f, area.width - 16f, content));
 
             float y = 0f;
-            foreach (KeyValuePair<string, int> pair in _tagCounts) {
-                bool active = _filter.Tags.Contains(pair.Key);
+            for (int i = 0; i < _tagRows.Count; i++) {
+                TagRow tag = _tagRows[i];
+                bool active = _filter.Tags.Contains(tag.Tag);
                 Rect row = new Rect(0f, y, area.width - 16f, RowHeight);
                 if (active) {
                     GUI.Box(row, GUIContent.none, _bar);
@@ -431,19 +550,33 @@ namespace KenseiLog {
 
                 // The colour is the tag's identity, so it stays on whether the tag is selected
                 // or not; selection is carried by the highlight and the text brightness.
-                GUI.color = TagPalette.For(pair.Key, 0.6f, 0.9f, -0.08f);
+                GUI.color = tag.Chip;
                 GUI.DrawTexture(new Rect(row.x + 5f, row.y + 7f, 8f, 8f), _chipTex);
 
                 GUI.color = active ? Color.white : new Color(0.62f, 0.62f, 0.66f);
-                if (GUI.Button(new Rect(row.x + 18f, row.y, row.width - 18f, row.height), pair.Key + "  " + pair.Value, _row) && !_didDrag) {
-                    _filter.ToggleTag(pair.Key);
-                    Refilter();
+                if (GUI.Button(new Rect(row.x + 18f, row.y, row.width - 18f, row.height), tag.Label, _row) && !_didDrag) {
+                    _filter.ToggleTag(tag.Tag);
+                    RebuildVisible();
                 }
                 GUI.color = Color.white;
                 y += RowHeight;
             }
 
             GUI.EndScrollView();
+        }
+
+        /// <summary>
+        /// Rebuilds the tag rows from the counts. Same reason the list rows are cached: the
+        /// label is a concatenation and the chip is an HSV conversion, and neither changes
+        /// between records - only between passes, of which there are hundreds a second.
+        /// </summary>
+        private void RebuildTagRows() {
+            _tagRows.Clear();
+            foreach (KeyValuePair<string, int> pair in _tagCounts) {
+                _tagRows.Add(new TagRow(pair.Key, pair.Value));
+            }
+            _tagRows.Sort(_byTagName);
+            _tagRowsDirty = false;
         }
 
         private string EmptyHint() {
@@ -558,6 +691,19 @@ namespace KenseiLog {
                 Frame = record.Frame.ToString(CultureInfo.InvariantCulture);
                 Time = Seconds(record.TimeMs);
                 Text = ShortTag(record.Tag) + "  " + FirstLine(record.Message);
+            }
+        }
+
+        /// <summary>A tag as the pane draws it, worked out when the counts change.</summary>
+        private readonly struct TagRow {
+            public readonly string Tag;
+            public readonly string Label;
+            public readonly Color Chip;
+
+            public TagRow(string tag, int count) {
+                Tag = tag;
+                Label = tag + "  " + count;
+                Chip = TagPalette.For(tag, 0.6f, 0.9f, -0.08f);
             }
         }
 

@@ -233,8 +233,24 @@ namespace KenseiLog {
             }
 
             if (_config.ShowOverlay && Application.isPlaying) {
+                int capacity = Math.Max(32, _config.OverlayRecordCapacity);
                 if (_overlaySink == null) {
-                    _overlaySink = new MemorySink(Math.Max(32, _config.OverlayRecordCapacity));
+                    _overlaySink = new MemorySink(capacity);
+                    AddSink(_overlaySink);
+                } else if (_overlaySink.Buffer.Capacity != capacity) {
+                    // A later Configure reaches the file sink through Reconfigure. The overlay's
+                    // buffer is fixed at construction, so a changed capacity needs a new sink -
+                    // without this the setting was accepted and ignored. What it already holds
+                    // moves across: a capacity change that emptied the viewer would trade one
+                    // silent surprise for another.
+                    MemorySink resized = new MemorySink(capacity);
+                    LogRecord[] carried = new LogRecord[_overlaySink.Buffer.Count];
+                    int copied = _overlaySink.Buffer.CopyNewerThan(0, carried);
+                    for (int i = 0; i < copied; i++) {
+                        resized.Write(in carried[i]);
+                    }
+                    RemoveSink(_overlaySink);
+                    _overlaySink = resized;
                     AddSink(_overlaySink);
                 }
                 if (_sceneSystemsReady) {
@@ -242,9 +258,20 @@ namespace KenseiLog {
                 }
             } else if (_overlaySink != null) {
                 LogOverlay.Remove();
-                RemoveSink(_overlaySink);
-                _overlaySink = null;
             }
+        }
+
+        /// <summary>
+        /// Takes the overlay's sink out of the pipeline. Called by the overlay as it goes away,
+        /// so that removing the viewer directly leaves no sink filling a buffer nobody reads -
+        /// and no stale sink here to make the next Configure think one is already in place.
+        /// </summary>
+        internal static void DetachOverlaySink() {
+            if (_overlaySink == null) {
+                return;
+            }
+            RemoveSink(_overlaySink);
+            _overlaySink = null;
         }
 
         private static void OnQuitting() {
