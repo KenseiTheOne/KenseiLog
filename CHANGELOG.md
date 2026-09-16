@@ -67,6 +67,18 @@ behaviour simply stayed where it was.
 - `Documentation~/index.md`, and `documentationUrl`, `changelogUrl` and `licensesUrl` in
   `package.json`.
 
+### Removed
+
+- `current.jsonl`. The file being written is now simply the highest-numbered one, and nothing is
+  renamed - see the entry under Changed for why. **This is the breaking change in this release.**
+
+  A directory written by 0.12.x needs nothing done to it: the next run gives the old
+  `current.jsonl` a number of its own, so the last run before the upgrade is kept rather than
+  orphaned under a name this version does not look for. The old `log.1`…`log.3` are numbered the
+  other way round, oldest last, so for a few runs the sequence is out of order until they age
+  out. Anything of your own that reads `current.jsonl` by name needs to read the highest number
+  instead.
+
 ### Changed
 
 - Reading the session file back parses only the lines it keeps, and is skipped entirely when the
