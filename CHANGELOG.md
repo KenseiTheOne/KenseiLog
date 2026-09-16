@@ -4,6 +4,27 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-09-16
+
+### Changed
+
+- **Breaking.** Every method on the facade is renamed, on both channels: `Info`, `Warning` and
+  `Error` for prod, where they were `Prod`, `ProdWarning` and `ProdError`; `DevInfo`,
+  `DevWarning` and `DevError` for dev, where the first of those was `Dev`. `Logger` carries the
+  same six. Nothing else about either channel moves - the dev calls are still the ones the
+  compiler removes from a release build, arguments and all.
+
+  The old names asked for the channel first and the level second, so the level at the plain end
+  of the prod names was missing entirely: `Log.Prod` was a log, `Log.Info` says so. And with
+  both channels equally awkward to type, the one that won was whichever you had the muscle
+  memory for - which is `Dev`, the channel that never reaches a shipped build. The plain names
+  belong to prod, and the dev channel now spells itself out.
+
+  Every call site has to be renamed and the compiler finds all of them. A find-and-replace does
+  it, longest name first so a shorter one does not eat the others: `ProdWarning` -> `Warning`,
+  `ProdError` -> `Error`, then `Prod(` -> `Info(`, then `Dev(` -> `DevInfo(` - that last one
+  paren-anchored, or it will hit `DevWarning` and `DevError` too.
+
 ## [0.13.1] - 2026-09-16
 
 ### Fixed

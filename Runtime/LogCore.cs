@@ -104,7 +104,7 @@ namespace KenseiLog {
         /// answer for a sink this package knows nothing about.
         /// <para>
         /// The case worth catching is a development build with the defaults: the list there is
-        /// exactly the file sink with the dev channel off, and every Log.Dev call was building
+        /// exactly the file sink with the dev channel off, and every Log.DevInfo call was building
         /// a record - unwinding a stack trace, for an error - that was dropped on arrival. A
         /// development build is what gets profiled on a device, so it was the one build type
         /// that misreported what logging costs.
@@ -224,7 +224,7 @@ namespace KenseiLog {
             LogRecord record = new LogRecord(
                 Interlocked.Increment(ref _sequence),
                 // Normalised here rather than at each call site. A null tag is easy to pass by
-                // accident - Log.Prod(config?.NetTag, ...) is enough - and it survives all the
+                // accident - Log.Info(config?.NetTag, ...) is enough - and it survives all the
                 // way to the viewers, where it throws out of a dictionary lookup or a palette
                 // hash with a stack that never mentions the call that caused it.
                 string.IsNullOrEmpty(tag) ? UntaggedTag : tag,

@@ -15,7 +15,7 @@ public static class MirrorCheck {
         EditorSinkClear();
 
         Debug.Log("MARKER-PLAIN-DEBUG-LOG");
-        Log.Prod("Smoke", "MARKER-FACADE-PROD");
+        Log.Info("Smoke", "MARKER-FACADE-PROD");
         Debug.LogWarning("MARKER-PLAIN-WARNING");
 
         LogRingBuffer buffer = KenseiLog.Editor.EditorSink.Instance.Buffer;

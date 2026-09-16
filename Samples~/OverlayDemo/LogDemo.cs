@@ -36,14 +36,14 @@ public sealed class LogDemo : MonoBehaviour {
     }
 
     private void Start() {
-        Log.Prod(Tags.Boot, "demo started on " + Application.platform, this);
-        Log.Dev(Tags.Boot, "dev channel is compiled in this build", this);
-        Log.Prod(Tags.Economy, "wallet loaded: 1240 coins");
-        Log.ProdWarning(Tags.Net, "relay latency 180ms, above budget");
+        Log.Info(Tags.Boot, "demo started on " + Application.platform, this);
+        Log.DevInfo(Tags.Boot, "dev channel is compiled in this build", this);
+        Log.Info(Tags.Economy, "wallet loaded: 1240 coins");
+        Log.Warning(Tags.Net, "relay latency 180ms, above budget");
 
         // The word "combat" sits in this message on purpose: the Combat tab must not pick it
         // up, because the tag is a field and the search only looks at the text.
-        Log.Prod(Tags.Net, "combat handshake rejected by relay");
+        Log.Info(Tags.Net, "combat handshake rejected by relay");
     }
 
     private void Update() {
@@ -54,9 +54,9 @@ public sealed class LogDemo : MonoBehaviour {
         _tick++;
 
         string enemy = _enemies[_tick % _enemies.Length];
-        Log.Dev(Tags.Damage, "hit " + enemy + " for " + Random.Range(4, 40));
+        Log.DevInfo(Tags.Damage, "hit " + enemy + " for " + Random.Range(4, 40));
         if (_tick % 3 == 0) {
-            Log.Dev(Tags.Ai, enemy + " lost its target");
+            Log.DevInfo(Tags.Ai, enemy + " lost its target");
         }
         if (_tick % 7 == 0) {
             Log.DevWarning(Tags.Combat, "no hitbox on " + enemy);
@@ -81,17 +81,17 @@ public sealed class LogDemo : MonoBehaviour {
         y += 22f;
 
         if (GUI.Button(new Rect(x, y, 128f, 26f), "Prod log", _button)) {
-            Log.Prod(Tags.Economy, "purchase completed: starter pack");
+            Log.Info(Tags.Economy, "purchase completed: starter pack");
         }
         y += 28f;
 
         if (GUI.Button(new Rect(x, y, 128f, 26f), "Warning", _button)) {
-            Log.ProdWarning(Tags.Net, "packet dropped at tick " + Time.frameCount);
+            Log.Warning(Tags.Net, "packet dropped at tick " + Time.frameCount);
         }
         y += 28f;
 
         if (GUI.Button(new Rect(x, y, 128f, 26f), "Error", _button)) {
-            Log.ProdError(Tags.Net, "desync at tick " + Time.frameCount, this);
+            Log.Error(Tags.Net, "desync at tick " + Time.frameCount, this);
         }
         y += 28f;
 
@@ -103,7 +103,7 @@ public sealed class LogDemo : MonoBehaviour {
 
         if (GUI.Button(new Rect(x, y, 128f, 26f), "Spam " + _spamCount, _button)) {
             for (int i = 0; i < _spamCount; i++) {
-                Log.Dev(Tags.Damage, "repeated damage tick");
+                Log.DevInfo(Tags.Damage, "repeated damage tick");
             }
         }
         y += 34f;

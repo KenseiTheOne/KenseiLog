@@ -33,12 +33,15 @@ public static class Tags {
     public const string Net    = "Net";
 }
 
-Log.Dev(Tags.Damage, "hit " + target.name + " for " + damage, this);
+Log.DevInfo(Tags.Damage, "hit " + target.name + " for " + damage, this);
 Log.DevWarning(Tags.Combat, "no hitbox on " + target.name);
-Log.ProdError(Tags.Net, "desync at tick " + tick);
+Log.Error(Tags.Net, "desync at tick " + tick);
 ```
 
-Six methods, three levels across two channels: `Dev`, `DevWarning`, `DevError`, `Prod`, `ProdWarning`, `ProdError`.
+Six methods, three levels across two channels. The prod channel takes the plain names —
+`Info`, `Warning`, `Error` — because a log that survives into a shipped build is the one you
+should reach for without thinking. The dev channel spells itself out: `DevInfo`, `DevWarning`,
+`DevError`.
 
 ### One tag per file
 
@@ -49,8 +52,8 @@ using Logger = KenseiLog.Logger;   // UnityEngine has a Logger of its own
 
 private static readonly Logger Log = Logger.For(Tags.Combat);
 
-Log.Dev("hit " + target.name + " for " + damage);
-Log.ProdError("desync at tick " + tick);
+Log.DevInfo("hit " + target.name + " for " + damage);
+Log.Error("desync at tick " + tick);
 ```
 
 The alias is needed in any file that also has `using UnityEngine;`, which is most of them:
@@ -59,9 +62,9 @@ the same job.
 
 Naming the field `Log` shadows the static `Log` class inside that type, which is the point —
 every unqualified call in the file then carries the tag. Reach a different tag from the same
-file with the full `KenseiLog.Log.Dev(tag, message)`.
+file with the full `KenseiLog.Log.DevInfo(tag, message)`.
 
-`Logger` is a struct, so the field costs a string reference and no allocation. Its `Dev`
+`Logger` is a struct, so the field costs a string reference and no allocation. Its dev
 methods carry `[Conditional]` exactly as the static ones do — the attribute applies to
 instance methods too — so they leave a release build with their arguments. The field
 initialiser does not: it survives as one assignment per type, which is the whole price.
@@ -70,7 +73,7 @@ initialiser does not: it survives as one assignment per type, which is the whole
 
 ### No tag at all
 
-A tag is not required. `Log.Dev("still here")` writes under `Untagged`, which keeps the log
+A tag is not required. `Log.DevInfo("still here")` writes under `Untagged`, which keeps the log
 you are about to delete inside the window and apart from the engine's chatter — reaching for
 `Debug.Log` instead buries it under the `Unity` tag. A branch of the tag tree filling up with
 these is a fair hint about where a real tag belongs.
@@ -81,9 +84,9 @@ Tags are plain strings — nothing has to be registered, and any string works. A
 
 **Dev calls disappear in release.** They carry `[Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]`, so outside the editor and development builds the compiler removes the call *and every argument expression*. Building the message costs nothing because it never runs.
 
-**Prod calls always compile.** In a shipped build they are the only diagnostics you get.
+**Prod calls always compile.** In a shipped build they are the only diagnostics you get, which is why they hold the unprefixed names.
 
-That split only works if it is kept honestly. Decide once what counts as a prod event and write it down — otherwise everything drifts into `Dev` out of habit and the shipped build tells you nothing. A reasonable starting rule:
+That split only works if it is kept honestly. Decide once what counts as a prod event and write it down — otherwise everything drifts into the dev channel out of habit and the shipped build tells you nothing. A reasonable starting rule:
 
 | Prod | Dev |
 | --- | --- |
@@ -135,7 +138,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 
-The window fills itself in when it loads, so it shows what happened before you opened it. After a recompile that comes from its own session file, where the tag, the channel, the frame and the call site all survive — none of which Unity's console has anywhere to keep, and a `Log.Dev` call was never in the console to recover at all. Whatever the console holds that the file cannot account for is added to it, matched off by message so nothing appears twice. A fresh editor, or one with the session file turned off, reads the console alone.
+The window fills itself in when it loads, so it shows what happened before you opened it. After a recompile that comes from its own session file, where the tag, the channel, the frame and the call site all survive — none of which Unity's console has anywhere to keep, and a `Log.DevInfo` call was never in the console to recover at all. Whatever the console holds that the file cannot account for is added to it, matched off by message so nothing appears twice. A fresh editor, or one with the session file turned off, reads the console alone.
 
 **Compiler errors and warnings arrive as the compiler raises them**, through `CompilationPipeline`, not by reading the console. A compile that fails does not reload the domain, and by the time a later one succeeds Unity has removed those errors — so anything that waited for a reload would never show you a compile error at all. Like the console's own copies, they last until the compile that fixes them.
 

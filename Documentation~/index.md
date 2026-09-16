@@ -23,8 +23,9 @@ date. This page is the short version and the map.
 
 ## The pieces
 
-**`Log`** - six methods: `Dev`, `DevWarning`, `DevError`, `Prod`, `ProdWarning`, `ProdError`.
-A tag is the first argument, or absent, in which case the record lands under `Untagged`.
+**`Log`** - six methods: `Info`, `Warning`, `Error` on the prod channel, `DevInfo`,
+`DevWarning`, `DevError` on the dev one. A tag is the first argument, or absent, in which case the record
+lands under `Untagged`.
 
 **`Logger`** - the same six with the tag fixed, for a file that always logs under one.
 

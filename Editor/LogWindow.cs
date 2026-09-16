@@ -1666,7 +1666,7 @@ namespace KenseiLog.Editor {
                 // play mode would be a plain lie.
                 return _session != null
                     ? "This file holds a session header and no records.\nWhatever wrote it ended before logging anything."
-                    : "No records yet.\nEnter play mode, or call Log.Dev / Log.Prod.";
+                    : "No records yet.\nEnter play mode, or call Log.DevInfo / Log.Info.";
             }
 
             LogFilter filter = ActiveFilter;

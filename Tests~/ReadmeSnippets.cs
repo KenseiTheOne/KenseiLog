@@ -27,9 +27,9 @@ public static class ReadmeSnippets {
     }
 
     public static void Usage(GameObject target, int damage, int tick) {
-        Log.Dev(Tags.Damage, "hit " + target.name + " for " + damage, target);
+        Log.DevInfo(Tags.Damage, "hit " + target.name + " for " + damage, target);
         Log.DevWarning(Tags.Combat, "no hitbox on " + target.name);
-        Log.ProdError(Tags.Net, "desync at tick " + tick);
+        Log.Error(Tags.Net, "desync at tick " + tick);
     }
 
     // ### One tag per file
@@ -37,20 +37,20 @@ public static class ReadmeSnippets {
         private static readonly Logger Log = Logger.For(Tags.Combat);
 
         public void Hit(GameObject target, int damage, int tick) {
-            Log.Dev("hit " + target.name + " for " + damage);
-            Log.ProdError("desync at tick " + tick);
+            Log.DevInfo("hit " + target.name + " for " + damage);
+            Log.Error("desync at tick " + tick);
 
             // Reaching a different tag from the same file.
-            KenseiLog.Log.Dev(Tags.Net, "and one under another tag");
+            KenseiLog.Log.DevInfo(Tags.Net, "and one under another tag");
 
             Logger nested = Logger.For(Tags.Combat).Child("AI");
-            nested.Dev("nested under Combat");
+            nested.DevInfo("nested under Combat");
         }
     }
 
     // ### No tag at all
     public static void Untagged() {
-        Log.Dev("still here");
+        Log.DevInfo("still here");
     }
 
     // ## Configuration

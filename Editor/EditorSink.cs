@@ -519,7 +519,7 @@ namespace KenseiLog.Editor {
         private static void Mark(string what) {
             // file: null so that Open on the marker does not offer to show this line of this
             // file, which is not where anything happened.
-            Log.Dev(MarkerTag, what + " at " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture), null, null, 0);
+            Log.DevInfo(MarkerTag, what + " at " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture), null, null, 0);
         }
     }
 }

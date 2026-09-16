@@ -10,8 +10,8 @@ namespace KenseiLog {
     /// <code>
     /// private static readonly Logger Log = Logger.For(Tags.Combat);
     ///
-    /// Log.Dev("hit " + target.name + " for " + damage);
-    /// Log.ProdError("no hitbox on " + target.name);
+    /// Log.DevInfo("hit " + target.name + " for " + damage);
+    /// Log.Error("no hitbox on " + target.name);
     /// </code>
     /// </para>
     /// <para>
@@ -23,7 +23,7 @@ namespace KenseiLog {
     /// <para>
     /// Naming the field <c>Log</c> shadows the static <see cref="Log"/> class inside that type,
     /// which is the point: every unqualified call in the file then carries the tag. Reach a
-    /// different tag from the same file with the full <c>KenseiLog.Log.Dev(tag, message)</c>.
+    /// different tag from the same file with the full <c>KenseiLog.Log.DevInfo(tag, message)</c>.
     /// </para>
     /// </summary>
     public readonly struct Logger {
@@ -41,8 +41,8 @@ namespace KenseiLog {
         }
 
         [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
-        public void Dev(string message, Object context = null,
-                        [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public void DevInfo(string message, Object context = null,
+                            [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(Tag, message, LogLevel.Log, LogChannel.Dev, context, file, line);
 
         [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
@@ -58,17 +58,17 @@ namespace KenseiLog {
                              [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(Tag, message, LogLevel.Error, LogChannel.Dev, context, file, line);
 
-        public void Prod(string message, Object context = null,
+        public void Info(string message, Object context = null,
                          [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(Tag, message, LogLevel.Log, LogChannel.Prod, context, file, line);
 
-        public void ProdWarning(string message, Object context = null,
-                                [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public void Warning(string message, Object context = null,
+                            [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(Tag, message, LogLevel.Warning, LogChannel.Prod, context, file, line);
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public void ProdError(string message, Object context = null,
-                              [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public void Error(string message, Object context = null,
+                          [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(Tag, message, LogLevel.Error, LogChannel.Prod, context, file, line);
 
         /// <summary>A logger for a tag nested under this one: <c>Combat</c> gives <c>Combat.AI</c>.</summary>

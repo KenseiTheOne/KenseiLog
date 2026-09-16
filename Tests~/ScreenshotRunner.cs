@@ -50,7 +50,7 @@ public sealed class ScreenshotRunner : MonoBehaviour {
         yield return Capture("03-tags");
 
         LogOverlay.TagPaneVisible = false;
-        Log.ProdError("Net", "desync at tick 4417, client ahead by 3 frames");
+        Log.Error("Net", "desync at tick 4417, client ahead by 3 frames");
         yield return new WaitForSecondsRealtime(0.4f);
         LogOverlay.SelectNewest(LogLevel.Error);
         yield return Capture("04-detail");

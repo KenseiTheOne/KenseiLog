@@ -178,8 +178,8 @@ public static class SmokeRunner {
 
     private static void FacadeReachesTheEditorSink() {
         EditorSink.Instance.Clear();
-        Log.Prod("SmokeRunner", "prod reached the sink");
-        Log.Dev("SmokeRunner", "dev reached the sink");
+        Log.Info("SmokeRunner", "prod reached the sink");
+        Log.DevInfo("SmokeRunner", "dev reached the sink");
 
         LogRingBuffer buffer = EditorSink.Instance.Buffer;
         Check("facade writes reach the sink", buffer.Count == 2);
@@ -193,7 +193,7 @@ public static class SmokeRunner {
     private static void ForeignLogsAreMarkedAsCaptured() {
         EditorSink.Instance.Clear();
         UnityEngine.Debug.Log("smoke foreign message");
-        Log.Prod("SmokeRunner", "smoke facade message");
+        Log.Info("SmokeRunner", "smoke facade message");
 
         LogRecord[] scratch = new LogRecord[8];
         int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
@@ -459,9 +459,9 @@ public static class SmokeRunner {
     private static void TaglessOverloadsLandUnderUntagged() {
         EditorSink.Instance.Clear();
 
-        Log.Prod("no tag on this one");
-        Log.Prod("SmokeRunner", "this one is tagged");
-        Log.ProdWarning("no tag, warning");
+        Log.Info("no tag on this one");
+        Log.Info("SmokeRunner", "this one is tagged");
+        Log.Warning("no tag, warning");
 
         LogRecord[] scratch = new LogRecord[8];
         int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
@@ -482,9 +482,9 @@ public static class SmokeRunner {
     private static void ScopedLoggerCarriesItsTag() {
         EditorSink.Instance.Clear();
 
-        _scoped.Prod("from the scoped logger");
-        _scoped.Child("Child").ProdWarning("from a child logger");
-        Logger.For("Other").ProdError("from a one-off logger");
+        _scoped.Info("from the scoped logger");
+        _scoped.Child("Child").Warning("from a child logger");
+        Logger.For("Other").Error("from a one-off logger");
 
         LogRecord[] scratch = new LogRecord[8];
         int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
@@ -754,7 +754,7 @@ public static class SmokeRunner {
     /// </summary>
     private static void ANullTagBecomesUntagged() {
         EditorSink.Instance.Clear();
-        Log.Prod(null, "a record with no tag at all");
+        Log.Info(null, "a record with no tag at all");
 
         LogRecord[] scratch = new LogRecord[8];
         int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
@@ -769,7 +769,7 @@ public static class SmokeRunner {
 
     /// <summary>
     /// A record is no longer built for a channel nothing will take - in a development build the
-    /// list is the file sink with the dev channel off, and every Log.Dev call there was building
+    /// list is the file sink with the dev channel off, and every Log.DevInfo call there was building
     /// a record, unwinding a stack trace if it was an error, and being dropped on arrival.
     /// <para>
     /// What must not follow is a dev record going missing from something that did want it. That
@@ -803,8 +803,8 @@ public static class SmokeRunner {
             counter.Takes = LogChannel.Prod;
             LogCore.AddSink(counter);
 
-            Log.Dev("Probe", "dev, with nothing that wants it");
-            Log.Prod("Probe", "prod, which both of them want");
+            Log.DevInfo("Probe", "dev, with nothing that wants it");
+            Log.Info("Probe", "prod, which both of them want");
             file.Flush();
 
             Check("no record is built for a channel nothing takes", counter.Calls == 1);
@@ -815,12 +815,12 @@ public static class SmokeRunner {
 
             // Registering something that takes the dev channel has to bring dev records back.
             LogCore.AddSink(watcher);
-            Log.Dev("Probe", "dev, now that something wants it");
+            Log.DevInfo("Probe", "dev, now that something wants it");
             Check("a dev record reaches a sink that wants it", watcher.Buffer.Count == 1);
             Check("and the gate opened for the sinks beside it", counter.Calls == 2);
 
             LogCore.RemoveSink(watcher);
-            Log.Dev("Probe", "dev, with the watcher gone again");
+            Log.DevInfo("Probe", "dev, with the watcher gone again");
             Check("and stops when that sink goes away", watcher.Buffer.Count == 1);
             Check("the gate shuts again behind it", counter.Calls == 2);
 
@@ -828,7 +828,7 @@ public static class SmokeRunner {
             // to tell LogCore that its answer changed.
             config.FileIncludesDevChannel = true;
             file.Reconfigure(in config);
-            Log.Dev("Probe", "dev, once the file sink is told to take the channel");
+            Log.DevInfo("Probe", "dev, once the file sink is told to take the channel");
             file.Flush();
 
             Check("turning the channel on in the config brings them back",
@@ -1063,7 +1063,7 @@ public static class SmokeRunner {
     /// <summary>
     /// What the editor logged before a domain reload is read back out of its session file, so
     /// the window keeps its history across a recompile. The console cannot do this job: it has
-    /// nowhere to keep a tag or a channel, and it never saw a Log.Dev call at all.
+    /// nowhere to keep a tag or a channel, and it never saw a Log.DevInfo call at all.
     /// </summary>
     private static void ASessionFileComesBackWholeForSeeding() {
         string directory = ScratchDirectory("seed");

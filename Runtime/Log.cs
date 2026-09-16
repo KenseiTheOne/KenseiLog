@@ -8,10 +8,16 @@ namespace KenseiLog {
     /// <para>
     /// Usage:
     /// <code>
-    /// Log.Dev(Tags.Combat, "hit " + target.name + " for " + damage);
+    /// Log.DevInfo(Tags.Combat, "hit " + target.name + " for " + damage);
     /// Log.DevWarning(Tags.Combat, "no hitbox on " + target.name, this);
-    /// Log.ProdError(Tags.Net, "desync at tick " + tick);
+    /// Log.Error(Tags.Net, "desync at tick " + tick);
     /// </code>
+    /// </para>
+    /// <para>
+    /// The unprefixed names - <see cref="Info"/>, <see cref="Warning"/>, <see cref="Error"/> -
+    /// are the prod channel, because a log that survives into a shipped build is the one you
+    /// reach for without thinking. The dev channel spells itself out: DevInfo, DevWarning,
+    /// DevError.
     /// </para>
     /// <para>
     /// The Dev methods carry ConditionalAttribute, so outside the editor and development
@@ -29,8 +35,8 @@ namespace KenseiLog {
         private const string DevelopmentBuildSymbol = "DEVELOPMENT_BUILD";
 
         [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
-        public static void Dev(string tag, string message, Object context = null,
-                               [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void DevInfo(string tag, string message, Object context = null,
+                                   [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Log, LogChannel.Dev, context, file, line);
 
         [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
@@ -46,17 +52,17 @@ namespace KenseiLog {
                                     [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Error, LogChannel.Dev, context, file, line);
 
-        public static void Prod(string tag, string message, Object context = null,
+        public static void Info(string tag, string message, Object context = null,
                                 [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Log, LogChannel.Prod, context, file, line);
 
-        public static void ProdWarning(string tag, string message, Object context = null,
-                                       [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void Warning(string tag, string message, Object context = null,
+                                   [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Warning, LogChannel.Prod, context, file, line);
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public static void ProdError(string tag, string message, Object context = null,
-                                     [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void Error(string tag, string message, Object context = null,
+                                 [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(tag, message, LogLevel.Error, LogChannel.Prod, context, file, line);
 
         // =====================================================================
@@ -72,8 +78,8 @@ namespace KenseiLog {
         // =====================================================================
 
         [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
-        public static void Dev(string message, Object context = null,
-                               [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void DevInfo(string message, Object context = null,
+                                   [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Log, LogChannel.Dev, context, file, line);
 
         [Conditional(EditorSymbol), Conditional(DevelopmentBuildSymbol)]
@@ -87,17 +93,17 @@ namespace KenseiLog {
                                     [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Error, LogChannel.Dev, context, file, line);
 
-        public static void Prod(string message, Object context = null,
+        public static void Info(string message, Object context = null,
                                 [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Log, LogChannel.Prod, context, file, line);
 
-        public static void ProdWarning(string message, Object context = null,
-                                       [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void Warning(string message, Object context = null,
+                                   [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Warning, LogChannel.Prod, context, file, line);
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public static void ProdError(string message, Object context = null,
-                                     [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
+        public static void Error(string message, Object context = null,
+                                 [CallerFilePath] string file = null, [CallerLineNumber] int line = 0) =>
             LogCore.Write(LogCore.UntaggedTag, message, LogLevel.Error, LogChannel.Prod, context, file, line);
     }
 }
