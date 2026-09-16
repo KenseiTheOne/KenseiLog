@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -15,6 +16,17 @@ namespace KenseiLog.Editor {
     public sealed class EditorSink : ILogSink {
         private static readonly string _capacityKey = ProjectPrefs.Key("Capacity");
         private static readonly string _clearOnPlayKey = ProjectPrefs.Key("ClearOnPlay");
+        private static readonly string _sessionFileKey = ProjectPrefs.Key("EditorSessionFile");
+
+        /// <summary>
+        /// Says whether this editor has already opened its file. SessionState outlives a domain
+        /// reload and does not outlive the editor, which is the exact line between "carry on
+        /// with the file" and "start a new one" - a recompile is not a new session.
+        /// </summary>
+        private const string SessionStartedKey = "KenseiLog.EditorSessionStarted";
+
+        /// <summary>Kept apart from the runs, which own the directory above it.</summary>
+        private const string EditorLogFolder = "editor";
 
         private const int DefaultCapacity = 8192;
 
@@ -26,6 +38,8 @@ namespace KenseiLog.Editor {
         private const int MinimumCapacity = 64;
 
         private const int MaximumCapacity = 1 << 20;
+
+        private static FileSink _sessionFile;
 
         private LogRingBuffer _buffer;
         private int _version;
@@ -45,6 +59,31 @@ namespace KenseiLog.Editor {
             get => EditorPrefs.GetBool(_clearOnPlayKey, true);
             set => EditorPrefs.SetBool(_clearOnPlayKey, value);
         }
+
+        /// <summary>
+        /// Whether what the editor logs is written to a file of its own.
+        /// <para>
+        /// On by default, because without it the editor's own records live nowhere but this
+        /// buffer - and the buffer is rebuilt on every domain reload, so a recompile took them
+        /// all. The runtime's file sink cannot do this job: it is gated on play mode precisely
+        /// because it starts a run by shifting the files aside, and a recompile is not a run.
+        /// </para>
+        /// <para>
+        /// Takes effect on the next domain reload, since the sink is opened with the editor's
+        /// session.
+        /// </para>
+        /// </summary>
+        public static bool WriteSessionFile {
+            get => EditorPrefs.GetBool(_sessionFileKey, true);
+            set => EditorPrefs.SetBool(_sessionFileKey, value);
+        }
+
+        /// <summary>The file this editor session is writing, or null when it is not.</summary>
+        public static FileSink SessionFile => _sessionFile;
+
+        /// <summary>Where that file goes, whether or not one is open.</summary>
+        public static string SessionFileDirectory =>
+            Path.Combine(Application.persistentDataPath, "logs", EditorLogFolder);
 
         /// <summary>
         /// How many records the window keeps. Clamped, and clamped before it is stored: an
@@ -96,6 +135,57 @@ namespace KenseiLog.Editor {
             LogCore.AddSink(Instance);
             LogCore.Initialize();
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
+
+            OpenSessionFile();
+        }
+
+        /// <summary>
+        /// Opens the editor's own log file, adding to the one this editor session already has.
+        /// <para>
+        /// Nothing here is allowed to cost the window its records: a directory that cannot be
+        /// written to, or a file another process is holding, leaves the sink unopened and the
+        /// rest of the pipeline exactly as it was.
+        /// </para>
+        /// </summary>
+        private static void OpenSessionFile() {
+            if (!WriteSessionFile) {
+                return;
+            }
+
+            try {
+                LogConfig config = LogCore.Config;
+                config.FileDirectory = SessionFileDirectory;
+                // The point of the file is the channel the runtime's own sink leaves out: a
+                // dev record written from an editor tool has nowhere else to survive.
+                config.FileIncludesDevChannel = true;
+
+                bool alreadyOpenedThisSession = SessionState.GetBool(SessionStartedKey, false);
+                _sessionFile = new FileSink(in config, continueExistingFile: alreadyOpenedThisSession);
+                SessionState.SetBool(SessionStartedKey, true);
+
+                LogCore.AddSink(_sessionFile);
+            } catch (Exception exception) {
+                _sessionFile = null;
+                Debug.LogWarning("KenseiLog: no editor log file this session (" + exception.Message + ")");
+                return;
+            }
+
+            // The handle has to be given up before the next domain takes over, or the sink it
+            // builds finds the file held by a domain that no longer exists.
+            AssemblyReloadEvents.beforeAssemblyReload += CloseSessionFile;
+            EditorApplication.quitting += CloseSessionFile;
+        }
+
+        private static void CloseSessionFile() {
+            AssemblyReloadEvents.beforeAssemblyReload -= CloseSessionFile;
+            EditorApplication.quitting -= CloseSessionFile;
+
+            if (_sessionFile == null) {
+                return;
+            }
+            LogCore.RemoveSink(_sessionFile);
+            _sessionFile.Dispose();
+            _sessionFile = null;
         }
 
         /// <summary>

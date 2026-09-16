@@ -13,6 +13,16 @@ behaviour simply stayed where it was.
 
 ### Added
 
+- The editor writes what it logs to a file of its own, under `logs/editor`, and keeps one file
+  per editor session rather than per domain reload. Without it the editor's records lived
+  nowhere but a buffer that is rebuilt on every reload, so a recompile took all of them - and
+  the runtime's file sink cannot do the job, being gated on play mode precisely because it
+  starts a run by shifting the files aside. `EditorSink.WriteSessionFile` turns it off.
+- `FileSink` can be opened to add to the file it finds rather than starting a run
+  (`continueExistingFile`), which is what makes one file per editor session possible: no shift,
+  no second header, and the byte count carried over so the size limit still means the size of
+  the file.
+
 - `LogConfig.FileDirectory`: where the log files go, empty meaning `persistentDataPath/logs`.
   Applied on construction and by a later `Configure`, which starts a file in the new place.
   The checks use it so that running them no longer writes into the developer's own log

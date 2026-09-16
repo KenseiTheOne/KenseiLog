@@ -45,6 +45,7 @@ public static class SmokeRunner {
         Scenario(TagColoursAreStableAndDistinct);
         Scenario(FileSettingsApplyAfterTheSinkExists);
         Scenario(FileDirectoryMovesWithTheConfiguration);
+        Scenario(AContinuedSessionAddsToTheFileItFound);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -1013,6 +1014,61 @@ public static class SmokeRunner {
     }
 
     // =====================================================================
+
+
+    /// <summary>
+    /// The editor's sink is rebuilt on every domain reload, and a sink that starts a run by
+    /// shifting the files aside would push a morning's logs out of the history by lunchtime.
+    /// Continuing adds to the file that is there: no shift, no second header, and the byte
+    /// count carried over so the size limit still means the size of the file.
+    /// </summary>
+    private static void AContinuedSessionAddsToTheFileItFound() {
+        string directory = ScratchDirectory("continued");
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = directory;
+        config.FileIncludesDevChannel = true;
+
+        FileSink first = new FileSink(in config);
+        first.Write(Record(1, "Editor", "before the reload", LogLevel.Log, LogChannel.Dev, 0));
+        first.Dispose();
+
+        long afterFirst = new FileInfo(Path.Combine(directory, "current.jsonl")).Length;
+
+        FileSink second = new FileSink(in config, continueExistingFile: true);
+        second.Write(Record(2, "Editor", "after the reload", LogLevel.Log, LogChannel.Dev, 0));
+        second.Dispose();
+
+        string written = File.ReadAllText(Path.Combine(directory, "current.jsonl"));
+        Check("what was there before is still there", written.Contains("before the reload"));
+        Check("and what came after is added to it", written.Contains("after the reload"));
+        Check("the file was not shifted aside", !File.Exists(Path.Combine(directory, "log.1.jsonl")));
+
+        int headers = 0;
+        int at = 0;
+        while (true) {
+            at = written.IndexOf(SessionKeyText, at, StringComparison.Ordinal);
+            if (at < 0) {
+                break;
+            }
+            headers++;
+            at++;
+        }
+        Check("with one session header rather than two", headers == 1);
+        Check("and the size counted from what the file already held",
+            new FileInfo(Path.Combine(directory, "current.jsonl")).Length > afterFirst);
+
+        // Nothing to carry on from is a session like any other.
+        string empty = ScratchDirectory("continued-empty");
+        config.FileDirectory = empty;
+        FileSink fresh = new FileSink(in config, continueExistingFile: true);
+        fresh.Write(Record(3, "Editor", "a session of its own", LogLevel.Log, LogChannel.Dev, 0));
+        fresh.Dispose();
+
+        Check("continuing with no file starts one",
+            File.ReadAllText(Path.Combine(empty, "current.jsonl")).Contains(SessionKeyText));
+    }
+
+    private const string SessionKeyText = "\"session\":";
 
     /// <summary>
     /// Somewhere to write that is not the developer's own log directory. Pointing the file

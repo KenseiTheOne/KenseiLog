@@ -38,7 +38,20 @@ namespace KenseiLog {
         private long _bytesWritten;
         private double _lastFlush;
 
-        public FileSink(in LogConfig config) {
+        public FileSink(in LogConfig config) : this(in config, continueExistingFile: false) {
+        }
+
+        /// <summary>
+        /// Opens the sink.
+        /// <para>
+        /// <paramref name="continueExistingFile"/> adds to the file that is already there
+        /// rather than shifting it aside and starting a run. A build never wants that - each
+        /// run gets its own file so that a crash report is never a blend of two - but the
+        /// editor does: its sink is rebuilt on every domain reload, and starting a run per
+        /// recompile would push a morning's logs out of the history by lunchtime.
+        /// </para>
+        /// </summary>
+        public FileSink(in LogConfig config, bool continueExistingFile) {
             // Read on the main thread at construction. These reach into the engine, and Write
             // runs on whichever thread happened to log.
             _app = Application.productName + " " + Application.version;
@@ -49,7 +62,11 @@ namespace KenseiLog {
             SetDirectory(ResolveDirectory(in config));
             ApplySettings(in config);
 
-            StartSession();
+            if (continueExistingFile) {
+                ContinueSession();
+            } else {
+                StartSession();
+            }
         }
 
         public string LogDirectory { get; private set; }
@@ -215,6 +232,34 @@ namespace KenseiLog {
                     Warn("could not shift the previous run aside, starting a new file at", exception);
                 }
                 OpenWriter();
+            }
+        }
+
+        /// <summary>
+        /// Opens the existing file for appending, with no second session header and the byte
+        /// count carried over from what is already in it, so the size limit still means the
+        /// size of the file. Falls back to starting a session when there is nothing to carry
+        /// on from.
+        /// </summary>
+        private void ContinueSession() {
+            lock (_lock) {
+                long existing;
+                try {
+                    Directory.CreateDirectory(LogDirectory);
+                    if (!File.Exists(CurrentFilePath)) {
+                        StartSession();
+                        return;
+                    }
+                    existing = new FileInfo(CurrentFilePath).Length;
+                } catch (Exception exception) {
+                    Warn("file logging is off, could not prepare", exception);
+                    return;
+                }
+
+                OpenWriter(startSession: false);
+                if (_writer != null) {
+                    _bytesWritten = existing;
+                }
             }
         }
 
