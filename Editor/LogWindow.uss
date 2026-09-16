@@ -222,6 +222,7 @@
 .kl-detail {
     height: 140px;
     flex-shrink: 0;
+    overflow: hidden;
     border-top-width: 1px;
     border-top-color: rgba(0, 0, 0, 0.35);
     background-color: var(--unity-colors-window-background);
@@ -229,14 +230,23 @@
 
 .kl-detail-header {
     height: 20px;
+    flex-shrink: 0;
     padding-left: 8px;
     -unity-text-align: middle-left;
     -unity-font-style: bold;
     opacity: 0.75;
 }
 
-.kl-detail-body {
+/* The text scrolls in here, so that the row of buttons below keeps its place in the corner.
+   A Label is as tall as its text, and a flex item will not shrink below its content unless it
+   is told to - which is why a long stack trace used to carry the buttons out of the window. */
+.kl-detail-scroll {
     flex-grow: 1;
+    flex-shrink: 1;
+    min-height: 0;
+}
+
+.kl-detail-body {
     margin: 0 6px 0 6px;
     white-space: normal;
 }
@@ -244,6 +254,7 @@
 .kl-detail-actions {
     flex-direction: row;
     justify-content: flex-end;
+    flex-shrink: 0;
     height: 24px;
     padding-right: 6px;
 }

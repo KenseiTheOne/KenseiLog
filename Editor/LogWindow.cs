@@ -64,6 +64,7 @@ namespace KenseiLog.Editor {
         private ListView _listView;
         private Label _emptyHint;
         private Label _detailHeader;
+        private ScrollView _detailScroll;
         private Label _detailBody;
         private Button _sourceButton;
         private Button _pingButton;
@@ -628,6 +629,14 @@ namespace KenseiLog.Editor {
             _detailHeader.AddToClassList("kl-detail-header");
             detail.Add(_detailHeader);
 
+            // The body scrolls inside the pane rather than growing it. A Label is as tall as
+            // its text and a flex item does not shrink below its content by default, so a long
+            // stack trace made it taller than a pane whose height is fixed - and pushed the
+            // buttons that follow it off the bottom, out of the window.
+            _detailScroll = new ScrollView(ScrollViewMode.Vertical);
+            _detailScroll.AddToClassList("kl-detail-scroll");
+            detail.Add(_detailScroll);
+
             // A Label, not a read-only TextField. A TextField carries the whole text editing
             // apparatus - an edit engine, a selection model, a caret that schedules its own
             // repaints - and an editor window pays for all of it on every frame it is focused,
@@ -635,7 +644,7 @@ namespace KenseiLog.Editor {
             _detailBody = new Label();
             _detailBody.AddToClassList("kl-detail-body");
             _detailBody.selection.isSelectable = true;
-            detail.Add(_detailBody);
+            _detailScroll.Add(_detailBody);
 
             VisualElement actions = new VisualElement();
             actions.AddToClassList("kl-detail-actions");
@@ -1145,6 +1154,8 @@ namespace KenseiLog.Editor {
         // =====================================================================
 
         private void OnSelectionChanged(IEnumerable<int> indices) {
+            _detailScroll.scrollOffset = Vector2.zero;
+
             if (!TryGetSelectedRecord(out LogRecord record)) {
                 _detailHeader.text = string.Empty;
                 _detailBody.text = string.Empty;

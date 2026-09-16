@@ -94,6 +94,11 @@ behaviour simply stayed where it was.
   sink throwing on every reload afterwards until the preference was cleared by hand.
 - The window's copy buffer grows with its source. `CopyNewerThan` stops when its destination is
   full, so raising `EditorSink.Capacity` silently lost the newest records.
+- The Open and Ping buttons slid out of the window under a long stack trace. The detail pane
+  is a fixed 140px, the body is a `Label` - as tall as its text - and a flex item does not
+  shrink below its content unless it is told to, so the text grew past the pane and carried the
+  row beneath it out of sight. The text scrolls inside the pane now and the buttons keep their
+  corner.
 - An expired row no longer keeps the colour, severity and columns of the record that had it
   before, and the stylesheet lookup no longer dereferences a path that a package compiled into
   a DLL does not have.
