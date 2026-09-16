@@ -27,6 +27,7 @@ Any empty Unity project (2022.3 or newer) will do.
    | `DemoBuilder.cs` | `Assets/Editor/` | same |
    | `DemoSceneBuilder.cs` | `Assets/Editor/` | same |
    | `ScreenshotRunner.cs` | `Assets/Demo/` | a `MonoBehaviour`, must not live under `Editor` |
+   | `ReadmeSnippets.cs` | `Assets/Editor/` | nothing runs it; it only has to compile |
 
 ## The checks
 
@@ -35,10 +36,20 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-62 assertions over everything that does not need a GUI: the ring buffer including gapped
-sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation, and the
-regressions listed below. Prints `SMOKE RESULT: PASS` or `FAIL (n)` and exits non-zero on
-failure, so it is usable as a gate.
+126 assertions over everything that does not need a GUI: the ring buffer including gapped and
+out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
+including a rotation that is refused, the buffer under four writers and a reader, and the
+regressions listed below. Prints
+`SMOKE RESULT: PASS` or `FAIL (n)` and exits non-zero on failure, so it is usable as a gate.
+
+Each scenario is run inside a guard of its own, and a scenario that throws is counted as a
+failure rather than ending the run. Before that, a throw ended `Run` where it stood: the
+report was never printed, `Exit(1)` was never reached, and `-batchmode -quit` returned zero -
+a harness reporting success because it had fallen over.
+
+Anything that writes to disk writes under `%TEMP%/kenseilog-smoke` and the run deletes it
+afterwards. Pointing the file checks at `persistentDataPath` meant every run pushed the
+developer's own logs out of the rotation and left its own behind.
 
 Each regression check names the bug it guards, because the interesting ones were all silent:
 
@@ -46,7 +57,27 @@ Each regression check names the bug it guards, because the interesting ones were
 - the console sink mirroring records it had just captured
 - ring buffer lookups assuming sequences are contiguous, which they stop being the moment the
   file sink skips the dev channel
+- a record that arrives out of order, which one inversion was enough to make a consumer
+  re-copy the same batch on every poll for the rest of the session
 - file settings frozen at construction, so `LogCore.Configure` did nothing for them
+- a rotation that cannot shift the files aside, which used to close the writer for good
+- a retained count lowered between runs, which orphaned every file above the new limit
+- a sink that throws, which took the file sink and the caller's frame down with it
+- a collapsed view's prune, which stopped at the first row pointing at a late record and left
+  everything expired behind it
+- a row count standing still while a full ring buffer moves underneath it, which is what the
+  window repainted on
+- a null tag, which reached the viewers and threw there
+- a half surrogate pair, which the encoder turned into U+FFFD
+- a file written by a newer schema, and a file holding a header and nothing else
+
+## The README
+
+`ReadmeSnippets.cs` is the README's code, compiled. Nothing runs it. It exists so that a
+snippet which has stopped matching the API cannot sit in the README looking authoritative -
+the first thing anyone tries is the thing they copied out of it. It found one on the way in:
+`Logger` collides with `UnityEngine.Logger`, so the one-tag-per-file snippet needed a
+`using Logger = KenseiLog.Logger;` above it to compile in an ordinary file.
 
 ## The rest
 

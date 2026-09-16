@@ -35,10 +35,6 @@ namespace KenseiLog {
         private double _lastFlush;
 
         public FileSink(in LogConfig config) {
-            LogDirectory = Path.Combine(Application.persistentDataPath, DirectoryName);
-            CurrentFilePath = Path.Combine(LogDirectory, CurrentFileName);
-            Reconfigure(in config);
-
             // Read on the main thread at construction. These reach into the engine, and Write
             // runs on whichever thread happened to log.
             _app = Application.productName + " " + Application.version;
@@ -46,12 +42,15 @@ namespace KenseiLog {
             _platform = Application.platform.ToString();
             _device = SystemInfo.deviceModel;
 
+            SetDirectory(ResolveDirectory(in config));
+            ApplySettings(in config);
+
             StartSession();
         }
 
-        public string LogDirectory { get; }
+        public string LogDirectory { get; private set; }
 
-        public string CurrentFilePath { get; }
+        public string CurrentFilePath { get; private set; }
 
         /// <summary>False when the file could not be opened; the sink then does nothing.</summary>
         public bool IsWriting {
@@ -113,13 +112,41 @@ namespace KenseiLog {
         /// </para>
         /// </summary>
         public void Reconfigure(in LogConfig config) {
+            // Outside the lock: this reads Application state, which is main thread only, and
+            // Reconfigure is documented as such through LogCore.Configure.
+            string directory = ResolveDirectory(in config);
+
             lock (_lock) {
-                _sizeLimitBytes = Math.Max(64L, config.FileSizeLimitKb) * 1024L;
-                _retainedFiles = Math.Max(1, config.RetainedFileCount);
-                _flushInterval = Math.Max(0.5, config.FileFlushIntervalSeconds);
-                _includeDev = config.FileIncludesDevChannel;
+                ApplySettings(in config);
+                if (string.Equals(directory, LogDirectory, StringComparison.Ordinal)) {
+                    return;
+                }
+
+                // Somewhere else to write means a file there, and a session header of its own.
+                // What was already written stays where it was: copying it across would mean
+                // moving a file that something may already be reading.
+                CloseWriter();
+                SetDirectory(directory);
+                StartSession();
             }
         }
+
+        private void ApplySettings(in LogConfig config) {
+            _sizeLimitBytes = Math.Max(64L, config.FileSizeLimitKb) * 1024L;
+            _retainedFiles = Math.Max(1, config.RetainedFileCount);
+            _flushInterval = Math.Max(0.5, config.FileFlushIntervalSeconds);
+            _includeDev = config.FileIncludesDevChannel;
+        }
+
+        private void SetDirectory(string directory) {
+            LogDirectory = directory;
+            CurrentFilePath = Path.Combine(directory, CurrentFileName);
+        }
+
+        private static string ResolveDirectory(in LogConfig config) =>
+            string.IsNullOrEmpty(config.FileDirectory)
+                ? Path.Combine(Application.persistentDataPath, DirectoryName)
+                : config.FileDirectory;
 
         public void Flush() {
             lock (_lock) {

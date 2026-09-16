@@ -1,9 +1,12 @@
 {
   "name": "com.kensei.log",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "displayName": "Kensei Log",
   "description": "Tagged logging with separate dev and prod channels. Dev calls are stripped by the compiler in release builds. Ships an editor window with saved filter tabs, a rolling JSONL file sink for builds, and an in-game overlay for reading logs on the device.",
   "unity": "2022.3",
+  "documentationUrl": "https://github.com/KenseiTheOne/KenseiLog/blob/main/README.md",
+  "changelogUrl": "https://github.com/KenseiTheOne/KenseiLog/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/KenseiTheOne/KenseiLog/blob/main/LICENSE.md",
   "author": {
     "name": "KenseiTheOne",
     "url": "https://github.com/KenseiTheOne"

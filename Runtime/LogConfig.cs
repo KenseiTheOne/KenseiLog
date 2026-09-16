@@ -32,6 +32,16 @@ namespace KenseiLog {
         /// </summary>
         public bool WriteToFile;
 
+        /// <summary>
+        /// Where the files go. Empty means persistentDataPath/logs, which is the only place a
+        /// build can be relied on to write.
+        /// <para>
+        /// Changing it in a later <see cref="LogCore.Configure"/> starts a file in the new
+        /// place; what was written before the change stays where it was written.
+        /// </para>
+        /// </summary>
+        public string FileDirectory;
+
         /// <summary>Rotate the current file once it passes this size.</summary>
         public int FileSizeLimitKb;
 
@@ -66,6 +76,7 @@ namespace KenseiLog {
             return new LogConfig {
                 CaptureStackTraceOnError = true,
                 MirrorToUnityConsole = false,
+                FileDirectory = null,
                 CaptureForeignLogs = true,
 #if UNITY_WEBGL && !UNITY_EDITOR
                 // persistentDataPath on WebGL is a browser-backed virtual filesystem inside the

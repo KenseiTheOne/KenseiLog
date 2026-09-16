@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using KenseiLog;
 using KenseiLog.Editor;
 using UnityEditor;
@@ -15,27 +16,41 @@ public static class SmokeRunner {
     private static int _failures;
 
     public static void Run() {
-        RingBufferKeepsNewestAndAddressesBySequence();
-        RolledRecordsAreReportedMissing();
-        TagFilterMatchesDescendantsButNotNeighbours();
-        SearchLooksAtMessageOnlyNotTag();
-        CollapseFoldsRepeatsAndTracksNewest();
-        PruneDropsRolledEntriesAndKeepsCollapseIndex();
-        TagTreeBuildsHierarchyWithRollupCounts();
-        FacadeReachesTheEditorSink();
-        ForeignLogsAreMarkedAsCaptured();
-        ConsoleSinkSkipsCapturedRecords();
-        RingBufferHandlesGappedSequences();
-        JsonSurvivesRoundTrip();
-        FileSinkWritesHeaderAndRotates();
-        MemorySinkStoresAndVersions();
-        TagColoursAreStableAndDistinct();
-        FileSettingsApplyAfterTheSinkExists();
-        SourcePathsResolveAcrossMachines();
-        TaglessOverloadsLandUnderUntagged();
-        ScopedLoggerCarriesItsTag();
-        CapturedLogsNavigateByTheirStackTrace();
-        ConsoleBridgeFindsTheContextObject();
+        Scenario(RingBufferKeepsNewestAndAddressesBySequence);
+        Scenario(RolledRecordsAreReportedMissing);
+        Scenario(RingBufferSettlesARecordThatArrivesLate);
+        Scenario(RingBufferHoldsUpUnderThreads);
+        Scenario(TagFilterMatchesDescendantsButNotNeighbours);
+        Scenario(SearchLooksAtMessageOnlyNotTag);
+        Scenario(CollapseFoldsRepeatsAndTracksNewest);
+        Scenario(PruneDropsRolledEntriesAndKeepsCollapseIndex);
+        Scenario(PruneClearsExpiredRowsInACollapsedView);
+        Scenario(ViewRevisionMovesWhenTheContentsDo);
+        Scenario(TagTreeBuildsHierarchyWithRollupCounts);
+        Scenario(FacadeReachesTheEditorSink);
+        Scenario(ANullTagBecomesUntagged);
+        Scenario(ForeignLogsAreMarkedAsCaptured);
+        Scenario(ConsoleSinkSkipsCapturedRecords);
+        Scenario(RingBufferHandlesGappedSequences);
+        Scenario(JsonSurvivesRoundTrip);
+        Scenario(LoneSurrogatesAreEscapedNotReplaced);
+        Scenario(FileSinkWritesHeaderAndRotates);
+        Scenario(RotationThatCannotShiftKeepsWriting);
+        Scenario(LoweringTheRetainedCountRemovesTheOrphans);
+        Scenario(AThrowingSinkDoesNotStopTheOthers);
+        Scenario(SessionFilesCarryASchemaVersion);
+        Scenario(AFileWithOnlyAHeaderStillOpens);
+        Scenario(MemorySinkStoresAndVersions);
+        Scenario(TagColoursAreStableAndDistinct);
+        Scenario(FileSettingsApplyAfterTheSinkExists);
+        Scenario(FileDirectoryMovesWithTheConfiguration);
+        Scenario(SourcePathsResolveAcrossMachines);
+        Scenario(TaglessOverloadsLandUnderUntagged);
+        Scenario(ScopedLoggerCarriesItsTag);
+        Scenario(CapturedLogsNavigateByTheirStackTrace);
+        Scenario(ConsoleBridgeFindsTheContextObject);
+
+        CleanUpScratchDirectory();
 
         _report.Insert(0, _failures == 0
             ? "SMOKE RESULT: PASS\n"
@@ -44,6 +59,23 @@ public static class SmokeRunner {
 
         if (_failures > 0) {
             EditorApplication.Exit(1);
+        }
+    }
+
+    /// <summary>
+    /// Runs one scenario and counts a throw as a failure of its own.
+    /// <para>
+    /// Without this a scenario that threw ended Run where it stood: the report was never
+    /// written, Exit(1) was never reached, and -batchmode -quit returned zero. A harness that
+    /// reports success when it has fallen over is worse than no harness, and every scenario
+    /// after the throw went unrun without anyone being told.
+    /// </para>
+    /// </summary>
+    private static void Scenario(Action body) {
+        try {
+            body();
+        } catch (Exception exception) {
+            Check(body.Method.Name + " threw " + exception.GetType().Name + ": " + exception.Message, false);
         }
     }
 
@@ -135,7 +167,8 @@ public static class SmokeRunner {
         Check("tree has both roots", roots.Count == 2);
         Check("parent rolls up children", combat != null && combat.Count == 5);
         Check("parent keeps children", combat != null && combat.Children.Count == 2);
-        Check("child carries full tag", combat != null && combat.Children.Find(n => n.Segment == "AI").FullTag == "Combat.AI");
+        TagNode ai = combat?.Children.Find(n => n.Segment == "AI");
+        Check("child carries full tag", ai != null && ai.FullTag == "Combat.AI");
     }
 
     private static void FacadeReachesTheEditorSink() {
@@ -254,6 +287,7 @@ public static class SmokeRunner {
 
     private static void FileSinkWritesHeaderAndRotates() {
         LogConfig config = LogConfig.Default();
+        config.FileDirectory = ScratchDirectory("rotate");
         config.FileSizeLimitKb = 64;
         config.RetainedFileCount = 2;
 
@@ -334,6 +368,7 @@ public static class SmokeRunner {
     /// </summary>
     private static void FileSettingsApplyAfterTheSinkExists() {
         LogConfig config = LogConfig.Default();
+        config.FileDirectory = ScratchDirectory("settings");
         config.FileIncludesDevChannel = false;
 
         FileSink sink = new FileSink(in config);
@@ -526,7 +561,391 @@ public static class SmokeRunner {
         UnityEngine.Object.DestroyImmediate(target);
     }
 
+
+    /// <summary>
+    /// Two threads logging at once can reach a sink the other way round, and every read of the
+    /// buffer binary-searches on the sequence. One inversion was enough to make a consumer
+    /// re-copy the same batch on every poll for the rest of the session.
+    /// </summary>
+    private static void RingBufferSettlesARecordThatArrivesLate() {
+        LogRingBuffer buffer = new LogRingBuffer(8);
+        buffer.Add(Record(1, "T", "one", LogLevel.Log, LogChannel.Prod, 0));
+        buffer.Add(Record(3, "T", "three", LogLevel.Log, LogChannel.Prod, 0));
+        buffer.Add(Record(2, "T", "two", LogLevel.Log, LogChannel.Prod, 0));
+
+        LogRecord[] scratch = new LogRecord[8];
+        int copied = buffer.CopyNewerThan(0, scratch);
+        Check("a late arrival settles into order",
+            copied == 3 && scratch[0].Sequence == 1 && scratch[1].Sequence == 2 && scratch[2].Sequence == 3);
+
+        // The shape of the loop it used to cause: copy from a watermark, take the newest
+        // sequence, copy again. With an inversion in place the second copy handed back rows
+        // the consumer already had, for as long as it kept asking.
+        long watermark = 0;
+        copied = buffer.CopyNewerThan(watermark, scratch);
+        for (int i = 0; i < copied; i++) {
+            watermark = Math.Max(watermark, scratch[i].Sequence);
+        }
+        Check("a second poll from the new watermark is empty", buffer.CopyNewerThan(watermark, scratch) == 0);
+
+        Check("every sequence is still addressable",
+            buffer.TryGetBySequence(1, out _) && buffer.TryGetBySequence(2, out _) && buffer.TryGetBySequence(3, out _));
+    }
+
+    /// <summary>
+    /// The buffer is documented as safe from any thread, and a single-threaded check cannot
+    /// say that. Four writers against one reader is the shape that matters: a record is built
+    /// on whichever thread logged and read back on the main one.
+    /// </summary>
+    private static void RingBufferHoldsUpUnderThreads() {
+        const int writers = 4;
+        const int perWriter = 500;
+        const int capacity = 256;
+
+        LogRingBuffer buffer = new LogRingBuffer(capacity);
+        Exception failure = null;
+        bool ordered = true;
+        long next = 0;
+
+        Thread[] threads = new Thread[writers];
+        for (int t = 0; t < writers; t++) {
+            threads[t] = new Thread(() => {
+                try {
+                    for (int i = 0; i < perWriter; i++) {
+                        buffer.Add(Record(Interlocked.Increment(ref next), "T", "x", LogLevel.Log, LogChannel.Prod, 0));
+                    }
+                } catch (Exception exception) {
+                    Interlocked.CompareExchange(ref failure, exception, null);
+                }
+            });
+        }
+
+        Thread reader = new Thread(() => {
+            LogRecord[] scratch = new LogRecord[capacity];
+            try {
+                for (int i = 0; i < 2000; i++) {
+                    int copied = buffer.CopyNewerThan(0, scratch);
+                    for (int j = 1; j < copied; j++) {
+                        if (scratch[j - 1].Sequence > scratch[j].Sequence) {
+                            ordered = false;
+                        }
+                    }
+                }
+            } catch (Exception exception) {
+                Interlocked.CompareExchange(ref failure, exception, null);
+            }
+        });
+
+        for (int t = 0; t < writers; t++) {
+            threads[t].Start();
+        }
+        reader.Start();
+        for (int t = 0; t < writers; t++) {
+            threads[t].Join();
+        }
+        reader.Join();
+
+        Check("concurrent writers and a reader do not throw" + (failure == null ? string.Empty : ": " + failure.Message),
+            failure == null);
+        Check("a copy is in sequence order however they arrived", ordered);
+        Check("the buffer ends up full", buffer.Count == capacity);
+    }
+
+    /// <summary>
+    /// Collapse points a row at the newest occurrence of its message, so the list stops being
+    /// sorted. A prune that scanned only the leading run stopped at the first row holding a
+    /// late sequence and left every expired row behind it on screen for good.
+    /// </summary>
+    private static void PruneClearsExpiredRowsInACollapsedView() {
+        TabView view = new TabView(new LogFilter { Name = "Collapsed", Collapse = true });
+
+        view.Append(Record(1, "T", "a", LogLevel.Log, LogChannel.Prod, 0));
+        view.Append(Record(2, "T", "b", LogLevel.Log, LogChannel.Prod, 0));
+        view.Append(Record(3, "T", "c", LogLevel.Log, LogChannel.Prod, 0));
+        view.Append(Record(40, "T", "a", LogLevel.Log, LogChannel.Prod, 0));
+
+        Check("a collapsed view holds one row per message", view.Count == 3);
+        Check("the repeated row points at the newest", view.Sequences[0] == 40);
+
+        view.PruneBelow(10);
+        Check("expired rows behind a late one are dropped", view.Count == 1);
+        Check("the surviving row is the late one", view.Count == 1 && view.Sequences[0] == 40);
+
+        // The index has to survive the prune, or a later repeat opens a second row for a
+        // message that already has one.
+        view.Append(Record(41, "T", "a", LogLevel.Log, LogChannel.Prod, 0));
+        Check("the collapse index survives a collapsed prune", view.Count == 1 && view.Repeats[0] == 3);
+    }
+
+    /// <summary>
+    /// Once the ring buffer is full it drops one record per record, so the row count stops
+    /// moving while the contents keep moving. The window repaints on the revision instead.
+    /// </summary>
+    private static void ViewRevisionMovesWhenTheContentsDo() {
+        TabView plain = new TabView(new LogFilter { Name = "All" });
+        int before = plain.Revision;
+        plain.Append(Record(1, "T", "one", LogLevel.Log, LogChannel.Prod, 0));
+        Check("a new row moves the revision", plain.Revision != before);
+
+        before = plain.Revision;
+        plain.PruneBelow(2);
+        Check("dropping a row moves the revision", plain.Revision != before);
+
+        TabView collapsed = new TabView(new LogFilter { Name = "Collapsed", Collapse = true });
+        collapsed.Append(Record(1, "T", "same", LogLevel.Log, LogChannel.Prod, 0));
+        int count = collapsed.Count;
+        before = collapsed.Revision;
+        collapsed.Append(Record(2, "T", "same", LogLevel.Log, LogChannel.Prod, 0));
+        Check("a repeat leaves the row count alone", collapsed.Count == count);
+        Check("a repeat still moves the revision", collapsed.Revision != before);
+    }
+
+    /// <summary>
+    /// A null tag is easy to pass by accident and used to reach the viewers intact, where it
+    /// threw out of a dictionary lookup or a palette hash with a stack that named neither the
+    /// tag nor the call that passed it.
+    /// </summary>
+    private static void ANullTagBecomesUntagged() {
+        EditorSink.Instance.Clear();
+        Log.Prod(null, "a record with no tag at all");
+
+        LogRecord[] scratch = new LogRecord[8];
+        int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
+        Check("a null tag is normalised where the record is built",
+            copied == 1 && scratch[0].Tag == LogCore.UntaggedTag);
+
+        LogFilter filter = new LogFilter { Name = "Probe" };
+        filter.Tags.Add("Combat");
+        Check("the filter can test it without throwing", copied == 1 && !filter.Matches(in scratch[0]));
+    }
+
+    /// <summary>
+    /// A message cut mid-character leaves half a surrogate pair. Written raw it reached the
+    /// UTF-8 encoder, which turns it into U+FFFD - the character that says something was here
+    /// and loses what. JSON allows the escape, so the original code unit survives.
+    /// </summary>
+    private static void LoneSurrogatesAreEscapedNotReplaced() {
+        string emoji = char.ConvertFromUtf32(0x1F600);
+
+        StringBuilder lone = new StringBuilder();
+        LogJson.AppendRecord(lone, Record(1, "T", "cut here: " + emoji[0], LogLevel.Log, LogChannel.Prod, 0));
+        Check("a lone surrogate is written as an escape", lone.ToString().Contains("\\ud83d"));
+
+        StringBuilder pair = new StringBuilder();
+        LogJson.AppendRecord(pair, Record(2, "T", "ok " + emoji, LogLevel.Log, LogChannel.Prod, 0));
+        Check("a complete pair is left as itself",
+            pair.ToString().Contains(emoji) && !pair.ToString().Contains("\\ud83d"));
+    }
+
+    /// <summary>
+    /// Rotation can be refused - on Windows the window itself holds a file open while it reads
+    /// one. Returning there left the writer closed and dropped every later record for the rest
+    /// of the run, which is the silence this guards against.
+    /// </summary>
+    private static void RotationThatCannotShiftKeepsWriting() {
+        string directory = ScratchDirectory("blocked");
+        Directory.CreateDirectory(directory);
+
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = directory;
+        config.FileSizeLimitKb = 64;
+        config.RetainedFileCount = 2;
+
+        // Occupy the slot the rotation will want to move the current file into.
+        string blocked = Path.Combine(directory, "log.1.jsonl");
+        File.WriteAllText(blocked, "held open\n");
+
+        FileSink sink = new FileSink(in config);
+        using (new FileStream(blocked, FileMode.Open, FileAccess.Read, FileShare.None)) {
+            for (int i = 0; i < 4000; i++) {
+                sink.Write(Record(i + 1, "Boot", "padding record " + i + " with enough text to push this file past its limit",
+                    LogLevel.Log, LogChannel.Prod, i));
+            }
+            sink.Flush();
+            Check("the sink is still writing after a refused rotation", sink.IsWriting);
+        }
+
+        sink.Write(Record(99999, "Boot", "written after the rotation failed", LogLevel.Log, LogChannel.Prod, 0));
+        sink.Flush();
+        Check("records written after a refused rotation are in the file",
+            ReadWhileOpen(sink.CurrentFilePath).Contains("written after the rotation failed"));
+
+        sink.Dispose();
+    }
+
+    /// <summary>
+    /// The shift only ever touched indices inside the retained count, so lowering it left the
+    /// files above the new limit orphaned - holding the disk the setting was lowered to free.
+    /// </summary>
+    private static void LoweringTheRetainedCountRemovesTheOrphans() {
+        string directory = ScratchDirectory("retained");
+        Directory.CreateDirectory(directory);
+
+        // What a run with a higher retained count would have left behind, plus a current file
+        // with something in it, which is what makes a new sink shift them along.
+        for (int i = 1; i <= 4; i++) {
+            File.WriteAllText(Path.Combine(directory, "log." + i + ".jsonl"), "old file " + i + "\n");
+        }
+        File.WriteAllText(Path.Combine(directory, "current.jsonl"), "the run before this one\n");
+
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = directory;
+        config.RetainedFileCount = 2;
+
+        FileSink sink = new FileSink(in config);
+        sink.Dispose();
+
+        Check("files above the new limit are gone",
+            !File.Exists(Path.Combine(directory, "log.3.jsonl")) && !File.Exists(Path.Combine(directory, "log.4.jsonl")));
+        Check("files inside it are kept",
+            File.Exists(Path.Combine(directory, "log.1.jsonl")) && File.Exists(Path.Combine(directory, "log.2.jsonl")));
+    }
+
+    /// <summary>
+    /// A sink that throws must cost nothing but itself. It used to take the file sink down
+    /// with it - the file being the only diagnostic a shipped build has - and the exception
+    /// carried on out of Emit into whatever game code had called Log.
+    /// </summary>
+    private static void AThrowingSinkDoesNotStopTheOthers() {
+        ThrowingSink bad = new ThrowingSink();
+        MemorySink behind = new MemorySink(8);
+
+        LogCore.AddSink(bad);
+        LogCore.AddSink(behind);
+        try {
+            LogCore.Emit(Record(1, "T", "past a broken sink", LogLevel.Log, LogChannel.Prod, 0));
+            Check("a throwing sink does not reach the caller", true);
+        } catch (Exception) {
+            Check("a throwing sink does not reach the caller", false);
+        } finally {
+            LogCore.RemoveSink(bad);
+            LogCore.RemoveSink(behind);
+        }
+
+        Check("the broken sink was actually asked", bad.Calls > 0);
+        Check("the sink behind it still got the record", behind.Buffer.Count == 1);
+    }
+
+    private sealed class ThrowingSink : ILogSink {
+        public int Calls;
+
+        public void Write(in LogRecord record) {
+            Calls++;
+            throw new InvalidOperationException("this sink is broken on purpose");
+        }
+    }
+
+    /// <summary>
+    /// Without a version in the header, a file written by a later layout reads back as
+    /// plausibly wrong data and says nothing about it.
+    /// </summary>
+    private static void SessionFilesCarryASchemaVersion() {
+        const string versionKey = "\"v\":";
+
+        StringBuilder builder = new StringBuilder();
+        LogJson.AppendSessionHeader(builder, "sid", "App", "2022.3", "WindowsEditor", "PC", "2026-09-16T00:00:00Z");
+        string header = builder.ToString();
+        Check("the header carries a schema version", header.Contains(versionKey + LogJson.SchemaVersion));
+
+        StringBuilder record = new StringBuilder();
+        LogJson.AppendRecord(record, Record(1, "T", "from the future", LogLevel.Log, LogChannel.Prod, 0));
+
+        string directory = ScratchDirectory("schema");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "future.jsonl");
+        File.WriteAllText(path,
+            header.Replace(versionKey + LogJson.SchemaVersion, versionKey + (LogJson.SchemaVersion + 1)) + "\n" +
+            record.ToString() + "\n");
+
+        bool read = LogSessionReader.TryRead(path, out _, out string error);
+        Check("a file from a newer schema is refused", !read);
+        Check("and the refusal says why", !read && error != null && error.Contains("newer"));
+    }
+
+    /// <summary>
+    /// A header and nothing else is the build that died during startup - the case the package
+    /// exists for. Refusing it left the only evidence of that death unreadable.
+    /// </summary>
+    private static void AFileWithOnlyAHeaderStillOpens() {
+        string directory = ScratchDirectory("headeronly");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "header-only.jsonl");
+
+        StringBuilder builder = new StringBuilder();
+        LogJson.AppendSessionHeader(builder, "sid", "App 1.0", "2022.3", "Android", "Pixel 8", "2026-09-16T00:00:00Z");
+        builder.Append('\n');
+        File.WriteAllText(path, builder.ToString());
+
+        bool read = LogSessionReader.TryRead(path, out LogSession session, out string error);
+        Check("a header-only file opens" + (read ? string.Empty : ": " + error), read);
+        Check("and still names the device it came from", read && session.Device == "Pixel 8");
+        Check("with an empty buffer rather than none", read && session.Buffer != null && session.Buffer.Count == 0);
+    }
+
+    /// <summary>
+    /// Where the files go is a setting like the others: a later Configure has to reach it, or
+    /// it is accepted and quietly ignored.
+    /// </summary>
+    private static void FileDirectoryMovesWithTheConfiguration() {
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = ScratchDirectory("move-from");
+
+        FileSink sink = new FileSink(in config);
+        if (!sink.IsWriting) {
+            Check("file sink opened for the directory check", false);
+            return;
+        }
+        sink.Write(Record(1, "Cfg", "before the move", LogLevel.Log, LogChannel.Prod, 0));
+
+        string moved = ScratchDirectory("move-to");
+        config.FileDirectory = moved;
+        sink.Reconfigure(in config);
+        sink.Write(Record(2, "Cfg", "after the move", LogLevel.Log, LogChannel.Prod, 0));
+        sink.Flush();
+
+        Check("the sink writes where it was told to", Normalized(sink.LogDirectory) == Normalized(moved));
+        Check("and the file is there", File.Exists(sink.CurrentFilePath));
+        Check("holding what was written after the move",
+            ReadWhileOpen(sink.CurrentFilePath).Contains("after the move"));
+
+        sink.Dispose();
+    }
+
     // =====================================================================
+
+    /// <summary>
+    /// Somewhere to write that is not the developer's own log directory. Pointing the file
+    /// checks at persistentDataPath meant every run pushed their real logs out of the rotation
+    /// and left what it wrote behind.
+    /// </summary>
+    private static string ScratchDirectory(string name) =>
+        Path.Combine(Path.GetTempPath(), "kenseilog-smoke", name);
+
+    private static void CleanUpScratchDirectory() {
+        try {
+            string root = Path.Combine(Path.GetTempPath(), "kenseilog-smoke");
+            if (Directory.Exists(root)) {
+                Directory.Delete(root, true);
+            }
+        } catch (Exception) {
+            // A handle still open on Windows is not worth failing a run over.
+        }
+    }
+
+    /// <summary>
+    /// Reads a file the sink still holds open. It opens with FileShare.Read, so a reader has
+    /// to allow the writer in turn - which is what File.ReadAllText does not do, and why the
+    /// session reader opens with ReadWrite.
+    /// </summary>
+    private static string ReadWhileOpen(string path) {
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (StreamReader reader = new StreamReader(stream)) {
+            return reader.ReadToEnd();
+        }
+    }
+
+    private static string Normalized(string path) =>
+        path.Replace('\\', '/').TrimEnd('/');
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {
         return new LogRecord(sequence, tag, message, level, channel, 0.0, frame, null, 0, null, 0, captured);

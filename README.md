@@ -45,11 +45,17 @@ Six methods, three levels across two channels: `Dev`, `DevWarning`, `DevError`, 
 When a file always logs under the same tag, state it once:
 
 ```csharp
+using Logger = KenseiLog.Logger;   // UnityEngine has a Logger of its own
+
 private static readonly Logger Log = Logger.For(Tags.Combat);
 
 Log.Dev("hit " + target.name + " for " + damage);
 Log.ProdError("desync at tick " + tick);
 ```
+
+The alias is needed in any file that also has `using UnityEngine;`, which is most of them:
+`UnityEngine.Logger` exists and the two names collide. Writing `KenseiLog.Logger` in full does
+the same job.
 
 Naming the field `Log` shadows the static `Log` class inside that type, which is the point —
 every unqualified call in the file then carries the tag. Reach a different tag from the same
@@ -198,7 +204,8 @@ private static void SetUpLogging() {
 | `CaptureStackTraceOnError` | `true` | Unwind a stack trace for `Error` records |
 | `MirrorToUnityConsole` | `false` | Also write records through `Debug.Log`, except ones captured from it |
 | `CaptureForeignLogs` | `true` | Fold logs from outside this API into the pipeline |
-| `WriteToFile` | `true` | Write a rolling JSONL file under `persistentDataPath/logs` |
+| `WriteToFile` | `true`, `false` on WebGL | Write a rolling JSONL file under `persistentDataPath/logs` |
+| `FileDirectory` | `null` | Where the files go; empty means `persistentDataPath/logs` |
 | `FileSizeLimitKb` | `5120` | Rotate the current file once it passes this size (at least 64) |
 | `RetainedFileCount` | `3` | How many rotated files to keep besides `current.jsonl` (at least 1) |
 | `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once (at least 0.5) |
@@ -207,20 +214,32 @@ private static void SetUpLogging() {
 | `OverlayRecordCapacity` | `512` | How many records the overlay keeps (at least 32) |
 | `OverlayScale` | `0` | Overlay UI scale, or 0 to derive one from screen DPI, falling back to screen height |
 
-`Configure` can be called at any time; logging starts with the defaults during early initialisation so that nothing is lost before your call arrives.
+`Configure` can be called at any time from the main thread; logging starts with the defaults during early initialisation so that nothing is lost before your call arrives.
+
+On WebGL `WriteToFile` defaults to off. `persistentDataPath` there is a virtual filesystem inside the page, so the rolling history would hold megabytes of browser heap for a build with no way to fetch any of it back. Turn it on if you have one.
+
+Outside the editor, the call site recorded on a record is trimmed to the part from `Assets` or `Packages` onwards. `CallerFilePath` is resolved by the compiler, so a release build otherwise carried - and wrote into the file a tester sends back - the absolute path of the machine that built it.
 
 ## Driving it from your own code
 
 ```csharp
-LogCore.AddSink(new MySink());          // and RemoveSink
-LogCore.FlushSinks();                   // push every buffering sink to its destination
-LogCore.File;                           // the active FileSink, or null
+MySink sink = new MySink();
+LogCore.AddSink(sink);
+LogCore.RemoveSink(sink);
 
-LogOverlay.IsOpen = true;               // open the on-device viewer from your debug menu
+LogCore.FlushSinks();                            // push every buffering sink to its destination
+FileSink file = LogCore.File;                    // the active file sink, or null when file logging is off
+
+LogOverlay.IsOpen = true;                        // open the on-device viewer from your own debug menu
 LogOverlay.TagPaneVisible = true;
-LogOverlay.SelectNewest(LogLevel.Error);
+LogOverlay.SelectNewest(LogLevel.Error);         // jump to the newest error and expand it
+```
 
-window.AddTab(new LogFilter { ... });    // seed a project's tabs from an editor script
+From an editor script, where `window` is a `LogWindow`:
+
+```csharp
+LogWindow window = EditorWindow.GetWindow<LogWindow>();
+window.AddTab(new LogFilter { Name = "Net", Tags = { "Net" }, ShowDev = false });
 window.SelectNewest(LogLevel.Error);
 ```
 
@@ -228,11 +247,43 @@ A sink is anything that takes a record:
 
 ```csharp
 public sealed class MySink : ILogSink {
-    public void Write(in LogRecord record) { /* must be safe on any thread */ }
+    public void Write(in LogRecord record) {
+        // Called on whichever thread logged, so this has to be safe from any of them.
+    }
 }
 ```
 
 Implement `IFlushableSink` as well if it buffers, and `LogCore.FlushSinks` will reach it when the app pauses or quits.
+
+`MemorySink` is one you can use as it is: a fixed-capacity ring of recent records with a version that changes whenever one arrives, so a view of your own can poll it instead of subscribing. It is what the in-game overlay reads.
+
+```csharp
+MemorySink recent = new MemorySink(256);
+LogCore.AddSink(recent);
+
+long watermark = 0;
+LogRecord[] scratch = new LogRecord[recent.Buffer.Capacity];
+int copied = recent.Buffer.CopyNewerThan(watermark, scratch);   // oldest first, returns how many
+```
+
+`LogRingBuffer` addresses records by `Sequence` rather than by position, because positions shift as the ring overwrites itself. It is safe to use from any thread.
+
+### What a record holds
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Sequence` | `long` | Rising id, unique for the lifetime of the app domain. Not contiguous: a sink that skips a channel leaves gaps |
+| `Tag` | `string` | Never null or empty; a missing tag arrives as `Untagged` |
+| `Message` | `string` | Never null |
+| `Level` | `LogLevel` | `Log`, `Warning` or `Error` |
+| `Channel` | `LogChannel` | `Dev` or `Prod` |
+| `TimeMs` | `double` | Milliseconds since logging was initialised |
+| `Frame` | `int` | Frame it was logged on; a background thread inherits the last one seen on the main thread |
+| `File` | `string` | Call site, or null for a captured record. Absolute in the editor, project-relative in a build |
+| `Line` | `int` | Line at the call site, or 0 |
+| `StackTrace` | `string` | Present on errors when `CaptureStackTraceOnError` is on, and on captured records that came with one |
+| `ContextInstanceId` | `int` | Instance id of the related object, or 0. An id rather than a reference, so a buffered record never keeps a destroyed object alive |
+| `Captured` | `bool` | True when the record came from Unity's log stream rather than through `Log`. A sink that writes back into that stream must skip these, or every message lands twice |
 
 ## Try it
 

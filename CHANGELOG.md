@@ -4,6 +4,124 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-09-16
+
+A pass over everything away from the happy path: a failing file sink, a full ring buffer, a
+domain reload, a second play session, a phone with a notch, a tester's file from a newer
+build. Most of what follows was silent - the setting applied, no error appeared, and the
+behaviour simply stayed where it was.
+
+### Added
+
+- `LogConfig.FileDirectory`: where the log files go, empty meaning `persistentDataPath/logs`.
+  Applied on construction and by a later `Configure`, which starts a file in the new place.
+  The checks use it so that running them no longer writes into the developer's own log
+  directory and pushes their real logs out of the rotation.
+- Session headers carry a schema version, and the reader refuses a file written by a newer one
+  instead of parsing it into plausibly wrong data and reporting nothing.
+- `Tests~/ReadmeSnippets.cs`: the README's code, compiled. Nothing runs it; it exists so a
+  snippet that has stopped matching the API cannot sit in the README looking authoritative.
+  It found one immediately - see below.
+- `Documentation~/index.md`, and `documentationUrl`, `changelogUrl` and `licensesUrl` in
+  `package.json`.
+
+### Changed
+
+- The file sink is off by default on WebGL. `persistentDataPath` there is a virtual filesystem
+  inside the page, so at the default limits the rolling history held around twenty megabytes
+  of browser heap for a build with no way to fetch any of it back.
+- Outside the editor, a record's call site is trimmed to the part from `Assets` or `Packages`
+  onwards. `CallerFilePath` is resolved by the compiler, so the `Prod` methods - which carry no
+  `Conditional` attribute - shipped the absolute path of the machine that built them, and wrote
+  it into the file a tester sends back.
+- The overlay follows the newest record unless the reader has scrolled away from it, matching
+  the window's Follow. It also builds its display rows when it opens rather than as records
+  arrive, so a build shipped with the overlay enabled pays for the counts and nothing else.
+- The overlay lays itself out inside `Screen.safeArea`.
+- The tag pane in the overlay takes its width out of the list instead of covering it.
+- `EditorPrefs` keys are scoped to the project. They are stored per Unity install, so the
+  folded-tag set collected the tags of every project the editor had ever opened. Existing
+  settings start again from the defaults once.
+- The search box in the window waits 150ms before filtering.
+- The rename popup closes on a domain reload rather than returning with a null callback.
+- `LogCore.Configure` is documented as main thread only.
+- The one-tag-per-file README snippet gained `using Logger = KenseiLog.Logger;`. `Logger`
+  collides with `UnityEngine.Logger`, so it did not compile in an ordinary file. The README now
+  documents `LogRecord` field by field and `MemorySink`, and its API snippets compile as
+  written.
+
+### Fixed
+
+- A rotation that could not shift the files aside closed the writer and returned without
+  reopening it, so the rest of the run wrote nothing. It reopens either way, appending to the
+  file it could not move, and counts from zero so a stuck rotation is retried once per size
+  limit rather than once per record.
+- The warning that reported it went out through `Debug` without the suppression flag, came
+  back through the foreign-log handler and took a sequence ahead of the record still being
+  written. The ring buffer binary-searches on that sequence, so one inversion was enough to
+  make a consumer re-copy the same batch on every poll for the rest of the session. `Warn`
+  raises the flag, and the buffer settles a late arrival back into order as it lands.
+- Writing, flushing and closing the file are guarded. Only opening was, so a full disk raised
+  an `IOException` out of `Write`, out of `Emit`, and into whatever game code had called `Log`.
+  `Emit` and `FlushSinks` also isolate each sink from the others, so one bad sink cannot cost
+  the file sink the records around a fault.
+- A null tag is normalised where the record is built. It used to reach the viewers intact and
+  throw there, out of a dictionary lookup or a palette hash, with a stack that named neither
+  the tag nor the call that passed it.
+- The window's list stopped repainting once the buffer was full: it repainted on a changed row
+  count, and a full ring drops one record per record, so the count held still while the
+  contents moved beneath it. Views count revisions now, which also covers Collapse, where a
+  repeat changes a row without changing how many rows there are.
+- Pruning a collapsed view stopped at the first row pointing at a late record and left
+  everything expired behind it, so tabs filled with a band of `(record expired)` that nothing
+  would ever clear.
+- The counts in the tag tree froze at whatever they held when each tag was first seen.
+- Seeding the window from Unity's console ran one reflection call outside its guard. A throw
+  there came out of the `InitializeOnLoadMethod` before the sink was registered, so the window
+  opened looking healthy and recorded nothing, once per domain reload.
+- An open log file survives a domain reload instead of dropping back to live logs in silence.
+- Unpausing takes what arrived while the view was paused.
+- Deleting a tab in front of the active one moves the active index with it instead of landing
+  on the tab that slid into its place. Renaming captures the tab rather than its position.
+- `EditorSink.Capacity` clamps before it stores. An out-of-range value was written to
+  `EditorPrefs` and only then handed to the buffer, which threw - leaving zero saved, and the
+  sink throwing on every reload afterwards until the preference was cleared by hand.
+- The window's copy buffer grows with its source. `CopyNewerThan` stops when its destination is
+  full, so raising `EditorSink.Capacity` silently lost the newest records.
+- An expired row no longer keeps the colour, severity and columns of the record that had it
+  before, and the stylesheet lookup no longer dereferences a path that a package compiled into
+  a DLL does not have.
+- The tree handle's tooltip moved off the full-height strip onto the arrow. A tooltip in UI
+  Toolkit is a real OS window, and the strip stood in the lane the pointer takes between the
+  tree and the list - the same mechanism behind the row-tooltip freezes fixed in 0.9.0, in a
+  shape introduced after that fix.
+- Statics that describe one play session are reset at the start of the next. With Reload Domain
+  turned off they survived, so the overlay opened on the previous session's records with the
+  previous session's frame numbers, the scene-systems flag sent `ApplyConfig` into a phase with
+  nowhere to put a `GameObject`, and a sink muted after throwing stayed muted.
+- `OverlayRecordCapacity` was accepted and ignored on every `Configure` after the first. A new
+  capacity builds a new sink and carries the records across.
+- Removing the overlay left its sink registered, filling a buffer nobody reads - and made the
+  next `Configure` believe an overlay sink was already in place.
+- Lowering `RetainedFileCount` orphaned every file above the new limit, since the shift only
+  ever touched indices inside the count.
+- A file holding a header and no records opens as an empty session. That is the build that died
+  during startup, which is the case this package exists for, and its header still names the
+  device.
+- A lone surrogate - a message cut mid-character - is written as a `\u` escape rather than
+  reaching the encoder, which turned it into U+FFFD.
+- The overlay's tag pane was drawn on top of the list, so every tap meant for a tag was taken
+  by the row button behind it and the pane did nothing at all. Its drag threshold compared a
+  squared distance against an unsquared constant, making the real threshold about two and a
+  half pixels, so the tremor in a tap discarded it as a scroll. Its list slid under the finger
+  whenever the ring wrapped. And it rebuilt the selected record's detail, the collapsed
+  bubble's label and every tag row on each of the two-plus `OnGUI` passes a frame.
+- `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
+  stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
+  returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
+  126 assertions, up from 62, and everything it writes goes to a scratch directory it deletes
+  afterwards.
+
 ## [0.12.1] - 2026-09-16
 
 ### Fixed
