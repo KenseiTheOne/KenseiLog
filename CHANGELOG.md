@@ -13,6 +13,13 @@ behaviour simply stayed where it was.
 
 ### Added
 
+- The window reads its own history back from the session file when the domain reloads, instead
+  of starting empty and recovering what it can from Unity's console. The difference is what
+  comes back: a record from the file keeps its tag, its channel, its frame and its call site,
+  none of which the console has anywhere to store - and a `Log.Dev` call was never in the
+  console to recover at all. The console still supplies the compiler messages, which arrive by
+  a path this package has no sight of and so cannot be in the file.
+
 - The editor writes what it logs to a file of its own, under `logs/editor`, and keeps one file
   per editor session rather than per domain reload. Without it the editor's records lived
   nowhere but a buffer that is rebuilt on every reload, so a recompile took all of them - and
@@ -178,7 +185,7 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  140 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
+  161 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
   claiming 62 for some time - and everything it writes goes to a scratch directory it deletes
   afterwards.
 

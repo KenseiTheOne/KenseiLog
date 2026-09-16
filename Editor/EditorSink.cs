@@ -28,6 +28,13 @@ namespace KenseiLog.Editor {
         /// <summary>Kept apart from the runs, which own the directory above it.</summary>
         private const string EditorLogFolder = "editor";
 
+        /// <summary>
+        /// How much of the session file is read back when the domain reloads. Bounded because
+        /// this happens on every recompile: a file at the default size limit would put seconds
+        /// on each one, and the buffer cannot hold that many records anyway.
+        /// </summary>
+        private const long SeedByteBudget = 2L * 1024L * 1024L;
+
         private const int DefaultCapacity = 8192;
 
         /// <summary>
@@ -122,14 +129,23 @@ namespace KenseiLog.Editor {
             int capacity = Mathf.Clamp(EditorPrefs.GetInt(_capacityKey, DefaultCapacity), MinimumCapacity, MaximumCapacity);
             Instance = new EditorSink(capacity);
 
-            // Seeding reads Unity's console through reflection. Whatever it makes of a version
-            // that has moved things, it must not cost us the two lines below it: without them
-            // the sink is never registered and the window records nothing at all, while still
-            // opening and looking perfectly healthy.
+            // A domain reload is not a new session, so what this editor logged before it is
+            // read back out of the session file - where the tag, the channel and the call site
+            // survive, none of which Unity's console has anywhere to keep. Anything else, and
+            // a fresh editor, falls back to the console.
+            //
+            // Whatever any of it makes of a Unity version that has moved things, it must not
+            // cost us the two lines below: without them the sink is never registered and the
+            // window records nothing at all, while still opening and looking healthy.
+            bool continuing = SessionState.GetBool(SessionStartedKey, false);
             try {
-                SeedFromConsole();
+                if (continuing && SeedFromSessionFile()) {
+                    SeedCompilerEntriesFromConsole();
+                } else {
+                    SeedFromConsole();
+                }
             } catch (Exception exception) {
-                Debug.LogWarning("KenseiLog: could not seed the window from the console (" + exception.Message + ")");
+                Debug.LogWarning("KenseiLog: could not seed the window (" + exception.Message + ")");
             }
 
             LogCore.AddSink(Instance);
@@ -186,6 +202,101 @@ namespace KenseiLog.Editor {
             LogCore.RemoveSink(_sessionFile);
             _sessionFile.Dispose();
             _sessionFile = null;
+        }
+
+        /// <summary>
+        /// Fills the buffer from the file this editor session has been writing.
+        /// <para>
+        /// The records come back whole - tag, channel, frame, call site, stack trace - which is
+        /// the difference between this and reading the console, where none of that exists. Their
+        /// original sequence numbers come back with them, and the counter is moved past the
+        /// highest: the file carries on being written after the reload, and records repeating
+        /// numbers already in it would leave it unsorted and every lookup into it wrong.
+        /// </para>
+        /// </summary>
+        private static bool SeedFromSessionFile() {
+            if (!WriteSessionFile) {
+                return false;
+            }
+
+            string path = NewestSessionFile();
+            if (path == null) {
+                return false;
+            }
+
+            List<LogRecord> records = new List<LogRecord>();
+            if (LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, records) == 0) {
+                return false;
+            }
+
+            long highest = 0;
+            for (int i = 0; i < records.Count; i++) {
+                Instance.Write(records[i]);
+                if (records[i].Sequence > highest) {
+                    highest = records[i].Sequence;
+                }
+            }
+
+            LogCore.ReserveSequencesThrough(highest);
+            return true;
+        }
+
+        /// <summary>
+        /// The file the session is writing: the highest numbered, since numbers rise with time.
+        /// </summary>
+        private static string NewestSessionFile() {
+            string directory = SessionFileDirectory;
+            if (!Directory.Exists(directory)) {
+                return null;
+            }
+
+            string[] files = Directory.GetFiles(directory, "log.*.jsonl");
+            string newest = null;
+            for (int i = 0; i < files.Length; i++) {
+                if (newest == null || string.CompareOrdinal(Path.GetFileName(files[i]), Path.GetFileName(newest)) > 0) {
+                    newest = files[i];
+                }
+            }
+            return newest;
+        }
+
+        /// <summary>
+        /// Adds the console entries that this package can never have seen for itself.
+        /// <para>
+        /// A compiler message does not arrive through Debug, so it reaches the console by a path
+        /// the log pipeline has no sight of - which is why it is missing from the session file,
+        /// and why taking it from the console cannot show anything twice.
+        /// </para>
+        /// </summary>
+        private static void SeedCompilerEntriesFromConsole() {
+            if (!ConsoleEntryBridge.Available) {
+                return;
+            }
+
+            List<ConsoleEntryBridge.ConsoleEntry> entries = new List<ConsoleEntryBridge.ConsoleEntry>();
+            ConsoleEntryBridge.ReadAll(entries);
+
+            for (int i = 0; i < entries.Count; i++) {
+                ConsoleEntryBridge.ConsoleEntry entry = entries[i];
+                if (!ConsoleEntryBridge.IsCompilerEntry(entry.Mode)) {
+                    continue;
+                }
+                SplitMessage(entry.Message, out string message, out string stackTrace);
+
+                Instance.Write(new LogRecord(
+                    LogCore.NextSequence(),
+                    LogCore.ForeignTag,
+                    message,
+                    entry.Level,
+                    LogChannel.Prod,
+                    0.0,
+                    0,
+                    entry.File,
+                    entry.Line,
+                    stackTrace,
+                    entry.InstanceId,
+                    captured: true));
+            }
         }
 
         /// <summary>

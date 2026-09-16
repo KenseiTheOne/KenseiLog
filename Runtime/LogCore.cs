@@ -132,6 +132,28 @@ namespace KenseiLog {
             return Interlocked.Increment(ref _sequence);
         }
 
+        /// <summary>
+        /// Moves the counter past a record that already exists, so that what is written next
+        /// cannot collide with it.
+        /// <para>
+        /// The counter starts again at zero with every app domain, which is fine while nothing
+        /// outlives one. The editor's log file does: it is carried across a reload, and without
+        /// this the records after the reload would repeat the numbers before it - leaving the
+        /// file unsorted, and every lookup that binary-searches it wrong.
+        /// </para>
+        /// </summary>
+        public static void ReserveSequencesThrough(long sequence) {
+            while (true) {
+                long current = Interlocked.Read(ref _sequence);
+                if (current >= sequence) {
+                    return;
+                }
+                if (Interlocked.CompareExchange(ref _sequence, sequence, current) == current) {
+                    return;
+                }
+            }
+        }
+
         public static void Emit(in LogRecord record) {
             ILogSink[] sinks = _sinks;
             for (int i = 0; i < sinks.Length; i++) {

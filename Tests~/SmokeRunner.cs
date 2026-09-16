@@ -41,6 +41,7 @@ public static class SmokeRunner {
         Scenario(AThrowingSinkDoesNotStopTheOthers);
         Scenario(SessionFilesCarryASchemaVersion);
         Scenario(AFileWithOnlyAHeaderStillOpens);
+        Scenario(ASessionFileComesBackWholeForSeeding);
         Scenario(MemorySinkStoresAndVersions);
         Scenario(TagColoursAreStableAndDistinct);
         Scenario(FileSettingsApplyAfterTheSinkExists);
@@ -1000,6 +1001,56 @@ public static class SmokeRunner {
         Check("a header-only file opens" + (read ? string.Empty : ": " + error), read);
         Check("and still names the device it came from", read && session.Device == "Pixel 8");
         Check("with an empty buffer rather than none", read && session.Buffer != null && session.Buffer.Count == 0);
+    }
+
+
+    /// <summary>
+    /// What the editor logged before a domain reload is read back out of its session file, so
+    /// the window keeps its history across a recompile. The console cannot do this job: it has
+    /// nowhere to keep a tag or a channel, and it never saw a Log.Dev call at all.
+    /// </summary>
+    private static void ASessionFileComesBackWholeForSeeding() {
+        string directory = ScratchDirectory("seed");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "log.0001.jsonl");
+
+        StringBuilder builder = new StringBuilder();
+        LogJson.AppendSessionHeader(builder, "sid", "App 1.0", "2022.3", "WindowsEditor", "PC", "2026-09-16T00:00:00Z");
+        builder.Append('\n');
+        for (int i = 1; i <= 50; i++) {
+            LogJson.AppendRecord(builder, Record(i, "Seed.Tag", "record " + i, LogLevel.Log,
+                i % 2 == 0 ? LogChannel.Dev : LogChannel.Prod, i));
+            builder.Append('\n');
+        }
+        File.WriteAllText(path, builder.ToString());
+
+        List<LogRecord> records = new List<LogRecord>();
+        int read = LogSessionReader.ReadTail(path, 10, 1024L * 1024L, records);
+        Check("the tail is bounded by the count asked for", read == 10 && records.Count == 10);
+        Check("and it is the end of the file, not the start", records[9].Message == "record 50");
+        Check("the header is not taken for a record", records[0].Message == "record 41");
+        Check("the channel survives, which the console could not carry", records[9].Channel == LogChannel.Dev);
+        Check("and so does the tag", records[9].Tag == "Seed.Tag");
+        Check("sequences come back as they were written", records[9].Sequence == 50);
+
+        records.Clear();
+        int bounded = LogSessionReader.ReadTail(path, 1000, 512L, records);
+        Check("a byte budget takes only the end of the file", bounded > 0 && bounded < 50);
+        Check("and never a line torn in half by the budget", records.Count == 0 || records[0].Message.StartsWith("record", StringComparison.Ordinal));
+
+        records.Clear();
+        Check("a file that is not there reads as nothing",
+            LogSessionReader.ReadTail(Path.Combine(directory, "log.9999.jsonl"), 10, 512L, records) == 0);
+
+        // The counter restarts with every app domain, but the file outlives one: what is
+        // written after a reload has to carry on above what is already in it.
+        long before = LogCore.NextSequence();
+        LogCore.ReserveSequencesThrough(before + 500);
+        long after = LogCore.NextSequence();
+        Check("reserving moves the counter past what the file holds", after > before + 500);
+
+        LogCore.ReserveSequencesThrough(1);
+        Check("and never moves it backwards", LogCore.NextSequence() > after);
     }
 
     /// <summary>

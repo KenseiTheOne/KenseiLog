@@ -103,6 +103,55 @@ namespace KenseiLog.Editor {
             return true;
         }
 
+        /// <summary>
+        /// Reads the last records of a file, for seeding rather than for viewing.
+        /// <para>
+        /// Bounded by bytes as well as by count, because this runs on every domain reload and a
+        /// file at the default size limit would otherwise cost seconds of every recompile. The
+        /// read starts inside the file, so the line it lands in is discarded - and the header,
+        /// which is the first line of all, is simply not there to find.
+        /// </para>
+        /// </summary>
+        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) {
+            List<LogRecord> read = new List<LogRecord>();
+
+            try {
+                // ReadWrite for the same reason as above: this file usually has a writer.
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                    bool startedMidFile = stream.Length > maxBytes;
+                    if (startedMidFile) {
+                        stream.Seek(stream.Length - maxBytes, SeekOrigin.Begin);
+                    }
+
+                    using (StreamReader reader = new StreamReader(stream)) {
+                        bool skipPartialLine = startedMidFile;
+                        string line;
+                        while ((line = reader.ReadLine()) != null) {
+                            if (skipPartialLine) {
+                                skipPartialLine = false;
+                                continue;
+                            }
+                            if (line.Length == 0) {
+                                continue;
+                            }
+                            // The header and a torn last line both simply fail to parse.
+                            if (TryReadRecord(line, out LogRecord record)) {
+                                read.Add(record);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception) {
+                return 0;
+            }
+
+            int first = Math.Max(0, read.Count - maxRecords);
+            for (int i = first; i < read.Count; i++) {
+                into.Add(read[i]);
+            }
+            return read.Count - first;
+        }
+
         private static bool ReadHeader(string line, LogSession session) {
             if (line.IndexOf("\"" + LogJson.SessionKey + "\"", StringComparison.Ordinal) < 0) {
                 return false;

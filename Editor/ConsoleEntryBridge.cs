@@ -126,12 +126,14 @@ namespace KenseiLog.Editor {
                         continue;
                     }
 
+                    int mode = _modeField != null ? (int)_modeField.GetValue(args[1]) : 0;
                     into.Add(new ConsoleEntry(
                         message,
-                        LevelFromMode(_modeField != null ? (int)_modeField.GetValue(args[1]) : 0),
+                        LevelFromMode(mode),
                         (int)_instanceIdField.GetValue(args[1]),
                         _fileField?.GetValue(args[1]) as string,
-                        _lineField != null ? (int)_lineField.GetValue(args[1]) : 0));
+                        _lineField != null ? (int)_lineField.GetValue(args[1]) : 0,
+                        mode));
                     read++;
                 }
             } catch (Exception) {
@@ -182,13 +184,31 @@ namespace KenseiLog.Editor {
             public readonly string File;
             public readonly int Line;
 
-            public ConsoleEntry(string message, LogLevel level, int instanceId, string file, int line) {
+            /// <summary>
+            /// Unity's own mode bits, kept raw. The level above is what to draw; this is what
+            /// says where the entry came from - and a compiler message is one this package can
+            /// never have seen for itself, since it does not arrive through Debug.
+            /// </summary>
+            public readonly int Mode;
+
+            public ConsoleEntry(string message, LogLevel level, int instanceId, string file, int line, int mode) {
                 Message = message;
                 Level = level;
                 InstanceId = instanceId;
                 File = file;
                 Line = line;
+                Mode = mode;
             }
+        }
+
+        /// <summary>
+        /// Entries the log pipeline cannot have captured: a compiler message reaches the
+        /// console through its own path, not through Debug, so it is never in our own records
+        /// and can be taken from the console without any risk of showing it twice.
+        /// </summary>
+        public static bool IsCompilerEntry(int mode) {
+            const int compilerBits = (1 << 11) | (1 << 12) | (1 << 20);
+            return (mode & compilerBits) != 0;
         }
 
         /// <summary>Drops the index so the next lookup reads the console again.</summary>
