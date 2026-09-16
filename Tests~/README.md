@@ -15,9 +15,11 @@ Any empty Unity project (2022.3 or newer) will do.
    ```json
    "com.kensei.log": "file:../../KenseiLog"
    ```
-2. Import the **Overlay Demo** sample (Package Manager → Kensei Log → Samples), which brings
-   in `LogDemo.cs` and `LogDemo.unity`. `DemoSceneBuilder` and `ScreenshotRunner` expect them
-   at `Assets/Demo/`.
+2. Import the **Overlay Demo** sample (Package Manager → Kensei Log → Samples) and move
+   `LogDemo.cs` to `Assets/Demo/`. A sample import lands under `Assets/Samples/…`, and what
+   the tooling needs is the `LogDemo` type somewhere in the project: `DemoSceneBuilder` writes
+   its own `Assets/Demo/LogDemo.unity` from script, and `DemoBuilder` builds that. The scene
+   that came with the sample is not used.
 3. Copy the files from here:
 
    | File | Goes in | Why there |
@@ -49,8 +51,8 @@ failure rather than ending the run. Before that, a throw ended `Run` where it st
 report was never printed, `Exit(1)` was never reached, and `-batchmode -quit` returned zero -
 a harness reporting success because it had fallen over.
 
-Anything that writes to disk writes under `%TEMP%/kenseilog-smoke` and the run deletes it
-afterwards. Pointing the file checks at `persistentDataPath` meant every run pushed the
+Anything that writes to disk writes under `%TEMP%/kenseilog-smoke`, and the run deletes that
+directory afterwards whether or not it passed. Pointing the file checks at `persistentDataPath` meant every run pushed the
 developer's own logs out of the rotation and left its own behind.
 
 Each regression check names the bug it guards, because the interesting ones were all silent:
@@ -107,7 +109,7 @@ window is not where the answer is.
 
 **Row tooltip** is the positive control. A tooltip in UI Toolkit is a real window of the
 operating system, and building and tearing one down on every row crossing is what froze the
-editor on Windows before the tooltips came off the rows in 0.9.0. A fault that flickers the
+editor on Windows before the tooltips came off the rows in 0.10.0. A fault that flickers the
 screen - black bands across the monitors, the compositor recomposing - is that shape rather
 than a slow frame, so if this toggle reproduces it and the others do not, what to look for is
 whatever else is making a window.

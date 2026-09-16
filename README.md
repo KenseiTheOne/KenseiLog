@@ -129,7 +129,7 @@ One trap worth knowing, and it applies to `Debug.Log` too. Unity compiles as C# 
 
 Logs that never touched this API — engine exceptions, errors from other packages, anything calling `Debug.Log` directly — are folded in under the `Unity` tag, so the view is not missing the unhandled exception you actually needed.
 
-The window also seeds itself from Unity's console when it loads, so it shows what the console shows: entries from before you opened it, and the ones that survived your last recompile. What it does **not** do is read everything from there instead of from the pipeline — a console entry has nowhere to hold a tag or a channel, and reading them from it would cost the two things this package exists for.
+The window fills itself in when it loads, so it shows what happened before you opened it. After a recompile that comes from its own session file, where the tag, the channel, the frame and the call site all survive — none of which Unity's console has anywhere to keep, and a `Log.Dev` call was never in the console to recover at all. The console still supplies compiler messages, which reach it by a path this package never sees. A fresh editor, or one with the session file turned off, reads the console alone.
 
 The window keeps 8192 records by default. There is no settings UI for that yet; change it from an editor script of your own with `EditorSink.Instance.Capacity`, which is remembered in `EditorPrefs`.
 
@@ -147,7 +147,11 @@ Numbers rise with time and are never reused, so the highest is the one in hand. 
 
 Lines are buffered, but an **error flushes immediately**, as does the app being paused. On mobile that pause is the last signal you get before the process is killed, and it is usually the one that matters.
 
-In the editor that sink only runs during play mode: it starts a run by opening a new file, and a script recompile is not a run. What the editor itself logs goes to `logs/editor` instead, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. `EditorSink.WriteSessionFile` turns that off.
+In the editor that sink only runs during play mode: it starts a run by opening a new file, and a script recompile is not a run.
+
+What the editor itself logs goes to `logs/editor`, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. It takes the dev channel, which is the point of it. During play mode in the editor both sinks are registered, so those records are written twice: once to the run's file, once to the editor's. `EditorSink.WriteSessionFile` turns the editor's file off, from the next domain reload on.
+
+The window reads back the last 2 MB of that file, which is what a recompile can afford; the rest stays on disk and opens with **Open file** like any other session.
 
 Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — set `FileIncludesDevChannel` if you want them.
 
@@ -207,7 +211,7 @@ private static void SetUpLogging() {
 | `WriteToFile` | `true`, `false` on WebGL | Write a rolling JSONL file under `persistentDataPath/logs` |
 | `FileDirectory` | `null` | Where the files go; empty means `persistentDataPath/logs` |
 | `FileSizeLimitKb` | `5120` | Rotate the current file once it passes this size (at least 64) |
-| `RetainedFileCount` | `3` | How many rotated files to keep besides `current.jsonl` (at least 1) |
+| `RetainedFileCount` | `3` | How many older files to keep besides the one being written (at least 1) |
 | `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once (at least 0.5) |
 | `FileIncludesDevChannel` | `false` | Also write dev records to the file |
 | `ShowOverlay` | `false` | Draw the in-game log viewer |

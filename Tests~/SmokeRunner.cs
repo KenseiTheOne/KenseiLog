@@ -261,7 +261,9 @@ public static class SmokeRunner {
         LogJson.AppendRecord(builder, in original);
         builder.Append('\n');
 
-        string path = Path.Combine(Path.GetTempPath(), "kenseilog-roundtrip.jsonl");
+        string directory = ScratchDirectory("roundtrip");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "roundtrip.jsonl");
         File.WriteAllText(path, builder.ToString());
 
         bool read = LogSessionReader.TryRead(path, out LogSession session, out string error);
@@ -285,8 +287,6 @@ public static class SmokeRunner {
         Check("call site survives", back.File == "Assets/Net/Sync.cs" && back.Line == 88);
         Check("stack trace survives", back.StackTrace == "at Foo()\nat Bar()");
         Check("time survives invariant formatting", Math.Abs(back.TimeMs - 128.44) < 0.001);
-
-        File.Delete(path);
     }
 
     private static void FileSinkWritesHeaderAndRotates() {

@@ -3,7 +3,7 @@
 Open `LogDemo.unity` and press Play.
 
 A bubble appears in the corner. It reads the error count if there are errors, the warning
-count if there are warnings but none, and the total otherwise. Drag it anywhere, tap it to
+count if there are warnings but no errors, and the total otherwise. Drag it anywhere, tap it to
 open the viewer. The buttons on the right produce records to look at:
 
 - **Prod log / Warning / Error** — records written through this API.

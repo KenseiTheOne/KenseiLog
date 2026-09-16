@@ -45,6 +45,10 @@ behaviour simply stayed where it was.
   by anything until someone built. It found one that did not parse.
 - `LogCore.ProjectRelativePath`, which is that trimming, public and compiled everywhere so it
   can be checked. It only runs in a build, where nothing can look at it.
+- `LogCore.ReserveSequencesThrough`, which moves the sequence counter past a record that
+  already exists - what the editor's seeding needs, since the counter restarts with every app
+  domain and the session file does not.
+- `LogSessionReader.ReadTail`, for reading the end of a file without the session around it.
 - `Documentation~/index.md`, and `documentationUrl`, `changelogUrl` and `licensesUrl` in
   `package.json`.
 
@@ -58,7 +62,8 @@ behaviour simply stayed where it was.
   The old scheme shifted every file along on each rotation, which numbered them backwards -
   `log.1` was the newest of the old ones - and meant a file could be renamed under anything
   holding it. Renaming is also what fails on Windows when another process has the file open,
-  which is the failure two of the fixes above are about. A file now keeps its name for life:
+  which is the failure two of the entries under Fixed are about. A file now keeps its name for
+  life:
   the one a tester mentions stays the one they meant, and a session opened in the window cannot
   turn into a different session while it is open.
 
@@ -78,11 +83,9 @@ behaviour simply stayed where it was.
 - A row already showing a record is left alone instead of being bound to it again. A rebind
   takes a lock on the ring, binary-searches it and formats five strings, and every visible row
   is rebound whenever anything in the tab changes.
-- A failed shift at the start of a run no longer leaves the run with no file at all: it warns
-  and starts a new file. Unlike a rotation that fails mid-run, this one truncates - what is in
-  the file belongs to a run that could not be moved aside, and keeping it under the wrong
-  header would describe the wrong device and the wrong start time. A stale file that cannot be
-  deleted during housekeeping is skipped rather than taking the run's log with it.
+- A stale file that cannot be deleted during housekeeping is skipped rather than taking the
+  run's log down with it. Housekeeping also happens after the file is open rather than before,
+  so a directory that cannot be tidied costs the run nothing.
 - The trimmed call site is worked out once per call site rather than once per record. The
   compiler hands the same interned string to every call from a given line, so it can be looked
   up by reference.
@@ -117,10 +120,10 @@ behaviour simply stayed where it was.
 
 ### Fixed
 
-- A rotation that could not shift the files aside closed the writer and returned without
-  reopening it, so the rest of the run wrote nothing. It reopens either way, appending to the
-  file it could not move, and counts from zero so a stuck rotation is retried once per size
-  limit rather than once per record.
+- A rotation that could not proceed closed the writer and returned without reopening it, so
+  the rest of the run wrote nothing. It reopens either way - carrying on with the file it
+  already had - and counts from zero, so a stuck rotation is retried once per size limit rather
+  than once per record.
 - The warning that reported it went out through `Debug` without the suppression flag, came
   back through the foreign-log handler and took a sequence ahead of the record still being
   written. The ring buffer binary-searches on that sequence, so one inversion was enough to
