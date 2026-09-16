@@ -51,6 +51,11 @@ behaviour simply stayed where it was.
 - The search box in the window waits 150ms before filtering.
 - The rename popup closes on a domain reload rather than returning with a null callback.
 - `LogCore.Configure` is documented as main thread only.
+- The tree handle's tooltip sits on the arrow rather than on the 13px strip that runs the full
+  height of the window, in the path the pointer takes between the tree and the list. It was
+  moved while chasing a stutter in the editor that turned out to be the display's adaptive
+  sync, and nothing to do with this package - but a tooltip belongs on something the size of a
+  control either way.
 - The one-tag-per-file README snippet gained `using Logger = KenseiLog.Logger;`. `Logger`
   collides with `UnityEngine.Logger`, so it did not compile in an ordinary file. The README now
   documents `LogRecord` field by field and `MemorySink`, and its API snippets compile as
@@ -102,10 +107,6 @@ behaviour simply stayed where it was.
 - An expired row no longer keeps the colour, severity and columns of the record that had it
   before, and the stylesheet lookup no longer dereferences a path that a package compiled into
   a DLL does not have.
-- The tree handle's tooltip moved off the full-height strip onto the arrow. A tooltip in UI
-  Toolkit is a real OS window, and the strip stood in the lane the pointer takes between the
-  tree and the list - the same mechanism behind the row-tooltip freezes fixed in 0.9.0, in a
-  shape introduced after that fix.
 - Statics that describe one play session are reset at the start of the next. With Reload Domain
   turned off they survived, so the overlay opened on the previous session's records with the
   previous session's frame numbers, the scene-systems flag sent `ApplyConfig` into a phase with
