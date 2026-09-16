@@ -64,7 +64,7 @@ namespace KenseiLog.Editor {
                         }
                         // A torn final line is expected when the writer is still going; it is
                         // counted and skipped rather than failing the whole file.
-                        if (TryReadRecord(line, out LogRecord record)) {
+                        if (TryReadRecord(line, fromThisSession: false, out LogRecord record)) {
                             records.Add(record);
                         } else {
                             loaded.SkippedLines++;
@@ -111,6 +111,10 @@ namespace KenseiLog.Editor {
         /// read starts inside the file, so the line it lands in is discarded - and the header,
         /// which is the first line of all, is simply not there to find.
         /// </para>
+        /// <para>
+        /// The one path that keeps a record's related object, since the file is the editor's
+        /// own: an instance id means something only inside the session that issued it.
+        /// </para>
         /// </summary>
         public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) {
             // Lines first, records second. Parsing is what costs - a JsonUtility call and an
@@ -156,7 +160,7 @@ namespace KenseiLog.Editor {
             int first = (next - count + kept.Length) % kept.Length;
             for (int i = 0; i < count; i++) {
                 // The header and a torn line both simply fail to parse.
-                if (TryReadRecord(kept[(first + i) % kept.Length], out LogRecord record)) {
+                if (TryReadRecord(kept[(first + i) % kept.Length], fromThisSession: true, out LogRecord record)) {
                     into.Add(record);
                     added++;
                 }
@@ -184,7 +188,13 @@ namespace KenseiLog.Editor {
             }
         }
 
-        private static bool TryReadRecord(string line, out LogRecord record) {
+        /// <summary>
+        /// The related object is kept only for this editor's own file. An instance id means
+        /// something inside the session that issued it and nowhere else: from another machine's
+        /// build it would resolve here to whatever happens to hold that number, and Ping would
+        /// jump to an unrelated object - worse than a button that does nothing.
+        /// </summary>
+        private static bool TryReadRecord(string line, bool fromThisSession, out LogRecord record) {
             record = default;
             try {
                 RecordDto dto = JsonUtility.FromJson<RecordDto>(line);
@@ -202,7 +212,7 @@ namespace KenseiLog.Editor {
                     string.IsNullOrEmpty(dto.file) ? null : dto.file,
                     dto.ln,
                     string.IsNullOrEmpty(dto.st) ? null : dto.st,
-                    0,
+                    fromThisSession ? dto.ctx : 0,
                     dto.cap);
                 return true;
             } catch (Exception) {
@@ -222,6 +232,7 @@ namespace KenseiLog.Editor {
             public string msg;
             public string file;
             public int ln;
+            public int ctx;
             public string st;
         }
 

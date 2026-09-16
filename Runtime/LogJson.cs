@@ -21,6 +21,10 @@ namespace KenseiLog {
         /// Layout of the lines in a log file, written into every session header. A reader that
         /// meets a number it does not know can say so; without one an older reader would parse
         /// a newer file into plausible nonsense and report nothing.
+        /// <para>
+        /// Adding a key does not move it: JsonUtility ignores what it does not know, so an older
+        /// reader takes such a file as it always did. Only a change it would misread does.
+        /// </para>
         /// </summary>
         public const int SchemaVersion = 1;
 
@@ -70,6 +74,14 @@ namespace KenseiLog {
                 builder.Append(",");
                 AppendKey(builder, "ln");
                 builder.Append(record.Line.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (record.ContextInstanceId != 0) {
+                // An instance id means something only inside the editor session that issued it.
+                // Written all the same: the reader knows whether the file is that session's own.
+                builder.Append(",");
+                AppendKey(builder, "ctx");
+                builder.Append(record.ContextInstanceId.ToString(CultureInfo.InvariantCulture));
             }
 
             if (!string.IsNullOrEmpty(record.StackTrace)) {

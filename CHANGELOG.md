@@ -4,6 +4,22 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-09-16
+
+### Fixed
+
+- The session file carries the related object, so Ping works after a domain reload on the
+  records this package wrote itself. It was the one field of a record the file left out: the
+  window read everything else back after a recompile - tag, channel, frame, call site - and
+  then offered every one of its own records a Ping button that could only say nothing had been
+  recorded. The id is honoured only when the editor reads its own session file back. An
+  instance id means something inside the editor session that issued it and nowhere else, so a
+  file opened with **Open file** comes back without it: from another machine's build it would
+  resolve here to whatever happens to hold that number, and Ping would jump to an unrelated
+  object - worse than a button that does nothing. The field is written only when there is one,
+  and the schema version does not move: an older reader ignores a key it does not know, and an
+  older file reads as it always did.
+
 ## [0.13.0] - 2026-09-16
 
 A pass over everything away from the happy path: a failing file sink, a full ring buffer, a

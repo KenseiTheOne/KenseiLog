@@ -42,6 +42,7 @@ public static class SmokeRunner {
         Scenario(SessionFilesCarryASchemaVersion);
         Scenario(AFileWithOnlyAHeaderStillOpens);
         Scenario(ASessionFileComesBackWholeForSeeding);
+        Scenario(TheRelatedObjectComesBackForTheEditorsOwnFileOnly);
         Scenario(MemorySinkStoresAndVersions);
         Scenario(TagColoursAreStableAndDistinct);
         Scenario(FileSettingsApplyAfterTheSinkExists);
@@ -1106,6 +1107,54 @@ public static class SmokeRunner {
 
         LogCore.ReserveSequencesThrough(1);
         Check("and never moves it backwards", LogCore.NextSequence() > after);
+    }
+
+    /// <summary>
+    /// After a domain reload the Ping button was dead for every record the package itself had
+    /// written: the related object was the one field of a record the session file left out.
+    /// It comes back for the editor's own file and not for one opened by hand - an instance id
+    /// means something only inside the editor session that issued it, and from another
+    /// machine's build it would resolve here to whatever holds that number.
+    /// </summary>
+    private static void TheRelatedObjectComesBackForTheEditorsOwnFileOnly() {
+        UnityEngine.ScriptableObject target = UnityEngine.ScriptableObject.CreateInstance<UnityEngine.ScriptableObject>();
+        target.name = "KenseiLogContextProbe";
+
+        LogRecord against = new LogRecord(1, "Ctx", "logged against an object", LogLevel.Warning, LogChannel.Prod,
+            0.0, 0, null, 0, null, target.GetInstanceID());
+        LogRecord alone = Record(2, "Ctx", "logged against nothing", LogLevel.Log, LogChannel.Prod, 0);
+
+        StringBuilder plain = new StringBuilder();
+        LogJson.AppendRecord(plain, in alone);
+        Check("a record with no related object gains no field for it", !plain.ToString().Contains("\"ctx\""));
+
+        string directory = ScratchDirectory("context");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "log.0001.jsonl");
+
+        StringBuilder builder = new StringBuilder();
+        LogJson.AppendSessionHeader(builder, "sid", "App 1.0", "2022.3", "WindowsEditor", "PC", "2026-09-16T00:00:00Z");
+        builder.Append('\n');
+        LogJson.AppendRecord(builder, in against);
+        builder.Append('\n');
+        builder.Append(plain.ToString());
+        builder.Append('\n');
+        File.WriteAllText(path, builder.ToString());
+
+        List<LogRecord> seeded = new List<LogRecord>();
+        int read = LogSessionReader.ReadTail(path, 10, 1024L * 1024L, seeded);
+        Check("the editor's own file hands the related object back",
+            read == 2 && seeded[0].ContextInstanceId == target.GetInstanceID());
+        Check("and it is still the object that was logged against",
+            read == 2 && EditorUtility.InstanceIDToObject(seeded[0].ContextInstanceId) == target);
+        Check("a record that had none comes back with none", read == 2 && seeded[1].ContextInstanceId == 0);
+
+        bool opened = LogSessionReader.TryRead(path, out LogSession session, out string error);
+        Check("the same file opens by hand" + (opened ? string.Empty : ": " + error), opened);
+        Check("and a file opened by hand carries no object to ping",
+            opened && session.Buffer.TryGetBySequence(1, out LogRecord back) && back.ContextInstanceId == 0);
+
+        UnityEngine.Object.DestroyImmediate(target);
     }
 
     /// <summary>
