@@ -18,5 +18,6 @@ One message reads "combat handshake rejected by relay" and is tagged `Net`. Sear
 `combat` finds it, but selecting the `Combat` tag does not — the tag is a field, not a prefix
 in the text.
 
-File logging is on, so `persistentDataPath/logs/current.jsonl` fills up as you play. Open it
+File logging is on, so a file under `persistentDataPath/logs` fills up as you play — the
+highest-numbered one is the running session. Open it
 afterwards: open **Window → Kensei → Logs** and press **Open file** in the toolbar.

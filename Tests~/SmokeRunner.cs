@@ -306,9 +306,11 @@ public static class SmokeRunner {
         }
         sink.Flush();
 
-        string rotated = Path.Combine(sink.LogDirectory, "log.1.jsonl");
-        Check("rotation produced a previous file", File.Exists(rotated));
-        Check("current file exists", File.Exists(sink.CurrentFilePath));
+        string[] files = Directory.GetFiles(sink.LogDirectory, "log.*.jsonl");
+        Check("rotation produced more than one file", files.Length > 1);
+        Check("the file in hand exists", File.Exists(sink.CurrentFilePath));
+        Check("and it is the highest numbered one", IsHighestNumbered(sink.CurrentFilePath, files));
+        Check("no more are kept than the retained count allows", files.Length == config.RetainedFileCount + 1);
 
         bool read = LogSessionReader.TryRead(sink.CurrentFilePath, out LogSession session, out string error);
         Check("written file reads back" + (read ? string.Empty : ": " + error), read);
@@ -840,8 +842,8 @@ public static class SmokeRunner {
     }
 
     /// <summary>
-    /// Rotation can be refused - on Windows the window itself holds a file open while it reads
-    /// one. Returning there left the writer closed and dropped every later record for the rest
+    /// A rotation can be refused - something else holds the name the next file wants, or the
+    /// disk has filled. Leaving the writer closed there dropped every later record for the rest
     /// of the run, which is the silence this guards against.
     /// </summary>
     private static void RotationThatCannotShiftKeepsWriting() {
@@ -853,8 +855,9 @@ public static class SmokeRunner {
         config.FileSizeLimitKb = 64;
         config.RetainedFileCount = 2;
 
-        // Occupy the slot the rotation will want to move the current file into.
-        string blocked = Path.Combine(directory, "log.1.jsonl");
+        // Hold the name the rotation will reach for next. The sink opens log.0001, so the file
+        // after it is log.0002.
+        string blocked = Path.Combine(directory, "log.0002.jsonl");
         File.WriteAllText(blocked, "held open\n");
 
         FileSink sink = new FileSink(in config);
@@ -876,31 +879,46 @@ public static class SmokeRunner {
     }
 
     /// <summary>
-    /// The shift only ever touched indices inside the retained count, so lowering it left the
-    /// files above the new limit orphaned - holding the disk the setting was lowered to free.
+    /// Housekeeping keeps the newest files and deletes the rest, so a project that lowers
+    /// RetainedFileCount is tidied at the next run rather than leaving the files above the new
+    /// limit orphaned for good - holding the disk the setting was lowered to free.
     /// </summary>
     private static void LoweringTheRetainedCountRemovesTheOrphans() {
         string directory = ScratchDirectory("retained");
         Directory.CreateDirectory(directory);
 
-        // What a run with a higher retained count would have left behind, plus a current file
-        // with something in it, which is what makes a new sink shift them along.
-        for (int i = 1; i <= 4; i++) {
-            File.WriteAllText(Path.Combine(directory, "log." + i + ".jsonl"), "old file " + i + "\n");
+        // What runs with a higher retained count left behind.
+        for (int i = 1; i <= 5; i++) {
+            File.WriteAllText(Path.Combine(directory, "log." + i.ToString("0000") + ".jsonl"), "old file " + i + "\n");
         }
-        File.WriteAllText(Path.Combine(directory, "current.jsonl"), "the run before this one\n");
 
         LogConfig config = LogConfig.Default();
         config.FileDirectory = directory;
         config.RetainedFileCount = 2;
 
+        // This run takes log.0006, and keeps the two behind it.
         FileSink sink = new FileSink(in config);
+        Check("a new run takes the next number", sink.CurrentFilePath.EndsWith("log.0006.jsonl", StringComparison.Ordinal));
         sink.Dispose();
 
-        Check("files above the new limit are gone",
-            !File.Exists(Path.Combine(directory, "log.3.jsonl")) && !File.Exists(Path.Combine(directory, "log.4.jsonl")));
-        Check("files inside it are kept",
-            File.Exists(Path.Combine(directory, "log.1.jsonl")) && File.Exists(Path.Combine(directory, "log.2.jsonl")));
+        Check("the newest are kept",
+            File.Exists(Path.Combine(directory, "log.0006.jsonl")) &&
+            File.Exists(Path.Combine(directory, "log.0005.jsonl")) &&
+            File.Exists(Path.Combine(directory, "log.0004.jsonl")));
+        Check("everything older is gone",
+            !File.Exists(Path.Combine(directory, "log.0003.jsonl")) &&
+            !File.Exists(Path.Combine(directory, "log.0002.jsonl")) &&
+            !File.Exists(Path.Combine(directory, "log.0001.jsonl")));
+    }
+
+    /// <summary>The highest-numbered of the files, by the number in its name.</summary>
+    private static bool IsHighestNumbered(string path, string[] files) {
+        for (int i = 0; i < files.Length; i++) {
+            if (string.CompareOrdinal(Path.GetFileName(files[i]), Path.GetFileName(path)) > 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>
@@ -1029,19 +1047,21 @@ public static class SmokeRunner {
         config.FileIncludesDevChannel = true;
 
         FileSink first = new FileSink(in config);
+        string opened = first.CurrentFilePath;
         first.Write(Record(1, "Editor", "before the reload", LogLevel.Log, LogChannel.Dev, 0));
         first.Dispose();
 
-        long afterFirst = new FileInfo(Path.Combine(directory, "current.jsonl")).Length;
+        long afterFirst = new FileInfo(opened).Length;
 
         FileSink second = new FileSink(in config, continueExistingFile: true);
+        Check("continuing opens the file that is there", second.CurrentFilePath == opened);
         second.Write(Record(2, "Editor", "after the reload", LogLevel.Log, LogChannel.Dev, 0));
         second.Dispose();
 
-        string written = File.ReadAllText(Path.Combine(directory, "current.jsonl"));
+        string written = File.ReadAllText(opened);
         Check("what was there before is still there", written.Contains("before the reload"));
         Check("and what came after is added to it", written.Contains("after the reload"));
-        Check("the file was not shifted aside", !File.Exists(Path.Combine(directory, "log.1.jsonl")));
+        Check("no second file was started", Directory.GetFiles(directory, "log.*.jsonl").Length == 1);
 
         int headers = 0;
         int at = 0;
@@ -1054,18 +1074,18 @@ public static class SmokeRunner {
             at++;
         }
         Check("with one session header rather than two", headers == 1);
-        Check("and the size counted from what the file already held",
-            new FileInfo(Path.Combine(directory, "current.jsonl")).Length > afterFirst);
+        Check("and the size counted from what the file already held", new FileInfo(opened).Length > afterFirst);
 
         // Nothing to carry on from is a session like any other.
         string empty = ScratchDirectory("continued-empty");
         config.FileDirectory = empty;
         FileSink fresh = new FileSink(in config, continueExistingFile: true);
+        string freshPath = fresh.CurrentFilePath;
         fresh.Write(Record(3, "Editor", "a session of its own", LogLevel.Log, LogChannel.Dev, 0));
         fresh.Dispose();
 
         Check("continuing with no file starts one",
-            File.ReadAllText(Path.Combine(empty, "current.jsonl")).Contains(SessionKeyText));
+            File.ReadAllText(freshPath).Contains(SessionKeyText));
     }
 
     private const string SessionKeyText = "\"session\":";

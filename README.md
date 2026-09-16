@@ -138,16 +138,16 @@ The window keeps 8192 records by default. There is no settings UI for that yet; 
 A shipped build has no console, so the prod channel goes to disk:
 
 ```
-<persistentDataPath>/logs/current.jsonl    the running session
-<persistentDataPath>/logs/log.1.jsonl      the previous one
-<persistentDataPath>/logs/log.2.jsonl      ...
+<persistentDataPath>/logs/log.0007.jsonl   the running session
+<persistentDataPath>/logs/log.0006.jsonl   the one before it
+<persistentDataPath>/logs/log.0005.jsonl   ...
 ```
 
-Every run starts a new file and pushes the old ones down, so a report is never a blend of two sessions. Each file opens with a header line naming the product and version, Unity version, platform, device model, start time and a session id — the answer to "reproduced on what?", which is always the first question.
+Numbers rise with time and are never reused, so the highest is the one in hand. Every run starts a new file, so a report is never a blend of two sessions, and files past `RetainedFileCount` behind the current one are deleted rather than renumbered — the file a tester mentions stays the file they meant. Each file opens with a header line naming the product and version, Unity version, platform, device model, start time and a session id — the answer to "reproduced on what?", which is always the first question.
 
 Lines are buffered, but an **error flushes immediately**, as does the app being paused. On mobile that pause is the last signal you get before the process is killed, and it is usually the one that matters.
 
-In the editor the file sink only runs during play mode. Otherwise every script recompile would start a new session and push the real history out within a few reloads.
+In the editor that sink only runs during play mode: it starts a run by opening a new file, and a script recompile is not a run. What the editor itself logs goes to `logs/editor` instead, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. `EditorSink.WriteSessionFile` turns that off.
 
 Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — set `FileIncludesDevChannel` if you want them.
 

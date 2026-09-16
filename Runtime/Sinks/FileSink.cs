@@ -8,15 +8,24 @@ using Debug = UnityEngine.Debug;
 
 namespace KenseiLog {
     /// <summary>
-    /// Writes records to a rolling JSONL file under persistentDataPath/logs.
+    /// Writes records to a rolling JSONL file under persistentDataPath/logs, numbered in the
+    /// order they were written - log.0001.jsonl, log.0002.jsonl - with the highest being the
+    /// one in hand.
     /// <para>
     /// This is what a shipped build has instead of a console: the tester sends the file and
     /// the log window opens it as a session, with the same tabs and filters as a live run.
     /// </para>
     /// </summary>
     public sealed class FileSink : ILogSink, IFlushableSink, IDisposable {
-        private const string CurrentFileName = "current.jsonl";
         private const string DirectoryName = "logs";
+        private const string FilePattern = "log.*.jsonl";
+
+        /// <summary>
+        /// Width the index is padded to, so that a file browser sorts the directory the way the
+        /// files were written. Past it the names simply get longer, which takes ten thousand
+        /// rotations - fifty gigabytes at the default size limit.
+        /// </summary>
+        private const string IndexFormat = "0000";
 
         private readonly object _lock = new object();
 
@@ -166,7 +175,9 @@ namespace KenseiLog {
 
         private void SetDirectory(string directory) {
             LogDirectory = directory;
-            CurrentFilePath = Path.Combine(directory, CurrentFileName);
+            // Named when a file is opened: which one is current is whichever index is highest,
+            // and that is not known until the directory has been looked at.
+            CurrentFilePath = null;
         }
 
         private static string ResolveDirectory(in LogConfig config) =>
@@ -211,27 +222,29 @@ namespace KenseiLog {
             }
         }
 
+        /// <summary>
+        /// Opens the next file. Each run gets one of its own, so a crash report is never a
+        /// blend of two runs.
+        /// </summary>
         private void StartSession() {
             lock (_lock) {
+                int next;
                 try {
                     Directory.CreateDirectory(LogDirectory);
-                    // Each run gets its own file, so a crash report is never a blend of two runs.
-                    if (File.Exists(CurrentFilePath) && new FileInfo(CurrentFilePath).Length > 0) {
-                        ShiftFiles();
-                    }
+                    next = HighestIndex() + 1;
                 } catch (Exception exception) {
-                    // The housekeeping failed, not the ability to write - and returning here
-                    // left the run with no file at all, which is the worst of the outcomes on
-                    // offer. It opens anyway, with a session header of its own.
-                    //
-                    // Unlike a failed rotation mid-run, this one truncates: what is in the file
-                    // belongs to a previous run that could not be shifted aside, and a file
-                    // holding two runs under the first one's header would describe the wrong
-                    // device, the wrong version and the wrong start time. That previous run was
-                    // one successful rotation away from being deleted in any case.
-                    Warn("could not shift the previous run aside, starting a new file at", exception);
+                    // Without a directory there is nowhere to put a file, and without a listing
+                    // there is no safe name to give one - picking blind would truncate a file
+                    // belonging to a run somebody still wants.
+                    Warn("file logging is off, could not prepare", exception);
+                    return;
                 }
+
+                CurrentFilePath = IndexedPath(next);
                 OpenWriter();
+                // After the file exists, so that a directory it cannot tidy costs the run
+                // nothing: what it failed to delete is tried again at the next rotation.
+                PruneOldFiles();
             }
         }
 
@@ -243,19 +256,22 @@ namespace KenseiLog {
         /// </summary>
         private void ContinueSession() {
             lock (_lock) {
+                int highest;
                 long existing;
                 try {
                     Directory.CreateDirectory(LogDirectory);
-                    if (!File.Exists(CurrentFilePath)) {
+                    highest = HighestIndex();
+                    if (highest == 0) {
                         StartSession();
                         return;
                     }
-                    existing = new FileInfo(CurrentFilePath).Length;
+                    existing = new FileInfo(IndexedPath(highest)).Length;
                 } catch (Exception exception) {
                     Warn("file logging is off, could not prepare", exception);
                     return;
                 }
 
+                CurrentFilePath = IndexedPath(highest);
                 OpenWriter(startSession: false);
                 if (_writer != null) {
                     _bytesWritten = existing;
@@ -265,33 +281,45 @@ namespace KenseiLog {
 
         private void Rotate() {
             CloseWriter();
+
+            int next;
             try {
-                ShiftFiles();
+                next = HighestIndex() + 1;
             } catch (Exception exception) {
-                // Shifting can fail for reasons that pass: on Windows the log window holds the
-                // current file open while it reads, and a rotation landing in that moment is
-                // refused. Reopening anyway keeps logging alive - the file grows past its limit
+                // Nowhere to go next, so carry on where we were. The file grows past its limit
                 // and the next rotation tries again, which is a far better failure than the
-                // silence that followed returning here, where the writer stayed closed and
-                // every later record was dropped for the rest of the run.
-                Warn("could not rotate, still writing to", exception);
+                // silence that follows leaving the writer closed.
+                Warn("could not open the next file, still writing to", exception);
                 OpenWriter(startSession: false);
                 return;
             }
+
+            string previous = CurrentFilePath;
+            CurrentFilePath = IndexedPath(next);
             OpenWriter();
+
+            if (_writer == null) {
+                // The next file would not open - something else has that name, or the disk has
+                // filled. Going back to the one that was working beats going quiet.
+                CurrentFilePath = previous;
+                OpenWriter(startSession: false);
+                return;
+            }
+
+            PruneOldFiles();
         }
 
-        private void ShiftFiles() {
-            DeleteBeyondRetained();
-            for (int i = _retainedFiles - 1; i >= 1; i--) {
-                string from = IndexedPath(i);
-                if (File.Exists(from)) {
-                    File.Move(from, IndexedPath(i + 1));
+        /// <summary>The highest index in the directory, or 0 when there are no files yet.</summary>
+        private int HighestIndex() {
+            string[] existing = Directory.GetFiles(LogDirectory, FilePattern);
+            int highest = 0;
+            for (int i = 0; i < existing.Length; i++) {
+                int index = IndexOfFile(existing[i]);
+                if (index > highest) {
+                    highest = index;
                 }
             }
-            if (File.Exists(CurrentFilePath)) {
-                File.Move(CurrentFilePath, IndexedPath(1));
-            }
+            return highest;
         }
 
         /// <summary>
@@ -364,29 +392,48 @@ namespace KenseiLog {
         }
 
         /// <summary>
-        /// Clears the slot the shift is about to fill, and anything above it. Deleting only the
-        /// file at the retained count is enough while that count never changes, but a project
-        /// that lowers RetainedFileCount leaves the files above the new limit orphaned: the
-        /// shift never touches them again, so they sit in the directory for good, holding disk
-        /// the setting was lowered to release. Enumerating costs a directory listing once per
-        /// rotation, which is once per size limit of logs.
+        /// Deletes everything past the newest <c>RetainedFileCount + 1</c> files - the one being
+        /// written, and the retained ones behind it.
+        /// <para>
+        /// Deleting rather than shifting is the whole of the housekeeping now. Numbers rise with
+        /// time and are never reused, so the file a tester mentions stays the file they meant,
+        /// a file opened in the window cannot be renamed under it, and the sequence reads in the
+        /// order it was written instead of backwards. It also removes every rename from the
+        /// rotation, and a rename is what fails on Windows when anything else has the file open.
+        /// </para>
+        /// <para>
+        /// A project that lowers RetainedFileCount tidies up at the next rotation rather than
+        /// leaving the files above the new limit orphaned for good.
+        /// </para>
         /// </summary>
-        private void DeleteBeyondRetained() {
-            string[] existing = Directory.GetFiles(LogDirectory, "log.*.jsonl");
-            for (int i = 0; i < existing.Length; i++) {
-                int index = IndexOfFile(existing[i]);
-                if (index < _retainedFiles) {
-                    continue;
-                }
+        private void PruneOldFiles() {
+            string[] existing;
+            try {
+                existing = Directory.GetFiles(LogDirectory, FilePattern);
+            } catch (Exception) {
+                return;
+            }
+
+            int keep = _retainedFiles + 1;
+            if (existing.Length <= keep) {
+                return;
+            }
+
+            // The current file always holds the highest index, so keeping the highest few can
+            // never delete the one being written.
+            Array.Sort(existing, CompareByIndexDescending);
+            for (int i = keep; i < existing.Length; i++) {
                 try {
                     File.Delete(existing[i]);
                 } catch (Exception) {
                     // One stale file held open by a sync agent, a scanner or another instance
-                    // must not cost the run its log. It is tried again at the next rotation,
-                    // and the shift below only needs the slots inside the retained count.
+                    // must not cost the run its log; it is tried again at the next rotation.
                 }
             }
         }
+
+        private static int CompareByIndexDescending(string left, string right) =>
+            IndexOfFile(right).CompareTo(IndexOfFile(left));
 
         /// <summary>The N in log.N.jsonl, or -1 for a name this sink did not write.</summary>
         private static int IndexOfFile(string path) {
@@ -402,7 +449,7 @@ namespace KenseiLog {
             _lineBuilder ?? (_lineBuilder = new StringBuilder(512));
 
         private string IndexedPath(int index) =>
-            Path.Combine(LogDirectory, "log." + index.ToString(CultureInfo.InvariantCulture) + ".jsonl");
+            Path.Combine(LogDirectory, "log." + index.ToString(IndexFormat, CultureInfo.InvariantCulture) + ".jsonl");
 
         private void Warn(string what, Exception exception) {
             // Rotate calls this from inside Write, which is inside Emit. Without the flag the

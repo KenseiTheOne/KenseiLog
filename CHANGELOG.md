@@ -43,6 +43,18 @@ behaviour simply stayed where it was.
 
 ### Changed
 
+- Log files are numbered in the order they were written - `log.0001.jsonl`, `log.0002.jsonl` -
+  and the highest is the one being written. There is no `current.jsonl` and nothing is ever
+  renamed: rotation opens the next number and housekeeping deletes what falls past
+  `RetainedFileCount` behind it.
+
+  The old scheme shifted every file along on each rotation, which numbered them backwards -
+  `log.1` was the newest of the old ones - and meant a file could be renamed under anything
+  holding it. Renaming is also what fails on Windows when another process has the file open,
+  which is the failure two of the fixes above are about. A file now keeps its name for life:
+  the one a tester mentions stays the one they meant, and a session opened in the window cannot
+  turn into a different session while it is open.
+
 - A record is not built for a channel nothing will take. In a development build the sink list
   is the file sink with the dev channel off, so every `Log.Dev` call built a record - and
   unwound a stack trace, if it was an error - only to be dropped by the first sink that looked
