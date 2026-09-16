@@ -113,7 +113,13 @@ namespace KenseiLog.Editor {
         /// </para>
         /// </summary>
         public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) {
-            List<LogRecord> read = new List<LogRecord>();
+            // Lines first, records second. Parsing is what costs - a JsonUtility call and an
+            // object per line - and a tail of two megabytes holds more lines than the buffer can
+            // keep, so parsing them all and then dropping the front would be paying for records
+            // nothing will ever see. Held in a ring: reading is forwards, keeping is the end.
+            string[] kept = new string[maxRecords];
+            int count = 0;
+            int next = 0;
 
             try {
                 // ReadWrite for the same reason as above: this file usually has a writer.
@@ -134,9 +140,10 @@ namespace KenseiLog.Editor {
                             if (line.Length == 0) {
                                 continue;
                             }
-                            // The header and a torn last line both simply fail to parse.
-                            if (TryReadRecord(line, out LogRecord record)) {
-                                read.Add(record);
+                            kept[next] = line;
+                            next = (next + 1) % kept.Length;
+                            if (count < kept.Length) {
+                                count++;
                             }
                         }
                     }
@@ -145,11 +152,16 @@ namespace KenseiLog.Editor {
                 return 0;
             }
 
-            int first = Math.Max(0, read.Count - maxRecords);
-            for (int i = first; i < read.Count; i++) {
-                into.Add(read[i]);
+            int added = 0;
+            int first = (next - count + kept.Length) % kept.Length;
+            for (int i = 0; i < count; i++) {
+                // The header and a torn line both simply fail to parse.
+                if (TryReadRecord(kept[(first + i) % kept.Length], out LogRecord record)) {
+                    into.Add(record);
+                    added++;
+                }
             }
-            return read.Count - first;
+            return added;
         }
 
         private static bool ReadHeader(string line, LogSession session) {

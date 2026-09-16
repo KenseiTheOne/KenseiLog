@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using UnityEditor;
@@ -24,6 +25,13 @@ namespace KenseiLog.Editor {
         /// with the file" and "start a new one" - a recompile is not a new session.
         /// </summary>
         private const string SessionStartedKey = "KenseiLog.EditorSessionStarted";
+
+        /// <summary>
+        /// The newest record dismissed by a Clear. Kept in SessionState so that it lives
+        /// exactly as long as the session file it speaks about: the file keeps everything - that
+        /// is what it is for - but a reload must not hand back what somebody dismissed.
+        /// </summary>
+        private const string ClearedThroughKey = "KenseiLog.EditorClearedThrough";
 
         /// <summary>Kept apart from the runs, which own the directory above it.</summary>
         private const string EditorLogFolder = "editor";
@@ -88,9 +96,14 @@ namespace KenseiLog.Editor {
         /// <summary>The file this editor session is writing, or null when it is not.</summary>
         public static FileSink SessionFile => _sessionFile;
 
-        /// <summary>Where that file goes, whether or not one is open.</summary>
+        /// <summary>
+        /// Where that file goes, whether or not one is open. Under the project as well as the
+        /// product: persistentDataPath is keyed by company and product name, so two checkouts
+        /// of one project - two worktrees, two editors - would otherwise write to the same file
+        /// and read each other's records back.
+        /// </summary>
         public static string SessionFileDirectory =>
-            Path.Combine(Application.persistentDataPath, "logs", EditorLogFolder);
+            Path.Combine(Application.persistentDataPath, "logs", EditorLogFolder, ProjectPrefs.ProjectId);
 
         /// <summary>
         /// How many records the window keeps. Clamped, and clamped before it is stored: an
@@ -120,6 +133,19 @@ namespace KenseiLog.Editor {
         public void Clear() {
             _buffer.Clear();
             Interlocked.Increment(ref _version);
+
+            // Everything issued so far is dismissed. The counter is past every record written
+            // up to now, which is exactly the watermark wanted, and it costs one number.
+            SessionState.SetString(ClearedThroughKey, LogCore.NextSequence().ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static long ClearedThrough {
+            get {
+                string stored = SessionState.GetString(ClearedThroughKey, string.Empty);
+                return long.TryParse(stored, NumberStyles.None, CultureInfo.InvariantCulture, out long sequence)
+                    ? sequence
+                    : 0L;
+            }
         }
 
         [InitializeOnLoadMethod]
@@ -138,10 +164,13 @@ namespace KenseiLog.Editor {
             // cost us the two lines below: without them the sink is never registered and the
             // window records nothing at all, while still opening and looking healthy.
             bool continuing = SessionState.GetBool(SessionStartedKey, false);
+            bool seeded = false;
             try {
-                if (continuing && SeedFromSessionFile()) {
-                    SeedCompilerEntriesFromConsole();
-                } else {
+                List<LogRecord> fromFile = new List<LogRecord>();
+                seeded = continuing && ShouldSeed() && SeedFromSessionFile(fromFile);
+                if (seeded) {
+                    SeedRemainingConsoleEntries(fromFile);
+                } else if (ShouldSeed()) {
                     SeedFromConsole();
                 }
             } catch (Exception exception) {
@@ -152,7 +181,23 @@ namespace KenseiLog.Editor {
             LogCore.Initialize();
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
 
-            OpenSessionFile();
+            // Continuing the file makes sense only if its records came back. When the read
+            // failed, carrying on with it would put records numbered from one after records
+            // numbered in the hundreds - an unsorted file, and every lookup into it wrong.
+            OpenSessionFile(continueExistingFile: continuing && seeded);
+        }
+
+        /// <summary>
+        /// Whether reading a session's worth of records back is worth doing at all.
+        /// <para>
+        /// Entering play mode with Clear on Play set is a reload whose seed is thrown away a
+        /// callback later, and that is the reload people do dozens of times a day. Reading a
+        /// couple of megabytes of JSON to discard it is the most expensive thing this package
+        /// would do all day.
+        /// </para>
+        /// </summary>
+        private static bool ShouldSeed() {
+            return !(ClearOnPlay && EditorApplication.isPlayingOrWillChangePlaymode);
         }
 
         /// <summary>
@@ -163,7 +208,7 @@ namespace KenseiLog.Editor {
         /// rest of the pipeline exactly as it was.
         /// </para>
         /// </summary>
-        private static void OpenSessionFile() {
+        private static void OpenSessionFile(bool continueExistingFile) {
             if (!WriteSessionFile) {
                 return;
             }
@@ -175,10 +220,16 @@ namespace KenseiLog.Editor {
                 // dev record written from an editor tool has nowhere else to survive.
                 config.FileIncludesDevChannel = true;
 
-                bool alreadyOpenedThisSession = SessionState.GetBool(SessionStartedKey, false);
-                _sessionFile = new FileSink(in config, continueExistingFile: alreadyOpenedThisSession);
-                SessionState.SetBool(SessionStartedKey, true);
+                _sessionFile = new FileSink(in config, continueExistingFile);
+                if (!_sessionFile.IsWriting) {
+                    // No file, so nothing for the next domain to continue: leaving the flag set
+                    // would have it append this session into the last one's file.
+                    _sessionFile.Dispose();
+                    _sessionFile = null;
+                    return;
+                }
 
+                SessionState.SetBool(SessionStartedKey, true);
                 LogCore.AddSink(_sessionFile);
             } catch (Exception exception) {
                 _sessionFile = null;
@@ -214,26 +265,30 @@ namespace KenseiLog.Editor {
         /// numbers already in it would leave it unsorted and every lookup into it wrong.
         /// </para>
         /// </summary>
-        private static bool SeedFromSessionFile() {
+        private static bool SeedFromSessionFile(List<LogRecord> into) {
             if (!WriteSessionFile) {
                 return false;
             }
 
-            string path = NewestSessionFile();
+            string path = FileSink.NewestFile(SessionFileDirectory);
             if (path == null) {
                 return false;
             }
 
-            List<LogRecord> records = new List<LogRecord>();
-            if (LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, records) == 0) {
+            if (LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into) == 0) {
                 return false;
             }
 
+            long clearedThrough = ClearedThrough;
             long highest = 0;
-            for (int i = 0; i < records.Count; i++) {
-                Instance.Write(records[i]);
-                if (records[i].Sequence > highest) {
-                    highest = records[i].Sequence;
+            for (int i = 0; i < into.Count; i++) {
+                if (into[i].Sequence > highest) {
+                    highest = into[i].Sequence;
+                }
+                // Clearing the window is meant to stay cleared. The file keeps everything - that
+                // is the point of it - but a reload must not hand back what was dismissed.
+                if (into[i].Sequence > clearedThrough) {
+                    Instance.Write(into[i]);
                 }
             }
 
@@ -242,46 +297,52 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// The file the session is writing: the highest numbered, since numbers rise with time.
-        /// </summary>
-        private static string NewestSessionFile() {
-            string directory = SessionFileDirectory;
-            if (!Directory.Exists(directory)) {
-                return null;
-            }
-
-            string[] files = Directory.GetFiles(directory, "log.*.jsonl");
-            string newest = null;
-            for (int i = 0; i < files.Length; i++) {
-                if (newest == null || string.CompareOrdinal(Path.GetFileName(files[i]), Path.GetFileName(newest)) > 0) {
-                    newest = files[i];
-                }
-            }
-            return newest;
-        }
-
-        /// <summary>
-        /// Adds the console entries that this package can never have seen for itself.
+        /// Adds the console entries the session file does not already account for.
         /// <para>
-        /// A compiler message does not arrive through Debug, so it reaches the console by a path
-        /// the log pipeline has no sight of - which is why it is missing from the session file,
-        /// and why taking it from the console cannot show anything twice.
+        /// Plenty is left over. Whatever was in the console when the editor started, before
+        /// this sink existed to write it anywhere. Anything another package logs from its own
+        /// load code, which runs before ours. Anything logged in the old domain after the file
+        /// was closed for the reload. A compiler message, which may or may not travel through
+        /// Debug - the answer is in native code and not worth resting a design on.
+        /// </para>
+        /// <para>
+        /// So nothing is assumed about where an entry came from: every one is matched off
+        /// against what the file supplied, by first line and by count. A warning logged three
+        /// times and read back three times leaves nothing to add; a fourth in the console is one
+        /// the file genuinely missed. That is correct whether or not compiler messages reach the
+        /// pipeline, which is the point of doing it this way.
         /// </para>
         /// </summary>
-        private static void SeedCompilerEntriesFromConsole() {
+        private static void SeedRemainingConsoleEntries(List<LogRecord> fromFile) {
             if (!ConsoleEntryBridge.Available) {
                 return;
             }
 
             List<ConsoleEntryBridge.ConsoleEntry> entries = new List<ConsoleEntryBridge.ConsoleEntry>();
             ConsoleEntryBridge.ReadAll(entries);
+            if (entries.Count == 0) {
+                return;
+            }
+
+            Dictionary<string, int> accounted = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < fromFile.Count; i++) {
+                if (!fromFile[i].Captured) {
+                    continue;
+                }
+                string key = FirstLine(fromFile[i].Message);
+                accounted.TryGetValue(key, out int seen);
+                accounted[key] = seen + 1;
+            }
 
             for (int i = 0; i < entries.Count; i++) {
                 ConsoleEntryBridge.ConsoleEntry entry = entries[i];
-                if (!ConsoleEntryBridge.IsCompilerEntry(entry.Mode)) {
+                SplitMessage(entry.Message, out string message, out string stackTrace);
+
+                string key = FirstLine(message);
+                if (accounted.TryGetValue(key, out int left) && left > 0) {
+                    accounted[key] = left - 1;
                     continue;
                 }
-                SplitMessage(entry.Message, out string message, out string stackTrace);
 
                 Instance.Write(new LogRecord(
                     LogCore.NextSequence(),
@@ -297,6 +358,14 @@ namespace KenseiLog.Editor {
                     entry.InstanceId,
                     captured: true));
             }
+        }
+
+        private static string FirstLine(string message) {
+            if (string.IsNullOrEmpty(message)) {
+                return string.Empty;
+            }
+            int newline = message.IndexOf('\n');
+            return newline < 0 ? message : message.Substring(0, newline);
         }
 
         /// <summary>

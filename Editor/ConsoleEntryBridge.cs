@@ -156,16 +156,14 @@ namespace KenseiLog.Editor {
         /// <para>
         /// The error mask is the one the console's own GetStyleForErrorMode carries: Error,
         /// Assert, Fatal, AssetImportError, ScriptingError, ScriptCompileError,
-        /// ScriptingException, GraphCompileError and ScriptingAssertion. The last two were
-        /// missing here, so a shader graph that failed to compile, and an assertion that
-        /// outlived a domain reload, arrived as ordinary log lines - and disappeared the moment
-        /// anyone unticked Log to hunt for errors.
+        /// ScriptingException, GraphCompileError and ScriptingAssertion. Bit 13 is not among
+        /// them and used to be: it is StickyError, which says an entry survives a manual clear
+        /// rather than saying anything about severity, so a sticky warning drew as an error.
         /// </para>
         /// </summary>
         private static LogLevel LevelFromMode(int mode) {
             const int errorBits = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 6) | (1 << 8) |
-                                  (1 << 11) | (1 << 13) | (1 << 17) |
-                                  (1 << 20) | (1 << 21);
+                                  (1 << 11) | (1 << 17) | (1 << 20) | (1 << 21);
             const int warningBits = (1 << 7) | (1 << 9) | (1 << 12);
 
             if ((mode & errorBits) != 0) {
@@ -199,16 +197,6 @@ namespace KenseiLog.Editor {
                 Line = line;
                 Mode = mode;
             }
-        }
-
-        /// <summary>
-        /// Entries the log pipeline cannot have captured: a compiler message reaches the
-        /// console through its own path, not through Debug, so it is never in our own records
-        /// and can be taken from the console without any risk of showing it twice.
-        /// </summary>
-        public static bool IsCompilerEntry(int mode) {
-            const int compilerBits = (1 << 11) | (1 << 12) | (1 << 20);
-            return (mode & compilerBits) != 0;
         }
 
         /// <summary>Drops the index so the next lookup reads the console again.</summary>

@@ -15,12 +15,18 @@ namespace KenseiLog.Editor {
     /// </para>
     /// </summary>
     internal static class ProjectPrefs {
-        private static readonly string _prefix = "KenseiLog." + ProjectId() + ".";
+        private static readonly string _id = BuildProjectId();
+        private static readonly string _prefix = "KenseiLog." + _id + ".";
+
+        /// <summary>
+        /// Something short and stable that tells this checkout from another of the same project.
+        /// </summary>
+        public static string ProjectId => _id;
 
         public static string Key(string name) =>
             _prefix + name;
 
-        private static string ProjectId() {
+        private static string BuildProjectId() {
             // FNV-1a rather than string.GetHashCode: the key has to mean the same thing on the
             // next editor launch, and nothing promises that of a runtime hash.
             string path = Application.dataPath.Replace('\\', '/').ToLowerInvariant();

@@ -76,7 +76,7 @@ namespace KenseiLog {
                 Array.Copy(_sinks, updated, _sinks.Length);
                 updated[_sinks.Length] = sink;
                 _sinks = updated;
-                RefreshDevChannelInterest();
+                RefreshChannelInterest();
             }
         }
 
@@ -93,18 +93,15 @@ namespace KenseiLog {
                 // A sink that is taken out and put back gets another chance to report, rather
                 // than staying silently on the failed list for the rest of the app domain.
                 _failedSinks.Remove(sink);
-                RefreshDevChannelInterest();
+                RefreshChannelInterest();
             }
         }
 
         /// <summary>
-        /// Works out whether anything registered would take a Dev record.
-        /// <para>
-        /// The only sink that turns a channel away is the file sink, and this class is the one
-        /// that knows whether it is turning the dev channel away at the moment - so the
-        /// question is answerable without asking the sinks anything and without guessing about
-        /// a sink somebody else wrote, which is assumed to want everything.
-        /// </para>
+        /// Works out whether anything registered would take a Dev record, by asking the sinks
+        /// that answer for themselves. One that does not implement
+        /// <see cref="IChannelFilteredSink"/> is taken to want everything, which is the safe
+        /// answer for a sink this package knows nothing about.
         /// <para>
         /// The case worth catching is a development build with the defaults: the list there is
         /// exactly the file sink with the dev channel off, and every Log.Dev call was building
@@ -112,16 +109,21 @@ namespace KenseiLog {
         /// development build is what gets profiled on a device, so it was the one build type
         /// that misreported what logging costs.
         /// </para>
+        /// <para>
+        /// Called by a sink whose answer has changed, as well as when the list does.
+        /// </para>
         /// </summary>
-        private static void RefreshDevChannelInterest() {
-            ILogSink[] sinks = _sinks;
-            for (int i = 0; i < sinks.Length; i++) {
-                if (!ReferenceEquals(sinks[i], _fileSink) || _config.FileIncludesDevChannel) {
-                    _devChannelWanted = true;
-                    return;
+        internal static void RefreshChannelInterest() {
+            lock (_sinkLock) {
+                ILogSink[] sinks = _sinks;
+                for (int i = 0; i < sinks.Length; i++) {
+                    if (!(sinks[i] is IChannelFilteredSink filtered) || filtered.Accepts(LogChannel.Dev)) {
+                        _devChannelWanted = true;
+                        return;
+                    }
                 }
+                _devChannelWanted = false;
             }
-            _devChannelWanted = false;
         }
 
         /// <summary>
@@ -448,7 +450,7 @@ namespace KenseiLog {
                 LogOverlay.Remove();
             }
 
-            RefreshDevChannelInterest();
+            RefreshChannelInterest();
         }
 
         /// <summary>

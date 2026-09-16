@@ -16,7 +16,7 @@ namespace KenseiLog {
     /// the log window opens it as a session, with the same tabs and filters as a live run.
     /// </para>
     /// </summary>
-    public sealed class FileSink : ILogSink, IFlushableSink, IDisposable {
+    public sealed class FileSink : ILogSink, IFlushableSink, IChannelFilteredSink, IDisposable {
         private const string DirectoryName = "logs";
         private const string FilePattern = "log.*.jsonl";
 
@@ -91,6 +91,13 @@ namespace KenseiLog {
             }
         }
 
+        /// <summary>
+        /// Whether a record on this channel would be written. Read without a lock on purpose:
+        /// this is asked while the sink list is held, and a bool cannot be read half-written.
+        /// </summary>
+        public bool Accepts(LogChannel channel) =>
+            _includeDev || channel != LogChannel.Dev;
+
         public void Write(in LogRecord record) {
             if (!_includeDev && record.Channel == LogChannel.Dev) {
                 return;
@@ -151,6 +158,16 @@ namespace KenseiLog {
             // Reconfigure is documented as such through LogCore.Configure.
             string directory = ResolveDirectory(in config);
 
+            ReconfigureLocked(in config, directory);
+
+            // Outside the lock as well, and never inside it: LogCore asks every sink what it
+            // takes while holding the sink list, so calling it from under this lock would have
+            // the two waiting on each other. What changed may be the dev channel, and nothing
+            // is built for a channel no sink will take.
+            LogCore.RefreshChannelInterest();
+        }
+
+        private void ReconfigureLocked(in LogConfig config, string directory) {
             lock (_lock) {
                 ApplySettings(in config);
                 if (string.Equals(directory, LogDirectory, StringComparison.Ordinal)) {
@@ -231,6 +248,7 @@ namespace KenseiLog {
                 int next;
                 try {
                     Directory.CreateDirectory(LogDirectory);
+                    MigrateLegacyFile();
                     next = HighestIndex() + 1;
                 } catch (Exception exception) {
                     // Without a directory there is nowhere to put a file, and without a listing
@@ -256,22 +274,24 @@ namespace KenseiLog {
         /// </summary>
         private void ContinueSession() {
             lock (_lock) {
-                int highest;
+                string newest;
                 long existing;
                 try {
                     Directory.CreateDirectory(LogDirectory);
-                    highest = HighestIndex();
-                    if (highest == 0) {
+                    // By the name it actually has: a directory written by an older version, or
+                    // by hand, may hold an index this version would pad differently.
+                    newest = NewestFile(LogDirectory);
+                    if (newest == null) {
                         StartSession();
                         return;
                     }
-                    existing = new FileInfo(IndexedPath(highest)).Length;
+                    existing = new FileInfo(newest).Length;
                 } catch (Exception exception) {
-                    Warn("file logging is off, could not prepare", exception);
+                    Warn("file logging is off, could not open the newest file in", exception);
                     return;
                 }
 
-                CurrentFilePath = IndexedPath(highest);
+                CurrentFilePath = newest;
                 OpenWriter(startSession: false);
                 if (_writer != null) {
                     _bytesWritten = existing;
@@ -309,18 +329,55 @@ namespace KenseiLog {
             PruneOldFiles();
         }
 
+        /// <summary>
+        /// Gives a number to the file left by the scheme that called the current one
+        /// current.jsonl.
+        /// <para>
+        /// That name matches nothing this version looks for, so without this it would sit in
+        /// the directory for good - holding a size limit of disk, and holding the last run
+        /// before the upgrade, which is exactly the run somebody may still want. One rename,
+        /// once, on a name this version never creates.
+        /// </para>
+        /// </summary>
+        private void MigrateLegacyFile() {
+            string legacy = Path.Combine(LogDirectory, "current.jsonl");
+            if (!File.Exists(legacy)) {
+                return;
+            }
+            try {
+                File.Move(legacy, IndexedPath(HighestIndex() + 1));
+            } catch (Exception) {
+                // Something is holding it. It keeps its old name and is tried again next run.
+            }
+        }
+
         /// <summary>The highest index in the directory, or 0 when there are no files yet.</summary>
         private int HighestIndex() {
-            string[] existing = Directory.GetFiles(LogDirectory, FilePattern);
+            return IndexOf(NewestFile(LogDirectory));
+        }
+
+        /// <summary>
+        /// The newest file in a log directory - the one with the highest index, by number
+        /// rather than by name, since a name only sorts correctly while every index is the same
+        /// width. Null when the directory holds none. Public because the editor's sink needs
+        /// the same answer, and two answers to "which file is newest" is one too many.
+        /// </summary>
+        public static string NewestFile(string directory) {
+            string[] existing = Directory.GetFiles(directory, FilePattern);
+            string newest = null;
             int highest = 0;
             for (int i = 0; i < existing.Length; i++) {
                 int index = IndexOfFile(existing[i]);
                 if (index > highest) {
                     highest = index;
+                    newest = existing[i];
                 }
             }
-            return highest;
+            return newest;
         }
+
+        private static int IndexOf(string path) =>
+            path == null ? 0 : IndexOfFile(path);
 
         /// <summary>
         /// Opens the current file. <paramref name="startSession"/> is false only when a rotation
@@ -370,7 +427,9 @@ namespace KenseiLog {
                 // close, or the handle stays open with nothing referencing it.
                 stream?.Dispose();
                 _writer = null;
-                Warn("file logging is off, could not open", exception);
+                // Not "file logging is off": a rotation that cannot open the next file carries
+                // on with the one it had, and says so itself.
+                Warn("could not open", exception);
                 return;
             } finally {
                 _lastFlush = _clock.Elapsed.TotalSeconds;
@@ -405,6 +464,11 @@ namespace KenseiLog {
         /// A project that lowers RetainedFileCount tidies up at the next rotation rather than
         /// leaving the files above the new limit orphaned for good.
         /// </para>
+        /// <para>
+        /// One writer per directory is assumed, as it always was. Two processes sharing one -
+        /// two clients of a multiplayer test on one machine - can each decide the other's file
+        /// is old enough to delete.
+        /// </para>
         /// </summary>
         private void PruneOldFiles() {
             string[] existing;
@@ -419,10 +483,17 @@ namespace KenseiLog {
                 return;
             }
 
-            // The current file always holds the highest index, so keeping the highest few can
-            // never delete the one being written.
+            // Sorted by index, highest first, so the files kept are the newest. The one being
+            // written holds the highest index of all - for this sink; a second process writing
+            // into the same directory is outside what any of this can promise.
             Array.Sort(existing, CompareByIndexDescending);
             for (int i = keep; i < existing.Length; i++) {
+                if (IndexOfFile(existing[i]) < 0) {
+                    // Not a name this sink wrote. A file somebody kept by hand - log.crash.jsonl -
+                    // matches the pattern without matching the scheme, and deleting it would be
+                    // deleting the one log they meant to keep.
+                    continue;
+                }
                 try {
                     File.Delete(existing[i]);
                 } catch (Exception) {
@@ -452,6 +523,9 @@ namespace KenseiLog {
             Path.Combine(LogDirectory, "log." + index.ToString(IndexFormat, CultureInfo.InvariantCulture) + ".jsonl");
 
         private void Warn(string what, Exception exception) {
+            // The directory when there is no file yet, which is the case every message about
+            // preparing one is raised in - and where the path would have been null.
+            string where = CurrentFilePath ?? LogDirectory;
             // Rotate calls this from inside Write, which is inside Emit. Without the flag the
             // warning comes straight back through the foreign-log handler, takes the next
             // sequence, and reaches the later sinks ahead of the record we are still writing -
@@ -460,7 +534,7 @@ namespace KenseiLog {
             bool suppressed = LogCore.SuppressForeignCapture;
             LogCore.SuppressForeignCapture = true;
             try {
-                Debug.LogWarning("KenseiLog: " + what + ", " + CurrentFilePath + " (" + exception.Message + ")");
+                Debug.LogWarning("KenseiLog: " + what + ", " + where + " (" + exception.Message + ")");
             } finally {
                 LogCore.SuppressForeignCapture = suppressed;
             }

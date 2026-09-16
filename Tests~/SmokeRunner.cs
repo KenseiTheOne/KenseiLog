@@ -777,50 +777,83 @@ public static class SmokeRunner {
     /// </para>
     /// </summary>
     private static void DevRecordsStillReachASinkThatWantsThem() {
-        // The editor's own sink takes every channel, so it has to stand aside to leave the
-        // pipeline in the shape a build has.
+        // Everything the editor registers takes every channel, so all of it has to stand aside
+        // to leave the pipeline in the shape a build has: the window's buffer, and the editor's
+        // own session file, which asks for the dev channel on purpose.
         LogCore.RemoveSink(EditorSink.Instance);
+        FileSink sessionFile = EditorSink.SessionFile;
+        if (sessionFile != null) {
+            LogCore.RemoveSink(sessionFile);
+        }
 
         LogConfig config = LogConfig.Default();
         config.FileDirectory = ScratchDirectory("devchannel");
         config.FileIncludesDevChannel = false;
         FileSink file = new FileSink(in config);
         MemorySink watcher = new MemorySink(8);
+        CountingSink counter = new CountingSink();
 
         try {
             LogCore.AddSink(file);
 
-            Log.Dev("Probe", "dev, with only a file sink that does not want it");
-            Log.Prod("Probe", "prod, which the file sink does want");
+            // The gate is shut when every sink says it turns the channel away, so the counter
+            // has to refuse it too - and it counts what actually arrives, which is how the gate
+            // is told apart from a sink dropping the record on its own doorstep.
+            counter.Takes = LogChannel.Prod;
+            LogCore.AddSink(counter);
+
+            Log.Dev("Probe", "dev, with nothing that wants it");
+            Log.Prod("Probe", "prod, which both of them want");
             file.Flush();
 
+            Check("no record is built for a channel nothing takes", counter.Calls == 1);
+
             string written = ReadWhileOpen(file.CurrentFilePath);
-            Check("a prod record still reaches the file", written.Contains("which the file sink does want"));
-            Check("a dev record still stays out of it", !written.Contains("does not want it"));
+            Check("a prod record still reaches the file", written.Contains("which both of them want"));
+            Check("a dev record still stays out of it", !written.Contains("with nothing that wants it"));
 
             // Registering something that takes the dev channel has to bring dev records back.
             LogCore.AddSink(watcher);
             Log.Dev("Probe", "dev, now that something wants it");
             Check("a dev record reaches a sink that wants it", watcher.Buffer.Count == 1);
+            Check("and the gate opened for the sinks beside it", counter.Calls == 2);
 
             LogCore.RemoveSink(watcher);
             Log.Dev("Probe", "dev, with the watcher gone again");
             Check("and stops when that sink goes away", watcher.Buffer.Count == 1);
+            Check("the gate shuts again behind it", counter.Calls == 2);
 
-            // The same, through the setting rather than through the sink list.
+            // The same, through the setting rather than through the sink list: Reconfigure has
+            // to tell LogCore that its answer changed.
             config.FileIncludesDevChannel = true;
             file.Reconfigure(in config);
-            LogCore.Configure(in config);
             Log.Dev("Probe", "dev, once the file sink is told to take the channel");
             file.Flush();
 
             Check("turning the channel on in the config brings them back",
                 ReadWhileOpen(file.CurrentFilePath).Contains("told to take the channel"));
         } finally {
+            LogCore.RemoveSink(counter);
             LogCore.RemoveSink(watcher);
             LogCore.RemoveSink(file);
             file.Dispose();
             LogCore.AddSink(EditorSink.Instance);
+            if (sessionFile != null) {
+                LogCore.AddSink(sessionFile);
+            }
+        }
+    }
+
+    /// <summary>Counts what reaches it, and turns away everything but one channel.</summary>
+    private sealed class CountingSink : ILogSink, IChannelFilteredSink {
+        public LogChannel Takes;
+        public int Calls;
+
+        public bool Accepts(LogChannel channel) =>
+            channel == Takes;
+
+        public void Write(in LogRecord record) {
+            Calls++;
         }
     }
 
@@ -856,20 +889,25 @@ public static class SmokeRunner {
         config.FileSizeLimitKb = 64;
         config.RetainedFileCount = 2;
 
-        // Hold the name the rotation will reach for next. The sink opens log.0001, so the file
-        // after it is log.0002.
+        // Take the name the rotation will reach for, with something that cannot be opened as a
+        // file and is not listed as one either - so the sink still picks log.0002 as next, and
+        // still cannot have it. Holding a *file* there would not do: the sink would see it in
+        // the directory and go to log.0003 instead, and nothing would be refused.
         string blocked = Path.Combine(directory, "log.0002.jsonl");
-        File.WriteAllText(blocked, "held open\n");
+        Directory.CreateDirectory(blocked);
 
         FileSink sink = new FileSink(in config);
-        using (new FileStream(blocked, FileMode.Open, FileAccess.Read, FileShare.None)) {
-            for (int i = 0; i < 4000; i++) {
-                sink.Write(Record(i + 1, "Boot", "padding record " + i + " with enough text to push this file past its limit",
-                    LogLevel.Log, LogChannel.Prod, i));
-            }
-            sink.Flush();
-            Check("the sink is still writing after a refused rotation", sink.IsWriting);
+        Check("the sink opened the first file", sink.CurrentFilePath.EndsWith("log.0001.jsonl", StringComparison.Ordinal));
+
+        for (int i = 0; i < 4000; i++) {
+            sink.Write(Record(i + 1, "Boot", "padding record " + i + " with enough text to push this file past its limit",
+                LogLevel.Log, LogChannel.Prod, i));
         }
+        sink.Flush();
+
+        Check("the sink is still writing after a refused rotation", sink.IsWriting);
+        Check("and is still writing to the file it had",
+            sink.CurrentFilePath.EndsWith("log.0001.jsonl", StringComparison.Ordinal));
 
         sink.Write(Record(99999, "Boot", "written after the rotation failed", LogLevel.Log, LogChannel.Prod, 0));
         sink.Flush();
@@ -877,6 +915,7 @@ public static class SmokeRunner {
             ReadWhileOpen(sink.CurrentFilePath).Contains("written after the rotation failed"));
 
         sink.Dispose();
+        Directory.Delete(blocked);
     }
 
     /// <summary>

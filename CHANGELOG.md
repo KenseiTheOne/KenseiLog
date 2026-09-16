@@ -54,6 +54,15 @@ behaviour simply stayed where it was.
 
 ### Changed
 
+- Reading the session file back parses only the lines it keeps, and is skipped entirely when the
+  reload is the one that enters play mode with Clear on Play set - the reload people do dozens
+  of times a day, whose seed is thrown away a callback later. It was the most expensive thing
+  the package did: up to a hundred milliseconds and ten megabytes of garbage per recompile.
+- A sink says for itself which channels it takes, through `IChannelFilteredSink`. The gate that
+  skips building a record nothing would accept used to recognise only this package's own file
+  sink, so `LogCore.File.Reconfigure` could open the dev channel without the gate hearing about
+  it - and no sink anyone else wrote could close it.
+
 - Log files are numbered in the order they were written - `log.0001.jsonl`, `log.0002.jsonl` -
   and the highest is the one being written. There is no `current.jsonl` and nothing is ever
   renamed: rotation opens the next number and housekeeping deletes what falls past
@@ -119,6 +128,36 @@ behaviour simply stayed where it was.
   written.
 
 ### Fixed
+
+- A list row bound from one source and reused for another kept the text it already had. Every
+  source numbers its records from one - a loaded file, a fresh editor - so a pooled row matched
+  by sequence and took the rebind for a no-op, leaving a whole page of a build's log on screen
+  under another build's tabs, counts and detail pane.
+- Console entries the session file cannot account for are seeded again after a reload. Reading
+  the file alone dropped whatever reached the console without reaching the pipeline: what was
+  there before this sink existed, what another package logs from its own load code, what was
+  logged after the file closed for the reload. Everything is matched off against the file by
+  first line and count, so nothing is shown twice - and that is true whether or not compiler
+  messages travel through `Debug`, which is native behaviour this package should not be resting
+  a design on either way.
+- Bit 13 is no longer treated as an error when reading the console. It is `StickyError`, which
+  says an entry survives a manual clear rather than anything about severity, so a sticky warning
+  drew as an error.
+- `Clear` stays cleared across a domain reload. The file keeps everything, which is the point of
+  it, but a reload was handing back what had been dismissed - and with Clear on Play set, every
+  play session ended with the cleared records back in the list.
+- Housekeeping no longer deletes a file it did not write. A `log.crash.jsonl` somebody kept by
+  hand matches the pattern without matching the scheme, and was being deleted as the oldest.
+- The file left by the previous naming scheme is given a number instead of sitting in the
+  directory for good, holding a size limit of disk and the last run before the upgrade.
+- Two checkouts of one project no longer share an editor session file. `persistentDataPath` is
+  keyed by company and product, so two worktrees in two editors were writing to the same file
+  and reading each other's records back.
+- Continuing a session file that could not be read back would have written records numbered from
+  one after records numbered in the hundreds, leaving the file unsorted; it starts a new one.
+  The session flag is only set once a file has actually opened, for the same reason.
+- A warning about a file that does not exist yet named `null`; a rotation that could not open the
+  next file said logging was off and then carried on writing.
 
 - A rotation that could not proceed closed the writer and returned without reopening it, so
   the rest of the run wrote nothing. It reopens either way - carrying on with the file it
@@ -188,7 +227,7 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  161 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
+  166 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
   claiming 62 for some time - and everything it writes goes to a scratch directory it deletes
   afterwards.
 

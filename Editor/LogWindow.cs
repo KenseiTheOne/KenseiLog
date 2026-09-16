@@ -48,6 +48,7 @@ namespace KenseiLog.Editor {
         private readonly List<TagNode> _dirtyTagNodes = new List<TagNode>();
 
         private List<TagNode> _tagRoots = new List<TagNode>();
+        private int _rowGeneration;
         private LogRecord[] _scratch;
         private long _lastSequence;
         private int _lastVersion = -1;
@@ -771,6 +772,9 @@ namespace KenseiLog.Editor {
         }
 
         private void ResetIngest() {
+            // Everything bound from what was here is now bound from something else, whatever
+            // the numbers say.
+            _rowGeneration++;
             _lastSequence = 0;
             Array.Clear(_levelCounts, 0, _levelCounts.Length);
             _tagCounts.Clear();
@@ -1100,6 +1104,14 @@ namespace KenseiLog.Editor {
             public long Sequence = -1;
             public int Repeats = -1;
             public bool Expired;
+
+            /// <summary>
+            /// Which source the row was bound from. Sequences start again at one in every
+            /// source - a loaded file, a fresh editor - so without this a row pooled from one
+            /// source matches by sequence in the next and keeps the text it already had, while
+            /// the tabs, the counts and the detail pane all show the new one.
+            /// </summary>
+            public int Generation = -1;
         }
 
         private VisualElement MakeRow() {
@@ -1144,11 +1156,15 @@ namespace KenseiLog.Editor {
             RowState state = (RowState)element.userData;
             long sequence = view.Sequences[index];
             int repeats = view.Repeats[index];
-            bool unchanged = state.Sequence == sequence && state.Repeats == repeats && !state.Expired;
+            bool unchanged = state.Generation == _rowGeneration &&
+                             state.Sequence == sequence &&
+                             state.Repeats == repeats &&
+                             !state.Expired;
 
             state.Index = index;
             state.Sequence = sequence;
             state.Repeats = repeats;
+            state.Generation = _rowGeneration;
 
             if (unchanged) {
                 return;
