@@ -151,10 +151,19 @@ namespace KenseiLog.Editor {
         /// <summary>
         /// Unity keeps the severity as bits on the entry. The values are internal, so a
         /// version that renumbers them costs a wrong icon on seeded rows and nothing more.
+        /// <para>
+        /// The error mask is the one the console's own GetStyleForErrorMode carries: Error,
+        /// Assert, Fatal, AssetImportError, ScriptingError, ScriptCompileError,
+        /// ScriptingException, GraphCompileError and ScriptingAssertion. The last two were
+        /// missing here, so a shader graph that failed to compile, and an assertion that
+        /// outlived a domain reload, arrived as ordinary log lines - and disappeared the moment
+        /// anyone unticked Log to hunt for errors.
+        /// </para>
         /// </summary>
         private static LogLevel LevelFromMode(int mode) {
             const int errorBits = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 6) | (1 << 8) |
-                                  (1 << 11) | (1 << 13) | (1 << 17);
+                                  (1 << 11) | (1 << 13) | (1 << 17) |
+                                  (1 << 20) | (1 << 21);
             const int warningBits = (1 << 7) | (1 << 9) | (1 << 12);
 
             if ((mode & errorBits) != 0) {

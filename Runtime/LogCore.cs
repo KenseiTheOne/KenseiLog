@@ -234,21 +234,31 @@ namespace KenseiLog {
                 return file;
             }
 
-            // A path that is already project-relative has no separator in front of its first
-            // segment, so the start of the string counts as one. A later anchor overrides it:
-            // a checkout inside another project's Assets folder is a path with two.
-            int projectRelative = IsSegment(file, 0, "Assets") || IsSegment(file, 0, "Packages") ? 0 : -1;
+            // Assets is preferred over Packages rather than the last anchor of either kind
+            // simply winning. A project that installs NuGet packages keeps them in
+            // Assets/Packages, where the last anchor is that inner Packages - which cuts the
+            // Assets off the front and leaves a path the window can resolve to nothing. A build
+            // path with a Packages folder above the project is the same shape in reverse.
+            //
+            // The last of a kind still wins, for a checkout nested inside another project. A
+            // path that is already project-relative has no separator in front of its first
+            // segment, so the start of the string counts as one.
+            int assets = IsSegment(file, 0, "Assets") ? 0 : -1;
+            int packages = IsSegment(file, 0, "Packages") ? 0 : -1;
             int lastSeparator = -1;
             for (int i = 0; i < file.Length; i++) {
                 if (file[i] != '/' && file[i] != '\\') {
                     continue;
                 }
                 lastSeparator = i;
-                if (IsSegment(file, i + 1, "Assets") || IsSegment(file, i + 1, "Packages")) {
-                    projectRelative = i + 1;
+                if (IsSegment(file, i + 1, "Assets")) {
+                    assets = i + 1;
+                } else if (IsSegment(file, i + 1, "Packages")) {
+                    packages = i + 1;
                 }
             }
 
+            int projectRelative = assets >= 0 ? assets : packages;
             if (projectRelative >= 0) {
                 return file.Substring(projectRelative);
             }

@@ -131,7 +131,8 @@ behaviour simply stayed where it was.
 - `SmokeRunner` reported `PASS` when it fell over: a scenario that threw ended the run where it
   stood, so the report was never printed, `Exit(1)` was never reached and `-batchmode -quit`
   returned zero. Each scenario is guarded, and a throw is a failure with a name. The suite is
-  133 assertions, up from 62, and everything it writes goes to a scratch directory it deletes
+  135 assertions, up from the 91 the suite actually ran before - `Tests~/README.md` had been
+  claiming 62 for some time - and everything it writes goes to a scratch directory it deletes
   afterwards.
 
 ## [0.12.1] - 2026-09-16

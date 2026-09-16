@@ -1499,7 +1499,12 @@ namespace KenseiLog.Editor {
         /// </summary>
         private string EmptyHint() {
             if (_tagCounts.Count == 0) {
-                return "No records yet.\nEnter play mode, or call Log.Dev / Log.Prod.";
+                // A loaded file holding nothing is the run that died during startup, which is
+                // the case the reader was taught to open. Telling whoever opened it to enter
+                // play mode would be a plain lie.
+                return _session != null
+                    ? "This file holds a session header and no records.\nWhatever wrote it ended before logging anything."
+                    : "No records yet.\nEnter play mode, or call Log.Dev / Log.Prod.";
             }
 
             LogFilter filter = ActiveFilter;

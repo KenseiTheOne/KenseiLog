@@ -612,8 +612,17 @@ public static class SmokeRunner {
             LogCore.ProjectRelativePath("/home/runner/work/game/Packages/com.kensei.log/Runtime/Log.cs") ==
             "Packages/com.kensei.log/Runtime/Log.cs");
 
-        Check("the last anchor wins",
+        Check("the last Assets wins, for a checkout inside another project",
             LogCore.ProjectRelativePath("/build/Assets/old/checkout/Assets/Scripts/Boot.cs") == "Assets/Scripts/Boot.cs");
+
+        // NuGetForUnity installs into Assets/Packages, so the inner Packages must not take the
+        // anchor - it would cut the Assets off the front and leave a path resolving to nothing.
+        Check("a package folder under Assets keeps its Assets",
+            LogCore.ProjectRelativePath("D:/proj/Assets/Packages/Newtonsoft.Json/Runtime/Foo.cs") ==
+            "Assets/Packages/Newtonsoft.Json/Runtime/Foo.cs");
+
+        Check("a Packages folder above the project does not take the anchor",
+            LogCore.ProjectRelativePath("/build/Packages/game/Assets/Scripts/Boot.cs") == "Assets/Scripts/Boot.cs");
 
         Check("a path under neither keeps only its file name",
             LogCore.ProjectRelativePath(@"C:\Users\builder\Library\PackageCache\com.other\Thing.cs") == "Thing.cs");

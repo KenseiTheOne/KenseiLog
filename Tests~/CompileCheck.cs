@@ -22,6 +22,12 @@ using UnityEditor.Build.Player;
 /// </para>
 /// </summary>
 public static class CompileCheck {
+    /// <summary>
+    /// The one assembly whose absence means the package did not compile. Anything else that
+    /// came out says nothing about it.
+    /// </summary>
+    private const string PackageAssembly = "KenseiLog.Runtime.dll";
+
     private static int _failures;
 
     public static void Run() {
@@ -44,25 +50,35 @@ public static class CompileCheck {
             return;
         }
 
-        string output = Path.Combine(Path.GetTempPath(), "kenseilog-compile", target.ToString());
+        // Both configurations, because they are not the same code. A development build keeps
+        // the Dev methods and a release build has the compiler remove them along with every
+        // argument expression - so the release configuration is the only one that ever
+        // compiles what a shipped game compiles.
+        CompileOne(target, ScriptCompilationOptions.None, "release");
+        CompileOne(target, ScriptCompilationOptions.DevelopmentBuild, "development");
+    }
+
+    private static void CompileOne(BuildTarget target, ScriptCompilationOptions options, string configuration) {
+        string output = Path.Combine(Path.GetTempPath(), "kenseilog-compile", target + "-" + configuration);
         Directory.CreateDirectory(output);
 
         try {
             ScriptCompilationSettings settings = new ScriptCompilationSettings {
                 group = BuildPipeline.GetBuildTargetGroup(target),
                 target = target,
-                options = ScriptCompilationOptions.DevelopmentBuild
+                options = options
             };
 
             ScriptCompilationResult result = PlayerBuildInterface.CompilePlayerScripts(settings, output);
-            bool built = result.assemblies != null && result.assemblies.Count > 0;
-            Console.WriteLine((built ? "  ok   " : "  FAIL ") + target + ": " +
-                              (built ? result.assemblies.Count + " assemblies" : "nothing was produced"));
+            bool built = Produced(result, PackageAssembly);
+            Console.WriteLine((built ? "  ok   " : "  FAIL ") + target + " " + configuration + ": " +
+                              (built ? PackageAssembly + " built" : PackageAssembly + " was not produced"));
             if (!built) {
                 _failures++;
             }
         } catch (Exception exception) {
-            Console.WriteLine("  FAIL " + target + ": " + exception.GetType().Name + ": " + exception.Message);
+            Console.WriteLine("  FAIL " + target + " " + configuration + ": " +
+                              exception.GetType().Name + ": " + exception.Message);
             _failures++;
         } finally {
             try {
@@ -71,5 +87,26 @@ public static class CompileCheck {
                 // Leftovers in the temp directory are not worth failing a run over.
             }
         }
+    }
+
+    /// <summary>
+    /// Whether that assembly is among what came out.
+    /// <para>
+    /// CompilePlayerScripts does not throw on a compiler error - it returns whichever
+    /// assemblies were produced. So "something came out" is not the question and never was:
+    /// any project holding a second assembly that does not reference this package would answer
+    /// it yes with the package thoroughly broken.
+    /// </para>
+    /// </summary>
+    private static bool Produced(ScriptCompilationResult result, string assembly) {
+        if (result.assemblies == null) {
+            return false;
+        }
+        for (int i = 0; i < result.assemblies.Count; i++) {
+            if (string.Equals(Path.GetFileName(result.assemblies[i]), assembly, StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

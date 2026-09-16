@@ -28,6 +28,7 @@ namespace KenseiLog {
 
         private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
+        private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
 
         private static LogOverlay _instance;
 
@@ -52,6 +53,8 @@ namespace KenseiLog {
         private string _detailBody;
         private string _bubbleLabel;
         private bool _bubbleLabelDirty = true;
+        private readonly string[] _levelLabels = new string[3];
+        private bool _levelLabelsDirty = true;
         private bool _tagRowsDirty;
         private Vector2 _scroll;
         private Vector2 _tagScroll;
@@ -130,9 +133,11 @@ namespace KenseiLog {
                 return;
             }
             LogOverlay overlay = _instance;
-            if (!overlay._listBuilt) {
+            bool wasBuilt = overlay._listBuilt;
+            if (!wasBuilt) {
                 overlay.RebuildVisible();
             }
+
             for (int i = overlay._visible.Count - 1; i >= 0; i--) {
                 if (overlay._visible[i].Level == level) {
                     overlay._selected = overlay._visible[i].Sequence;
@@ -140,8 +145,18 @@ namespace KenseiLog {
                     // The caller asked for this record specifically; following the tail would
                     // scroll it back off the screen on the next log line.
                     overlay._followTail = false;
-                    return;
+                    break;
                 }
+            }
+
+            if (!wasBuilt && !overlay._open) {
+                // Built only to find the record, and nothing reads a row while the bubble is
+                // collapsed. Keeping them would reinstate the per-record cost that the
+                // collapsed path exists to avoid, for the rest of the run. The selection is a
+                // sequence rather than an index, so it survives - and the rebuild on opening
+                // scrolls to it.
+                overlay._visible.Clear();
+                overlay._listBuilt = false;
             }
         }
 
@@ -226,6 +241,7 @@ namespace KenseiLog {
             }
             if (copied > 0) {
                 _bubbleLabelDirty = true;
+                _levelLabelsDirty = true;
                 _tagRowsDirty = true;
             }
 
@@ -255,6 +271,7 @@ namespace KenseiLog {
             _detailSequence = -1;
             _detailBody = null;
             _bubbleLabelDirty = true;
+            _levelLabelsDirty = true;
             _tagRowsDirty = true;
             _followTail = true;
             _scroll = Vector2.zero;
@@ -276,6 +293,24 @@ namespace KenseiLog {
                 }
             }
             _listBuilt = true;
+            ScrollToSelectionOrTail();
+        }
+
+        /// <summary>
+        /// Puts the view where the reader would want it after a rebuild: on the selected
+        /// record when there is one - SelectNewest picks one while the viewer is still
+        /// collapsed - and on the newest line otherwise.
+        /// </summary>
+        private void ScrollToSelectionOrTail() {
+            if (_selected >= 0) {
+                for (int i = _visible.Count - 1; i >= 0; i--) {
+                    if (_visible[i].Sequence == _selected) {
+                        _scroll.y = Mathf.Max(0f, i * RowHeight - RowHeight * 4f);
+                        _followTail = false;
+                        return;
+                    }
+                }
+            }
             _followTail = true;
             _scroll.y = float.MaxValue;
         }
@@ -402,9 +437,18 @@ namespace KenseiLog {
             GUI.Box(new Rect(0f, 0f, width, BarHeight), GUIContent.none, _bar);
             float x = 4f;
 
-            x += LevelButton(x, LogLevel.Log, "Log");
-            x += LevelButton(x, LogLevel.Warning, "Warn");
-            x += LevelButton(x, LogLevel.Error, "Err");
+            // Same reason as the bubble's label, which was cached and these were not: a count
+            // changes when a record arrives, and OnGUI runs at least twice a frame.
+            if (_levelLabelsDirty) {
+                for (int i = 0; i < _levelLabels.Length; i++) {
+                    _levelLabels[i] = _levelCaptions[i] + " " + _levelCounts[i];
+                }
+                _levelLabelsDirty = false;
+            }
+
+            x += LevelButton(x, LogLevel.Log);
+            x += LevelButton(x, LogLevel.Warning);
+            x += LevelButton(x, LogLevel.Error);
 
             GUI.color = _showTags ? new Color(0.5f, 0.9f, 1f) : Color.white;
             if (GUI.Button(new Rect(x, 3f, 54f, BarHeight - 6f), "Tags", _button)) {
@@ -427,10 +471,10 @@ namespace KenseiLog {
             }
         }
 
-        private float LevelButton(float x, LogLevel level, string label) {
+        private float LevelButton(float x, LogLevel level) {
             bool shown = _filter.LevelAllowed(level);
             GUI.color = shown ? LevelColor(level) : new Color(0.45f, 0.45f, 0.45f);
-            if (GUI.Button(new Rect(x, 3f, 58f, BarHeight - 6f), label + " " + _levelCounts[(int)level], _button)) {
+            if (GUI.Button(new Rect(x, 3f, 58f, BarHeight - 6f), _levelLabels[(int)level], _button)) {
                 _filter.SetLevel(level, !shown);
                 RebuildVisible();
             }

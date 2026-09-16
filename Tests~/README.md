@@ -38,7 +38,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-133 assertions over everything that does not need a GUI: the ring buffer including gapped and
+135 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -80,8 +80,12 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod CompileCheck.Run -logFile <log>
 ```
 
-Compiles the package for Standalone, WebGL and Android, and prints `COMPILE RESULT: PASS` or
-`FAIL (n)`. The editor compiles with `UNITY_EDITOR` defined and for no target in particular, so
+Compiles the package for Standalone, WebGL and Android, in both the release and the
+development configuration - they are not the same code, since a release build has the compiler
+remove the Dev methods and every argument expression handed to them - and prints
+`COMPILE RESULT: PASS` or `FAIL (n)`. What it asserts is that `KenseiLog.Runtime.dll` came out,
+not that something did: `CompilePlayerScripts` does not throw on a compiler error, it returns
+whichever assemblies were produced. The editor compiles with `UNITY_EDITOR` defined and for no target in particular, so
 the code that only exists in a build is never seen there: the call site trimmed outside the
 editor, the file sink turned off on WebGL. It compiles rather than builds - seconds against
 minutes, and a build would need a scene and an icon to say the same thing about a compiler
