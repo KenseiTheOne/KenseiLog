@@ -29,6 +29,7 @@ Any empty Unity project (2022.3 or newer) will do.
    | `ScreenshotRunner.cs` | `Assets/Demo/` | a `MonoBehaviour`, must not live under `Editor` |
    | `ReadmeSnippets.cs` | `Assets/Editor/` | nothing runs it; it only has to compile |
    | `CompileCheck.cs` | `Assets/Editor/` | reaches the build pipeline |
+   | `HoverRepro.cs` | `Assets/Editor/` | only when chasing a stutter; see below |
 
 ## The checks
 
@@ -88,6 +89,26 @@ error. A target whose module is not installed is reported and skipped.
 
 It earned itself on the first run, on a `#if !UNITY_EDITOR` block that did not parse. Nothing
 in the editor had ever looked at it.
+
+## Chasing a stutter
+
+`HoverRepro.cs` opens **Window → Kensei → Hover repro**: a bare `ListView` of 8192 rows with
+the pieces this package puts on a row switchable one at a time - a tooltip, six cells rather
+than one, a context menu manipulator, a rebind fifteen times a second. It reads out the worst
+gap between editor ticks in the last second, which is what a stall is, and needs no profiler.
+
+Nothing in it belongs to the package: no stylesheet, no records, no polling. So anything it
+reproduces with every toggle off belongs to Unity's `ListView` or to the machine, and the log
+window is not where the answer is.
+
+**Row tooltip** is the positive control. A tooltip in UI Toolkit is a real window of the
+operating system, and building and tearing one down on every row crossing is what froze the
+editor on Windows before the tooltips came off the rows in 0.9.0. A fault that flickers the
+screen - black bands across the monitors, the compositor recomposing - is that shape rather
+than a slow frame, so if this toggle reproduces it and the others do not, what to look for is
+whatever else is making a window.
+
+Drop it into a project that shows the stutter; it does not need this package to be installed.
 
 ## The README
 
