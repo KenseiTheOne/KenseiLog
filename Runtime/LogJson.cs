@@ -17,6 +17,13 @@ namespace KenseiLog {
     public static class LogJson {
         public const string SessionKey = "session";
 
+        /// <summary>
+        /// Layout of the lines in a log file, written into every session header. A reader that
+        /// meets a number it does not know can say so; without one an older reader would parse
+        /// a newer file into plausible nonsense and report nothing.
+        /// </summary>
+        public const int SchemaVersion = 1;
+
         public static void AppendRecord(StringBuilder builder, in LogRecord record) {
             builder.Append('{');
 
@@ -80,6 +87,9 @@ namespace KenseiLog {
             AppendKey(builder, SessionKey);
             AppendString(builder, sessionId);
             builder.Append(",");
+            AppendKey(builder, "v");
+            builder.Append(SchemaVersion.ToString(CultureInfo.InvariantCulture));
+            builder.Append(",");
             AppendKey(builder, "app");
             AppendString(builder, app);
             builder.Append(",");
@@ -128,6 +138,18 @@ namespace KenseiLog {
                         break;
                     default:
                         if (c < ' ') {
+                            builder.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                        } else if (char.IsHighSurrogate(c) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1])) {
+                            // A complete pair goes through as it is - one character above the
+                            // basic plane, which is what an emoji in a log message is.
+                            builder.Append(c).Append(value[i + 1]);
+                            i++;
+                        } else if (char.IsSurrogate(c)) {
+                            // Half a pair, from a message cut mid-character. Written as an
+                            // escape because the UTF-8 encoder turns a lone surrogate into
+                            // U+FFFD - the byte that says "something was here" and loses what.
+                            // JSON permits the escape, so the reader gets the original code
+                            // unit back and can decide for itself.
                             builder.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
                         } else {
                             builder.Append(c);

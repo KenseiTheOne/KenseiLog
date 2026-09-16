@@ -27,7 +27,8 @@ namespace KenseiLog {
 
         /// <summary>
         /// Write records to a rolling JSONL file under persistentDataPath/logs. This is the
-        /// only diagnostics a shipped build has, so it is on by default.
+        /// only diagnostics a shipped build has, so it is on by default - except on WebGL,
+        /// where there is no file to fetch afterwards.
         /// </summary>
         public bool WriteToFile;
 
@@ -66,7 +67,15 @@ namespace KenseiLog {
                 CaptureStackTraceOnError = true,
                 MirrorToUnityConsole = false,
                 CaptureForeignLogs = true,
+#if UNITY_WEBGL && !UNITY_EDITOR
+                // persistentDataPath on WebGL is a browser-backed virtual filesystem inside the
+                // page. Nothing can fetch the file afterwards, and at the default limits the
+                // rolling history would hold about twenty megabytes of the heap for a build that
+                // can never read it back. Turn it on deliberately if you have a way to.
+                WriteToFile = false,
+#else
                 WriteToFile = true,
+#endif
                 FileSizeLimitKb = 5 * 1024,
                 RetainedFileCount = 3,
                 FileFlushIntervalSeconds = 5f,

@@ -13,6 +13,13 @@ namespace KenseiLog.Editor {
         public string Device;
         public string StartedUtc;
         public int SkippedLines;
+
+        /// <summary>Schema of the file, or 0 for one written before the field existed.</summary>
+        public int SchemaVersion;
+
+        /// <summary>True when the first line was a session header this reader understood.</summary>
+        public bool HasHeader;
+
         public LogRingBuffer Buffer;
 
         public string Describe() {
@@ -69,7 +76,16 @@ namespace KenseiLog.Editor {
                 return false;
             }
 
-            if (records.Count == 0) {
+            if (loaded.SchemaVersion > LogJson.SchemaVersion) {
+                error = "Written by a newer KenseiLog (file schema " + loaded.SchemaVersion +
+                        ", this one reads " + LogJson.SchemaVersion + "). Update the package to open it.";
+                return false;
+            }
+
+            // A file holding nothing but its header still opens. That is the build that died
+            // during startup - the case this package exists for - and refusing it left the only
+            // evidence of the death unreadable, while its header names the device it died on.
+            if (records.Count == 0 && !loaded.HasHeader) {
                 error = "No readable records in the file" +
                         (loaded.SkippedLines > 0 ? " (" + loaded.SkippedLines + " unparsable lines)." : ".");
                 return false;
@@ -77,7 +93,7 @@ namespace KenseiLog.Editor {
 
             // Records arrive in order, so appending them leaves the buffer sorted by sequence,
             // which is what lookups rely on.
-            loaded.Buffer = new LogRingBuffer(records.Count);
+            loaded.Buffer = new LogRingBuffer(Math.Max(1, records.Count));
             for (int i = 0; i < records.Count; i++) {
                 loaded.Buffer.Add(records[i]);
             }
@@ -98,6 +114,8 @@ namespace KenseiLog.Editor {
                 session.Platform = dto.platform;
                 session.Device = dto.device;
                 session.StartedUtc = dto.started;
+                session.SchemaVersion = dto.v;
+                session.HasHeader = true;
                 return true;
             } catch (Exception) {
                 // A file truncated mid-header is still worth showing for its records.
@@ -149,6 +167,7 @@ namespace KenseiLog.Editor {
         [Serializable]
         private sealed class HeaderDto {
             public string session;
+            public int v;
             public string app;
             public string unity;
             public string platform;

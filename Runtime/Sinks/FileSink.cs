@@ -193,10 +193,7 @@ namespace KenseiLog {
         }
 
         private void ShiftFiles() {
-            string oldest = IndexedPath(_retainedFiles);
-            if (File.Exists(oldest)) {
-                File.Delete(oldest);
-            }
+            DeleteBeyondRetained();
             for (int i = _retainedFiles - 1; i >= 1; i--) {
                 string from = IndexedPath(i);
                 if (File.Exists(from)) {
@@ -274,6 +271,34 @@ namespace KenseiLog {
             } finally {
                 _writer = null;
             }
+        }
+
+        /// <summary>
+        /// Clears the slot the shift is about to fill, and anything above it. Deleting only the
+        /// file at the retained count is enough while that count never changes, but a project
+        /// that lowers RetainedFileCount leaves the files above the new limit orphaned: the
+        /// shift never touches them again, so they sit in the directory for good, holding disk
+        /// the setting was lowered to release. Enumerating costs a directory listing once per
+        /// rotation, which is once per size limit of logs.
+        /// </summary>
+        private void DeleteBeyondRetained() {
+            string[] existing = Directory.GetFiles(LogDirectory, "log.*.jsonl");
+            for (int i = 0; i < existing.Length; i++) {
+                int index = IndexOfFile(existing[i]);
+                if (index >= _retainedFiles) {
+                    File.Delete(existing[i]);
+                }
+            }
+        }
+
+        /// <summary>The N in log.N.jsonl, or -1 for a name this sink did not write.</summary>
+        private static int IndexOfFile(string path) {
+            string name = Path.GetFileNameWithoutExtension(path);
+            int dot = name.IndexOf('.');
+            if (dot < 0 || !int.TryParse(name.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out int index)) {
+                return -1;
+            }
+            return index;
         }
 
         private string IndexedPath(int index) =>

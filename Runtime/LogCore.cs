@@ -58,6 +58,12 @@ namespace KenseiLog {
             ApplyConfig();
         }
 
+        /// <summary>
+        /// Applies a configuration. Main thread only, and not safe against a second Configure
+        /// running beside it: this reads Application state, creates the GameObject behind the
+        /// overlay, and opens or closes the file sink. The intended caller is a
+        /// RuntimeInitializeOnLoadMethod, which is where the defaults are decided once.
+        /// </summary>
         public static void Configure(in LogConfig config) {
             _config = config;
             ApplyConfig();
@@ -165,7 +171,7 @@ namespace KenseiLog {
                 channel,
                 _clock.Elapsed.TotalMilliseconds,
                 CurrentFrame(),
-                file,
+                NormalizeCallSite(file),
                 line,
                 stackTrace,
                 ResolveContextId(context));
@@ -175,9 +181,79 @@ namespace KenseiLog {
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void OnRuntimeInitialize() {
+            // Statics outlive a play session when Enter Play Mode is set to skip the domain
+            // reload, so everything that describes one run has to be put back by hand. Left
+            // set, _sceneSystemsReady sends the second pass of ApplyConfig into this phase -
+            // the one its own comment says has nowhere to put a GameObject - and the overlay
+            // opens on the previous session's records with the previous session's frame
+            // numbers. A sink muted after throwing last time stays muted for the same reason.
+            _sceneSystemsReady = false;
+            _lastKnownFrame = 0;
+            _overlaySink?.Clear();
+            lock (_sinkLock) {
+                _failedSinks.Clear();
+            }
+
             Initialize();
             _clock.Restart();
         }
+
+        /// <summary>
+        /// Trims a call site to a project-relative path outside the editor.
+        /// <para>
+        /// CallerFilePath is resolved by the compiler, so the Prod methods - which carry no
+        /// Conditional attribute and therefore survive into a release build - hold the absolute
+        /// path of the machine that built them. That path is written into the JSONL file, which
+        /// is the file a tester sends back: it names the build agent, the account it ran under
+        /// and the layout of the source tree. What the window needs in order to find the file
+        /// is the part from Assets or Packages onwards, and that is all this keeps. In the
+        /// editor the full path is left alone - it is the developer's own machine, and a source
+        /// outside the project can only be opened by absolute path.
+        /// </para>
+        /// </summary>
+        private static string NormalizeCallSite(string file) {
+#if UNITY_EDITOR
+            return file;
+#else
+            if (string.IsNullOrEmpty(file)) {
+                return file;
+            }
+
+            int projectRelative = -1;
+            int lastSeparator = -1;
+            for (int i = 0; i < file.Length; i++) {
+                if (file[i] != '/' && file[i] != '\') {
+                    continue;
+                }
+                lastSeparator = i;
+                if (IsSegment(file, i + 1, "Assets") || IsSegment(file, i + 1, "Packages")) {
+                    projectRelative = i + 1;
+                }
+            }
+
+            if (projectRelative >= 0) {
+                return file.Substring(projectRelative);
+            }
+            // Somewhere outside the project - a package in the global cache, say. The file name
+            // on its own still identifies it to whoever is reading the log.
+            return lastSeparator < 0 ? file : file.Substring(lastSeparator + 1);
+#endif
+        }
+
+#if !UNITY_EDITOR
+        private static bool IsSegment(string path, int start, string segment) {
+            if (start + segment.Length >= path.Length) {
+                return false;
+            }
+            for (int i = 0; i < segment.Length; i++) {
+                if (path[start + i] != segment[i]) {
+                    return false;
+                }
+            }
+            char next = path[start + segment.Length];
+            return next == '/' || next == '\';
+        }
+#endif
 
         /// <summary>
         /// Second pass, once the scene systems exist. Sinks are set up as early as possible so
