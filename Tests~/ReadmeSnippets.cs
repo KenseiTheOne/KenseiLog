@@ -97,6 +97,9 @@ public static class ReadmeSnippets {
 
     public sealed class MyProdOnlySink : ILogSink, IChannelFilteredSink {
         public void Write(in LogRecord record) {
+            if (record.Channel != LogChannel.Prod) {
+                return;
+            }
         }
 
         public bool Accepts(LogChannel channel) =>

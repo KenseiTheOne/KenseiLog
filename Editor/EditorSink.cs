@@ -178,8 +178,10 @@ namespace KenseiLog.Editor {
             // runs there too - and it shares the project path the session directory is keyed
             // by. Left alone it opened a session file of its own beside the editor's, which the
             // editor then seeded from, found holding nothing but a header, and answered by
-            // starting yet another. A worker has no window to fill and nothing worth keeping.
-            if (AssetDatabase.IsAssetImportWorkerProcess()) {
+            // starting yet another. A worker has no window to fill and nothing worth keeping,
+            // and an out-of-process profiler is a second domain in the same position.
+            if (!SessionPlan.Installs(AssetDatabase.IsAssetImportWorkerProcess(),
+                                      UnityEditor.MPE.ProcessService.level == UnityEditor.MPE.ProcessLevel.Secondary)) {
                 return;
             }
 
@@ -197,10 +199,11 @@ namespace KenseiLog.Editor {
             // cost us the two lines below: without them the sink is never registered and the
             // window records nothing at all, while still opening and looking healthy.
             bool continuing = SessionState.GetBool(SessionStartedKey, false);
+            string seedPath = SessionPlan.SeedFrom(continuing, WriteSessionFile, ShouldSeed(), SessionFilePath);
             bool seeded = false;
             try {
                 List<LogRecord> fromFile = new List<LogRecord>();
-                seeded = continuing && ShouldSeed() && SeedFromSessionFile(fromFile);
+                seeded = seedPath != null && SeedFromSessionFile(seedPath, fromFile);
                 if (seeded) {
                     SeedRemainingConsoleEntries(fromFile);
                 } else if (ShouldSeed()) {
@@ -218,7 +221,7 @@ namespace KenseiLog.Editor {
             // Continuing the file makes sense only if its records came back. When the read
             // failed, carrying on with it would put records numbered from one after records
             // numbered in the hundreds - an unsorted file, and every lookup into it wrong.
-            OpenSessionFile(continueExistingFile: continuing && seeded);
+            OpenSessionFile(SessionPlan.ContinueFrom(continuing, seeded, SessionFilePath));
 
             // After the sink is open, so the marker reaches the file as well as the window. Not
             // when entering play mode: that has a marker of its own a moment later, and this one
@@ -249,7 +252,7 @@ namespace KenseiLog.Editor {
         /// rest of the pipeline exactly as it was.
         /// </para>
         /// </summary>
-        private static void OpenSessionFile(bool continueExistingFile) {
+        private static void OpenSessionFile(string continuePath) {
             if (!WriteSessionFile) {
                 return;
             }
@@ -261,7 +264,7 @@ namespace KenseiLog.Editor {
                 // dev record written from an editor tool has nowhere else to survive.
                 config.FileIncludesDevChannel = true;
 
-                _sessionFile = new FileSink(in config, continueExistingFile, SessionFilePath);
+                _sessionFile = new FileSink(in config, continuePath != null, continuePath);
                 if (!_sessionFile.IsWriting) {
                     // No file, so nothing for the next domain to continue: leaving the flag set
                     // would have it append this session into the last one's file.
@@ -293,7 +296,18 @@ namespace KenseiLog.Editor {
                 return;
             }
             LogCore.RemoveSink(_sessionFile);
+            // Dispose takes the sink's own lock, so a rotation already running on a logging
+            // thread has finished by the time it returns and the path cannot move again.
             _sessionFile.Dispose();
+            // Which file the session ends in is not the one it started in: Rotate changes it
+            // once the size limit is passed, and it cannot record that itself - SessionState is
+            // main thread only, and a rotation happens on whichever thread was logging. Written
+            // here, where the thread is known and the file is closed. Without it the next domain
+            // continued the file from before the rotation, which is already over the limit: the
+            // first record rotated it again, so every reload left another file behind, the
+            // window came back holding only what was written before the rotation, and pruning
+            // worked its way through the full ones.
+            SessionState.SetString(SessionFilePathKey, _sessionFile.CurrentFilePath);
             _sessionFile = null;
         }
 
@@ -307,16 +321,7 @@ namespace KenseiLog.Editor {
         /// numbers already in it would leave it unsorted and every lookup into it wrong.
         /// </para>
         /// </summary>
-        private static bool SeedFromSessionFile(List<LogRecord> into) {
-            if (!WriteSessionFile) {
-                return false;
-            }
-
-            string path = SessionFilePath;
-            if (path == null) {
-                return false;
-            }
-
+        private static bool SeedFromSessionFile(string path, List<LogRecord> into) {
             if (LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into) == 0) {
                 return false;
             }

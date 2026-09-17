@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using KenseiLog;
@@ -49,6 +50,8 @@ public static class SmokeRunner {
         Scenario(FileDirectoryMovesWithTheConfiguration);
         Scenario(AContinuedSessionAddsToTheFileItFound);
         Scenario(AContinuedSessionKeepsToItsOwnFileNotAStrangersNewerOne);
+        Scenario(AnEditorSessionFollowsItsOwnRotation);
+        Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -1191,11 +1194,105 @@ public static class SmokeRunner {
 
 
     /// <summary>
-    /// The editor's sink is rebuilt on every domain reload, and a sink that starts a run by
-    /// shifting the files aside would push a morning's logs out of the history by lunchtime.
-    /// Continuing adds to the file that is there: no shift, no second header, and the byte
-    /// count carried over so the size limit still means the size of the file.
+    /// Remembering the session file made the editor immune to a stranger's, and stopped being
+    /// true the moment its own rotated: the path was written once, at open, while Rotate moves
+    /// the file on as soon as the size limit is passed. Every reload after that carried on with
+    /// a file already over the limit, rotated it again on its first record, and left another
+    /// behind - so the count climbed, the window came back holding only what was written before
+    /// the rotation, and pruning worked through the full ones.
     /// </summary>
+    private static void AnEditorSessionFollowsItsOwnRotation() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Static;
+        Type sink = typeof(EditorSink);
+        FieldInfo held = sink.GetField("_sessionFile", Hidden);
+        MethodInfo close = sink.GetMethod("CloseSessionFile", Hidden);
+        PropertyInfo remembered = sink.GetProperty("SessionFilePath", Hidden);
+        FieldInfo key = sink.GetField("SessionFilePathKey", Hidden);
+
+        Check("the editor sink still has the parts this leans on",
+            held != null && close != null && remembered != null && key != null);
+        if (held == null || close == null || remembered == null || key == null) {
+            return;
+        }
+
+        // The editor running this has a session of its own, and the key is one value shared
+        // with it. Left alone, a run that fails here reaches for whatever path that holds and
+        // opens the live editor's own file - which is how this check first reported a sharing
+        // violation instead of the mismatch it had actually found.
+        string keyName = (string)key.GetValue(null);
+        string standingPath = SessionState.GetString(keyName, string.Empty);
+        SessionState.SetString(keyName, string.Empty);
+        object standing = held.GetValue(null);
+        string directory = ScratchDirectory("rotation-follow");
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = directory;
+        config.FileIncludesDevChannel = true;
+        config.FileSizeLimitKb = 64;
+
+        try {
+            FileSink file = new FileSink(in config);
+            string opened = file.CurrentFilePath;
+            string filler = new string('x', 512);
+            long sequence = 1;
+
+            while (file.CurrentFilePath == opened) {
+                file.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
+            }
+            Check("writing past the limit moves the file on", file.CurrentFilePath != opened);
+
+            for (int reload = 0; reload < 5; reload++) {
+                string live = file.CurrentFilePath;
+                held.SetValue(null, file);
+                close.Invoke(null, null);
+
+                Check("closing remembers the file the session ended in",
+                    (string)remembered.GetValue(null) == live);
+
+                string carryOn = SessionPlan.ContinueFrom(true, true, (string)remembered.GetValue(null));
+                file = new FileSink(in config, carryOn != null, carryOn);
+                Check("so the next domain carries on with that one", file.CurrentFilePath == live);
+                file.Write(Record(sequence++, "Editor", "after reload " + reload, LogLevel.Log, LogChannel.Dev, 0));
+            }
+
+            held.SetValue(null, file);
+            close.Invoke(null, null);
+            Check("and five reloads leave no trail of files behind",
+                Directory.GetFiles(directory, "log.*.jsonl").Length == 2);
+            Check("with the last record still in the file that was remembered",
+                File.ReadAllText((string)remembered.GetValue(null)).Contains("after reload 4"));
+        } finally {
+            held.SetValue(null, standing);
+            SessionState.SetString(keyName, standingPath);
+        }
+    }
+
+    /// <summary>
+    /// The decisions themselves, away from the domain reload that is the only thing that makes
+    /// them. Both failures this guards were decisions rather than mechanics: a process opening a
+    /// file it had no business opening, and a path that was no longer the file being written.
+    /// </summary>
+    private static void SessionPlanLeavesTheFileToTheEditorProcess() {
+        Check("the editor installs", SessionPlan.Installs(false, false));
+        Check("an asset import worker does not", !SessionPlan.Installs(true, false));
+        Check("nor does an out-of-process profiler", !SessionPlan.Installs(false, true));
+
+        Check("a fresh editor seeds from no file",
+            SessionPlan.SeedFrom(false, true, true, "log.0007.jsonl") == null);
+        Check("a reload seeds from the file it remembers",
+            SessionPlan.SeedFrom(true, true, true, "log.0007.jsonl") == "log.0007.jsonl");
+        Check("with the session file turned off it seeds from none",
+            SessionPlan.SeedFrom(true, false, true, "log.0007.jsonl") == null);
+        Check("and not at all when the seed would be thrown away a moment later",
+            SessionPlan.SeedFrom(true, true, false, "log.0007.jsonl") == null);
+
+        Check("a read that came back carries on with that file",
+            SessionPlan.ContinueFrom(true, true, "log.0007.jsonl") == "log.0007.jsonl");
+        Check("a read that found nothing starts one instead",
+            SessionPlan.ContinueFrom(true, false, "log.0007.jsonl") == null);
+        Check("and so does a fresh editor",
+            SessionPlan.ContinueFrom(false, true, "log.0007.jsonl") == null);
+    }
+
     /// <summary>
     /// An asset import worker reloads the domain exactly as the editor does and shares the
     /// project path the session directory is keyed by, so it used to open a session file of its
@@ -1239,6 +1336,12 @@ public static class SmokeRunner {
         afterDeletion.Dispose();
     }
 
+    /// <summary>
+    /// The editor's sink is rebuilt on every domain reload, and a sink that starts a run by
+    /// shifting the files aside would push a morning's logs out of the history by lunchtime.
+    /// Continuing adds to the file that is there: no shift, no second header, and the byte
+    /// count carried over so the size limit still means the size of the file.
+    /// </summary>
     private static void AContinuedSessionAddsToTheFileItFound() {
         string directory = ScratchDirectory("continued");
         LogConfig config = LogConfig.Default();

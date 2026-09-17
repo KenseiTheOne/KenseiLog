@@ -4,6 +4,49 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-09-17
+
+### Fixed
+
+- The remembered session file survives a rotation. 0.14.1 had the editor carry on with the file
+  it opened rather than whatever was newest beside it, and wrote that path down once, at open -
+  while `FileSink.Rotate` moves the file on as soon as the size limit is passed, from whichever
+  thread happened to be logging. After the first rotation every reload carried on with a file
+  already over the limit, rotated it again on its first record, and left another behind: the
+  file count climbed exactly as it had before, the window came back holding only what was
+  written before the rotation, and pruning worked its way through the full ones. Sequence
+  numbers were reissued on top of numbers already in the newer file, and a Clear in between
+  could take the whole seeded history out on the watermark. The path is now written when the
+  file is closed, on the main thread, after `Dispose` has taken the sink's lock and the
+  rotation that may have been running has finished - which is the one moment the thread is
+  known and the file can no longer move. At a 5 MB limit this took an hour or two of work to
+  reach, which is why 0.14.1 looked right.
+- An out-of-process profiler leaves the session directory alone, as an asset import worker
+  already did. It is a second domain with the same project path, so it resolved the same
+  directory and opened a file there.
+
+### Added
+
+- `SessionPlan` holds the decisions that installing the editor sink makes about the session
+  file - whether this process owns it, which file to read history from, which to carry on
+  writing - as three functions over the state they are given. Both failures here were decisions
+  rather than mechanics, and neither could be reached from a check while the reasoning sat
+  inside a method only a domain reload calls. `SmokeRunner` covers them, and drives a real
+  rotate-close-reopen cycle through the editor sink's own closing code: removing the line that
+  records the path turns it red on behaviour rather than on a compiler error.
+
+### Changed
+
+- The README said `IChannelFilteredSink` keeps a record from being built for a channel no sink
+  wants. That is true only when *every* registered sink turns the channel down, which in the
+  editor never happens - the window takes everything. Otherwise the record is built and handed
+  to every sink, the refusing one included, so a sink that wants one channel has to check in
+  `Write` as well; the snippet now does, and says why. Prod records are built either way.
+- "One file per editor process" now names its exception: entering play mode with Clear on Play
+  set skips the seed, and with nothing read back there is nothing to carry on from, so that
+  reload starts a file. That was true before this release too, and the sentence added in 0.14.1
+  read as though it were not.
+
 ## [0.14.1] - 2026-09-17
 
 ### Fixed
@@ -19,9 +62,8 @@ All notable changes to this package are documented here. The format follows
   was writing to. Workers now leave `Install` where it starts; there is no window in one to
   fill and nothing in one worth keeping.
 - The editor continues the file it opened rather than whatever is newest beside it. The path
-  is remembered in `SessionState`, which closes the same hole from the other end: a batchmode
-  run after the editor was shut, or a tool of somebody's own writing into that directory, can
-  no longer be appended to by mistake. `FileSink` takes the file to continue as a third
+  is remembered in `SessionState`, which closes the same hole from the other end: any other
+  writer in that directory during an editor session can no longer be appended to by mistake. `FileSink` takes the file to continue as a third
   constructor argument, and without one still takes the newest - the right answer while it is
   the only writer there.
 
