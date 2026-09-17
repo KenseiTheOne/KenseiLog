@@ -48,6 +48,7 @@ public static class SmokeRunner {
         Scenario(FileSettingsApplyAfterTheSinkExists);
         Scenario(FileDirectoryMovesWithTheConfiguration);
         Scenario(AContinuedSessionAddsToTheFileItFound);
+        Scenario(AContinuedSessionKeepsToItsOwnFileNotAStrangersNewerOne);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -1195,6 +1196,49 @@ public static class SmokeRunner {
     /// Continuing adds to the file that is there: no shift, no second header, and the byte
     /// count carried over so the size limit still means the size of the file.
     /// </summary>
+    /// <summary>
+    /// An asset import worker reloads the domain exactly as the editor does and shares the
+    /// project path the session directory is keyed by, so it used to open a session file of its
+    /// own in there. The editor's next reload then continued whatever was newest - the worker's
+    /// file, holding a header and nothing else - read no records back, and answered by starting
+    /// another. Files piled up and the window fell back to the console on every recompile.
+    /// </summary>
+    private static void AContinuedSessionKeepsToItsOwnFileNotAStrangersNewerOne() {
+        string directory = ScratchDirectory("continued-stranger");
+        LogConfig config = LogConfig.Default();
+        config.FileDirectory = directory;
+        config.FileIncludesDevChannel = true;
+
+        FileSink ours = new FileSink(in config);
+        string ourPath = ours.CurrentFilePath;
+        ours.Write(Record(1, "Editor", "before the reload", LogLevel.Log, LogChannel.Dev, 0));
+        ours.Dispose();
+
+        FileSink stranger = new FileSink(in config);
+        string strangerPath = stranger.CurrentFilePath;
+        stranger.Dispose();
+        Check("the stranger's file is the newer one", strangerPath != ourPath);
+
+        FileSink continued = new FileSink(in config, continueExistingFile: true, continueFilePath: ourPath);
+        Check("continuing keeps to the file it was given", continued.CurrentFilePath == ourPath);
+        continued.Write(Record(2, "Editor", "after the reload", LogLevel.Log, LogChannel.Dev, 0));
+        continued.Dispose();
+
+        string written = File.ReadAllText(ourPath);
+        Check("so one session stays in one file",
+            written.Contains("before the reload") && written.Contains("after the reload"));
+        Check("and the stranger's file is left as it was",
+            !File.ReadAllText(strangerPath).Contains("after the reload"));
+
+        // A named file that has gone - pruned, or cleared by hand - is not a reason to lose
+        // the run; what is there is still better than nothing.
+        File.Delete(ourPath);
+        FileSink afterDeletion = new FileSink(in config, continueExistingFile: true, continueFilePath: ourPath);
+        Check("a named file that has gone falls back to what is there",
+            afterDeletion.CurrentFilePath == strangerPath);
+        afterDeletion.Dispose();
+    }
+
     private static void AContinuedSessionAddsToTheFileItFound() {
         string directory = ScratchDirectory("continued");
         LogConfig config = LogConfig.Default();

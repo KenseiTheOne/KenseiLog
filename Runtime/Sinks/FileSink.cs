@@ -59,8 +59,13 @@ namespace KenseiLog {
         /// editor does: its sink is rebuilt on every domain reload, and starting a run per
         /// recompile would push a morning's logs out of the history by lunchtime.
         /// </para>
+        /// <para>
+        /// <paramref name="continueFilePath"/> names which file that is. Without it the newest
+        /// in the directory is taken, which is only the right answer while this sink is the
+        /// one writing there.
+        /// </para>
         /// </summary>
-        public FileSink(in LogConfig config, bool continueExistingFile) {
+        public FileSink(in LogConfig config, bool continueExistingFile, string continueFilePath = null) {
             // Read on the main thread at construction. These reach into the engine, and Write
             // runs on whichever thread happened to log.
             _app = Application.productName + " " + Application.version;
@@ -72,7 +77,7 @@ namespace KenseiLog {
             ApplySettings(in config);
 
             if (continueExistingFile) {
-                ContinueSession();
+                ContinueSession(continueFilePath);
             } else {
                 StartSession();
             }
@@ -272,26 +277,32 @@ namespace KenseiLog {
         /// size of the file. Falls back to starting a session when there is nothing to carry
         /// on from.
         /// </summary>
-        private void ContinueSession() {
+        private void ContinueSession(string preferredPath) {
             lock (_lock) {
-                string newest;
+                string target;
                 long existing;
                 try {
                     Directory.CreateDirectory(LogDirectory);
-                    // By the name it actually has: a directory written by an older version, or
-                    // by hand, may hold an index this version would pad differently.
-                    newest = NewestFile(LogDirectory);
-                    if (newest == null) {
+                    // The caller's own file when it named one. Another process writing into the
+                    // same directory - an asset import worker, which shares the project path
+                    // this directory is keyed by - leaves a newer file that is not ours, and
+                    // appending to it would interleave two writers into one log.
+                    target = preferredPath != null && File.Exists(preferredPath)
+                        ? preferredPath
+                        // By the name it actually has: a directory written by an older version,
+                        // or by hand, may hold an index this version would pad differently.
+                        : NewestFile(LogDirectory);
+                    if (target == null) {
                         StartSession();
                         return;
                     }
-                    existing = new FileInfo(newest).Length;
+                    existing = new FileInfo(target).Length;
                 } catch (Exception exception) {
                     Warn("file logging is off, could not open the newest file in", exception);
                     return;
                 }
 
-                CurrentFilePath = newest;
+                CurrentFilePath = target;
                 OpenWriter(startSession: false);
                 if (_writer != null) {
                     _bytesWritten = existing;

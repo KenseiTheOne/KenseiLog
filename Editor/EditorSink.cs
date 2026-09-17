@@ -28,6 +28,13 @@ namespace KenseiLog.Editor {
         private const string SessionStartedKey = "KenseiLog.EditorSessionStarted";
 
         /// <summary>
+        /// Which file this editor session opened. Kept rather than looked up, because the
+        /// newest file in the directory is not reliably ours: an asset import worker shares the
+        /// project path the directory is keyed by, and any file it left would be newer.
+        /// </summary>
+        private const string SessionFilePathKey = "KenseiLog.EditorSessionFilePath";
+
+        /// <summary>
         /// The newest record dismissed by a Clear. Kept in SessionState so that it lives
         /// exactly as long as the session file it speaks about: the file keeps everything - that
         /// is what it is for - but a reload must not hand back what somebody dismissed.
@@ -113,6 +120,16 @@ namespace KenseiLog.Editor {
             Path.Combine(Application.persistentDataPath, "logs", EditorLogFolder, ProjectPrefs.ProjectId);
 
         /// <summary>
+        /// The file this editor session opened, or null before it has opened one.
+        /// </summary>
+        private static string SessionFilePath {
+            get {
+                string path = SessionState.GetString(SessionFilePathKey, string.Empty);
+                return string.IsNullOrEmpty(path) ? null : path;
+            }
+        }
+
+        /// <summary>
         /// How many records the window keeps. Clamped, and clamped before it is stored: an
         /// out-of-range value used to be written to EditorPrefs and only then handed to the
         /// buffer, which threw - leaving a capacity of zero saved, so the sink threw again on
@@ -157,6 +174,15 @@ namespace KenseiLog.Editor {
 
         [InitializeOnLoadMethod]
         private static void Install() {
+            // An asset import worker reloads the domain exactly as the editor does, so this
+            // runs there too - and it shares the project path the session directory is keyed
+            // by. Left alone it opened a session file of its own beside the editor's, which the
+            // editor then seeded from, found holding nothing but a header, and answered by
+            // starting yet another. A worker has no window to fill and nothing worth keeping.
+            if (AssetDatabase.IsAssetImportWorkerProcess()) {
+                return;
+            }
+
             // Clamped on the way in as well as on the way out, so a preference already holding
             // a bad value from an earlier version repairs itself instead of throwing here.
             int capacity = Mathf.Clamp(EditorPrefs.GetInt(_capacityKey, DefaultCapacity), MinimumCapacity, MaximumCapacity);
@@ -235,7 +261,7 @@ namespace KenseiLog.Editor {
                 // dev record written from an editor tool has nowhere else to survive.
                 config.FileIncludesDevChannel = true;
 
-                _sessionFile = new FileSink(in config, continueExistingFile);
+                _sessionFile = new FileSink(in config, continueExistingFile, SessionFilePath);
                 if (!_sessionFile.IsWriting) {
                     // No file, so nothing for the next domain to continue: leaving the flag set
                     // would have it append this session into the last one's file.
@@ -245,6 +271,7 @@ namespace KenseiLog.Editor {
                 }
 
                 SessionState.SetBool(SessionStartedKey, true);
+                SessionState.SetString(SessionFilePathKey, _sessionFile.CurrentFilePath);
                 LogCore.AddSink(_sessionFile);
             } catch (Exception exception) {
                 _sessionFile = null;
@@ -285,7 +312,7 @@ namespace KenseiLog.Editor {
                 return false;
             }
 
-            string path = FileSink.NewestFile(SessionFileDirectory);
+            string path = SessionFilePath;
             if (path == null) {
                 return false;
             }

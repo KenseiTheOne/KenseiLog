@@ -95,6 +95,14 @@ public static class ReadmeSnippets {
         }
     }
 
+    public sealed class MyProdOnlySink : ILogSink, IChannelFilteredSink {
+        public void Write(in LogRecord record) {
+        }
+
+        public bool Accepts(LogChannel channel) =>
+            channel == LogChannel.Prod;
+    }
+
     public static void ReadRecentRecords() {
         MemorySink recent = new MemorySink(256);
         LogCore.AddSink(recent);

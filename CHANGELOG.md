@@ -4,6 +4,38 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-09-17
+
+### Fixed
+
+- An asset import worker no longer writes into the editor's session directory. A worker
+  reloads the domain exactly as the editor does, so the `[InitializeOnLoadMethod]` that
+  installs the editor sink ran there too - and the directory is keyed by the project path,
+  which a worker shares. Each one opened a session file of its own holding a header and
+  nothing else. The editor's next reload then continued whatever file was newest, found the
+  worker's, read no records out of it and answered by starting another. Three things followed:
+  the file count climbed with every import, the window fell back to the console on each
+  recompile instead of restoring its own history, and pruning could delete the file the editor
+  was writing to. Workers now leave `Install` where it starts; there is no window in one to
+  fill and nothing in one worth keeping.
+- The editor continues the file it opened rather than whatever is newest beside it. The path
+  is remembered in `SessionState`, which closes the same hole from the other end: a batchmode
+  run after the editor was shut, or a tool of somebody's own writing into that directory, can
+  no longer be appended to by mistake. `FileSink` takes the file to continue as a third
+  constructor argument, and without one still takes the newest - the right answer while it is
+  the only writer there.
+
+### Changed
+
+- README corrections, all of them places where it asserted something the code does not do.
+  The install snippet pins a tag, since tracking `main` across 0.14.0 silently renames every
+  call in a project. `IChannelFilteredSink` is documented - it was public, it is what keeps a
+  dev call in a development build down to the message string, and the page on writing a sink
+  named only the other two interfaces. The overlay's detail pane is about a third of the
+  overlay height to a ceiling of 180 points, not the fixed height claimed. The `file:` example
+  says what the path is relative to. And "one file per editor session" now says per editor
+  *process*, which is what the fix above makes true.
+
 ## [0.14.0] - 2026-09-16
 
 ### Changed
