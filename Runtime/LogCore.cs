@@ -103,6 +103,12 @@ namespace KenseiLog {
         /// <see cref="IChannelFilteredSink"/> is taken to want everything, which is the safe
         /// answer for a sink this package knows nothing about.
         /// <para>
+        /// The answers are cached, and asked for again only when the sink list changes. A sink
+        /// that changes its mind while registered has to say so by calling this; until it does,
+        /// it goes on being treated as it answered when it arrived, and nothing will point at
+        /// why it stopped seeing a channel.
+        /// </para>
+        /// <para>
         /// The case worth catching is a development build with the defaults: the list there is
         /// exactly the file sink with the dev channel off, and every Log.DevInfo call was building
         /// a record - unwinding a stack trace, for an error - that was dropped on arrival. A
@@ -113,7 +119,7 @@ namespace KenseiLog {
         /// Called by a sink whose answer has changed, as well as when the list does.
         /// </para>
         /// </summary>
-        internal static void RefreshChannelInterest() {
+        public static void RefreshChannelInterest() {
             lock (_sinkLock) {
                 ILogSink[] sinks = _sinks;
                 for (int i = 0; i < sinks.Length; i++) {
@@ -133,6 +139,14 @@ namespace KenseiLog {
         public static long NextSequence() {
             return Interlocked.Increment(ref _sequence);
         }
+
+        /// <summary>
+        /// The highest id issued so far. The editor records it when a domain ends and hands it
+        /// back through <see cref="ReserveSequencesThrough"/> when the next one starts, so a
+        /// session that carries on with its file carries on with its numbering too - whether or
+        /// not the records themselves were read back.
+        /// </summary>
+        public static long CurrentSequence => Interlocked.Read(ref _sequence);
 
         /// <summary>
         /// Moves the counter past a record that already exists, so that what is written next

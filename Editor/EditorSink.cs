@@ -28,11 +28,20 @@ namespace KenseiLog.Editor {
         private const string SessionStartedKey = "KenseiLog.EditorSessionStarted";
 
         /// <summary>
-        /// Which file this editor session opened. Kept rather than looked up, because the
+        /// Which file this editor session is writing. Kept rather than looked up, because the
         /// newest file in the directory is not reliably ours: an asset import worker shares the
-        /// project path the directory is keyed by, and any file it left would be newer.
+        /// project path the directory is keyed by, and any file it left would be newer. Written
+        /// when the file is opened and again when it is closed - a rotation moves it on in
+        /// between, from whichever thread was logging, where SessionState cannot be reached.
         /// </summary>
         private const string SessionFilePathKey = "KenseiLog.EditorSessionFilePath";
+
+        /// <summary>
+        /// The highest record id the last domain issued. Carried across so that a session which
+        /// keeps to its file keeps to its numbering, whether or not the records came back: the
+        /// counter starts again at zero with every domain, and the file does not.
+        /// </summary>
+        private const string SessionSequenceKey = "KenseiLog.EditorSessionSequence";
 
         /// <summary>
         /// The newest record dismissed by a Clear. Kept in SessionState so that it lives
@@ -120,12 +129,22 @@ namespace KenseiLog.Editor {
             Path.Combine(Application.persistentDataPath, "logs", EditorLogFolder, ProjectPrefs.ProjectId);
 
         /// <summary>
-        /// The file this editor session opened, or null before it has opened one.
+        /// The file this editor session is writing, or null before it has one.
         /// </summary>
         private static string SessionFilePath {
             get {
                 string path = SessionState.GetString(SessionFilePathKey, string.Empty);
                 return string.IsNullOrEmpty(path) ? null : path;
+            }
+        }
+
+        /// <summary>The highest record id the last domain issued, or 0 when there was none.</summary>
+        private static long SessionSequence {
+            get {
+                string stored = SessionState.GetString(SessionSequenceKey, string.Empty);
+                return long.TryParse(stored, NumberStyles.None, CultureInfo.InvariantCulture, out long sequence)
+                    ? sequence
+                    : 0L;
             }
         }
 
@@ -199,12 +218,19 @@ namespace KenseiLog.Editor {
             // cost us the two lines below: without them the sink is never registered and the
             // window records nothing at all, while still opening and looking healthy.
             bool continuing = SessionState.GetBool(SessionStartedKey, false);
-            string seedPath = SessionPlan.SeedFrom(continuing, WriteSessionFile, ShouldSeed(), SessionFilePath);
-            bool seeded = false;
+            // Before anything is written, and whether or not the records come back below: what
+            // this domain logs goes into the same file as what the last one logged, so repeating
+            // its numbers would leave the file unsorted and every lookup into it wrong.
+            if (continuing) {
+                LogCore.ReserveSequencesThrough(SessionSequence);
+            }
+
+            SessionDecision decision = new SessionDecision(false, null);
             try {
                 List<LogRecord> fromFile = new List<LogRecord>();
-                seeded = seedPath != null && SeedFromSessionFile(seedPath, fromFile);
-                if (seeded) {
+                decision = SessionPlan.Resolve(continuing, WriteSessionFile, ShouldSeed(), SessionFilePath,
+                                               File.Exists, path => SeedFromSessionFile(path, fromFile));
+                if (decision.Seeded) {
                     SeedRemainingConsoleEntries(fromFile);
                 } else if (ShouldSeed()) {
                     SeedFromConsole();
@@ -221,7 +247,7 @@ namespace KenseiLog.Editor {
             // Continuing the file makes sense only if its records came back. When the read
             // failed, carrying on with it would put records numbered from one after records
             // numbered in the hundreds - an unsorted file, and every lookup into it wrong.
-            OpenSessionFile(SessionPlan.ContinueFrom(continuing, seeded, SessionFilePath));
+            OpenSessionFile(decision.ContinuePath);
 
             // After the sink is open, so the marker reaches the file as well as the window. Not
             // when entering play mode: that has a marker of its own a moment later, and this one
@@ -308,6 +334,8 @@ namespace KenseiLog.Editor {
             // window came back holding only what was written before the rotation, and pruning
             // worked its way through the full ones.
             SessionState.SetString(SessionFilePathKey, _sessionFile.CurrentFilePath);
+            SessionState.SetString(SessionSequenceKey,
+                LogCore.CurrentSequence.ToString(CultureInfo.InvariantCulture));
             _sessionFile = null;
         }
 
@@ -326,6 +354,10 @@ namespace KenseiLog.Editor {
                 return false;
             }
 
+            if (into.Count < Instance.Buffer.Capacity) {
+                PrependPredecessor(path, into);
+            }
+
             long clearedThrough = ClearedThrough;
             long highest = 0;
             for (int i = 0; i < into.Count; i++) {
@@ -341,6 +373,48 @@ namespace KenseiLog.Editor {
 
             LogCore.ReserveSequencesThrough(highest);
             return true;
+        }
+
+        /// <summary>
+        /// Reads the file before this one as well, when there is room left in the buffer.
+        /// <para>
+        /// A rotation shortly before the reload leaves the file now current holding a handful of
+        /// records, and the session's history in the one behind it. Read on its own, the window
+        /// would come back all but empty and look as though a recompile had eaten the morning.
+        /// </para>
+        /// <para>
+        /// Only once it is the same run of numbering, which is what the comparison is for: a
+        /// file left by another session - one that Clear on Play started, or a build's - numbers
+        /// from its own beginning, and mixing the two would leave the buffer unsorted and every
+        /// lookup into it wrong. Ids rise within a session and never repeat, so the whole of the
+        /// earlier file coming in below the whole of this one is the proof that they are one run.
+        /// </para>
+        /// </summary>
+        private static void PrependPredecessor(string path, List<LogRecord> into) {
+            string earlier = FileSink.FileBefore(path);
+            if (earlier == null) {
+                return;
+            }
+
+            long oldest = long.MaxValue;
+            for (int i = 0; i < into.Count; i++) {
+                if (into[i].Sequence < oldest) {
+                    oldest = into[i].Sequence;
+                }
+            }
+
+            List<LogRecord> before = new List<LogRecord>();
+            if (LogSessionReader.ReadTail(earlier, Instance.Buffer.Capacity - into.Count, SeedByteBudget, before) == 0) {
+                return;
+            }
+
+            for (int i = 0; i < before.Count; i++) {
+                if (before[i].Sequence >= oldest) {
+                    return;
+                }
+            }
+
+            into.InsertRange(0, before);
         }
 
         /// <summary>

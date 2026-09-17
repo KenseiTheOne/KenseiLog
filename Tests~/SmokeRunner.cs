@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -51,6 +52,8 @@ public static class SmokeRunner {
         Scenario(AContinuedSessionAddsToTheFileItFound);
         Scenario(AContinuedSessionKeepsToItsOwnFileNotAStrangersNewerOne);
         Scenario(AnEditorSessionFollowsItsOwnRotation);
+        Scenario(AReloadThatReadsNothingBackStillKeepsItsFile);
+        Scenario(SeedingReachesBackOneFileButNotIntoAnotherSession);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
@@ -1200,97 +1203,218 @@ public static class SmokeRunner {
     /// a file already over the limit, rotated it again on its first record, and left another
     /// behind - so the count climbed, the window came back holding only what was written before
     /// the rotation, and pruning worked through the full ones.
+    /// <para>
+    /// Driven through the editor sink's own closing code and through <see cref="SessionPlan"/>,
+    /// so that taking either apart shows up here as behaviour rather than as a compiler error.
+    /// </para>
     /// </summary>
     private static void AnEditorSessionFollowsItsOwnRotation() {
-        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Static;
-        Type sink = typeof(EditorSink);
-        FieldInfo held = sink.GetField("_sessionFile", Hidden);
-        MethodInfo close = sink.GetMethod("CloseSessionFile", Hidden);
-        PropertyInfo remembered = sink.GetProperty("SessionFilePath", Hidden);
-        FieldInfo key = sink.GetField("SessionFilePathKey", Hidden);
-
-        Check("the editor sink still has the parts this leans on",
-            held != null && close != null && remembered != null && key != null);
-        if (held == null || close == null || remembered == null || key == null) {
+        EditorSessionHarness harness = EditorSessionHarness.Open("rotation-follow");
+        if (harness == null) {
             return;
         }
 
-        // The editor running this has a session of its own, and the key is one value shared
-        // with it. Left alone, a run that fails here reaches for whatever path that holds and
-        // opens the live editor's own file - which is how this check first reported a sharing
-        // violation instead of the mismatch it had actually found.
-        string keyName = (string)key.GetValue(null);
-        string standingPath = SessionState.GetString(keyName, string.Empty);
-        SessionState.SetString(keyName, string.Empty);
-        object standing = held.GetValue(null);
-        string directory = ScratchDirectory("rotation-follow");
-        LogConfig config = LogConfig.Default();
-        config.FileDirectory = directory;
-        config.FileIncludesDevChannel = true;
-        config.FileSizeLimitKb = 64;
-
         try {
-            FileSink file = new FileSink(in config);
-            string opened = file.CurrentFilePath;
-            string filler = new string('x', 512);
-            long sequence = 1;
-
-            while (file.CurrentFilePath == opened) {
-                file.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
-            }
-            Check("writing past the limit moves the file on", file.CurrentFilePath != opened);
+            string opened = harness.Sink.CurrentFilePath;
+            harness.FillUntilRotation();
+            Check("writing past the limit moves the file on", harness.Sink.CurrentFilePath != opened);
 
             for (int reload = 0; reload < 5; reload++) {
-                string live = file.CurrentFilePath;
-                held.SetValue(null, file);
-                close.Invoke(null, null);
+                string live = harness.Sink.CurrentFilePath;
+                harness.Reload();
 
-                Check("closing remembers the file the session ended in",
-                    (string)remembered.GetValue(null) == live);
-
-                string carryOn = SessionPlan.ContinueFrom(true, true, (string)remembered.GetValue(null));
-                file = new FileSink(in config, carryOn != null, carryOn);
-                Check("so the next domain carries on with that one", file.CurrentFilePath == live);
-                file.Write(Record(sequence++, "Editor", "after reload " + reload, LogLevel.Log, LogChannel.Dev, 0));
+                Check("closing remembers the file the session ended in", harness.Remembered == live);
+                Check("so the next domain carries on with that one", harness.Sink.CurrentFilePath == live);
+                harness.Write("after reload " + reload);
             }
 
-            held.SetValue(null, file);
-            close.Invoke(null, null);
-            Check("and five reloads leave no trail of files behind",
-                Directory.GetFiles(directory, "log.*.jsonl").Length == 2);
+            harness.Close();
+            Check("and five reloads leave no trail of files behind", harness.FileCount == 2);
             Check("with the last record still in the file that was remembered",
-                File.ReadAllText((string)remembered.GetValue(null)).Contains("after reload 4"));
+                File.ReadAllText(harness.Remembered).Contains("after reload 4"));
         } finally {
-            held.SetValue(null, standing);
-            SessionState.SetString(keyName, standingPath);
+            harness.Dispose();
         }
     }
 
     /// <summary>
+    /// Carrying on with the file used to require reading it back, and two ordinary reloads read
+    /// nothing: entering play mode with Clear on Play set, which skips the seed deliberately and
+    /// is the reload people do dozens of times a day, and a rotation on the last record before a
+    /// reload, which leaves a file holding a header and nothing else. Both started a file
+    /// instead, so a few entries into play mode the morning's editor logs had been pruned away -
+    /// the very failure the file exists to prevent.
+    /// </summary>
+    private static void AReloadThatReadsNothingBackStillKeepsItsFile() {
+        EditorSessionHarness playMode = EditorSessionHarness.Open("no-seed-play");
+        if (playMode == null) {
+            return;
+        }
+
+        try {
+            playMode.Write("logged in the editor before play");
+            string before = playMode.Sink.CurrentFilePath;
+
+            for (int entry = 0; entry < 5; entry++) {
+                playMode.Reload(worthSeeding: false);
+                playMode.Write("entered play " + entry);
+            }
+            playMode.Close();
+
+            Check("entering play mode keeps to the one file", playMode.FileCount == 1);
+            Check("so what was logged before play is still on disk",
+                File.ReadAllText(before).Contains("logged in the editor before play"));
+            Check("and closing recorded the numbering for the next domain to carry on from",
+                playMode.StoredSequence == LogCore.CurrentSequence);
+        } finally {
+            playMode.Dispose();
+        }
+
+        EditorSessionHarness rotated = EditorSessionHarness.Open("no-seed-rotated");
+        if (rotated == null) {
+            return;
+        }
+
+        try {
+            rotated.FillUntilRotation();
+            string headerOnly = rotated.Sink.CurrentFilePath;
+            rotated.Reload();
+
+            Check("a file holding only a header is still the one to carry on with",
+                rotated.Sink.CurrentFilePath == headerOnly);
+            rotated.Write("first record after the rotation");
+            rotated.Close();
+
+            Check("so a rotation on the last record leaves no empty file behind", rotated.FileCount == 2);
+            Check("and the record after it went into that file",
+                File.ReadAllText(headerOnly).Contains("first record after the rotation"));
+        } finally {
+            rotated.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A rotation shortly before a reload leaves the file now current holding a handful of
+    /// records, and the session's history in the one behind it. Read on its own, the window came
+    /// back all but empty and looked as though the recompile had eaten the morning.
+    /// <para>
+    /// Reaching back one file fixes that, and can only be done while it is the same run of
+    /// numbering. A file left by another session - one that Clear on Play started, or a build's -
+    /// numbers from its own beginning, and mixing the two would leave the buffer unsorted and
+    /// every lookup into it wrong.
+    /// </para>
+    /// </summary>
+    private static void SeedingReachesBackOneFileButNotIntoAnotherSession() {
+        MethodInfo reach = typeof(EditorSink).GetMethod("PrependPredecessor",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Check("the editor sink still reaches back a file", reach != null);
+        if (reach == null) {
+            return;
+        }
+
+        LogConfig config = LogConfig.Default();
+        config.FileIncludesDevChannel = true;
+        config.FileSizeLimitKb = 64;
+
+        string chained = ScratchDirectory("seed-chain");
+        config.FileDirectory = chained;
+        FileSink sink = new FileSink(in config);
+        string first = sink.CurrentFilePath;
+        string filler = new string('x', 512);
+        long sequence = 1;
+        while (sink.CurrentFilePath == first) {
+            sink.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
+        }
+        string second = sink.CurrentFilePath;
+        sink.Write(Record(sequence++, "Editor", "the only record after the rotation", LogLevel.Log, LogChannel.Dev, 0));
+        sink.Dispose();
+
+        Check("the file before one is the one before it", FileSink.FileBefore(second) == first);
+        Check("and the first file has nothing before it", FileSink.FileBefore(first) == null);
+
+        List<LogRecord> into = new List<LogRecord>();
+        LogSessionReader.ReadTail(second, 4096, 1L << 20, into);
+        int alone = into.Count;
+        reach.Invoke(null, new object[] { second, into });
+
+        Check("seeding reaches back past the rotation", into.Count > alone);
+        Check("and brings the run back in order",
+            into[0].Sequence == 1 && IsAscending(into));
+
+        // A file that another session left: same directory, numbering from its own beginning.
+        string mixed = ScratchDirectory("seed-mixed");
+        config.FileDirectory = mixed;
+        FileSink older = new FileSink(in config);
+        string theirs = older.CurrentFilePath;
+        older.Write(Record(900, "Editor", "from a session of its own", LogLevel.Log, LogChannel.Dev, 0));
+        older.Dispose();
+
+        FileSink newer = new FileSink(in config);
+        string ours = newer.CurrentFilePath;
+        newer.Write(Record(1, "Editor", "numbered from the beginning again", LogLevel.Log, LogChannel.Dev, 0));
+        newer.Dispose();
+
+        Check("the two are one behind the other on disk", FileSink.FileBefore(ours) == theirs);
+
+        List<LogRecord> guarded = new List<LogRecord>();
+        LogSessionReader.ReadTail(ours, 4096, 1L << 20, guarded);
+        int before = guarded.Count;
+        reach.Invoke(null, new object[] { ours, guarded });
+
+        Check("but seeding will not mix two runs of numbering", guarded.Count == before);
+    }
+
+    private static bool IsAscending(List<LogRecord> records) {
+        for (int i = 1; i < records.Count; i++) {
+            if (records[i].Sequence <= records[i - 1].Sequence) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
     /// The decisions themselves, away from the domain reload that is the only thing that makes
-    /// them. Both failures this guards were decisions rather than mechanics: a process opening a
-    /// file it had no business opening, and a path that was no longer the file being written.
+    /// them. Every fault here has been a decision rather than a mechanic: a process opening a
+    /// file it had no business opening, a path that was no longer the file being written, and
+    /// carrying on with a file made conditional on reading it back.
     /// </summary>
     private static void SessionPlanLeavesTheFileToTheEditorProcess() {
         Check("the editor installs", SessionPlan.Installs(false, false));
         Check("an asset import worker does not", !SessionPlan.Installs(true, false));
         Check("nor does an out-of-process profiler", !SessionPlan.Installs(false, true));
 
-        Check("a fresh editor seeds from no file",
-            SessionPlan.SeedFrom(false, true, true, "log.0007.jsonl") == null);
-        Check("a reload seeds from the file it remembers",
-            SessionPlan.SeedFrom(true, true, true, "log.0007.jsonl") == "log.0007.jsonl");
-        Check("with the session file turned off it seeds from none",
-            SessionPlan.SeedFrom(true, false, true, "log.0007.jsonl") == null);
-        Check("and not at all when the seed would be thrown away a moment later",
-            SessionPlan.SeedFrom(true, true, false, "log.0007.jsonl") == null);
+        Func<string, bool> there = path => true;
+        Func<string, bool> gone = path => false;
+        Func<string, bool> read = path => true;
+        Func<string, bool> readNothing = path => false;
+        const string Remembered = "log.0007.jsonl";
 
-        Check("a read that came back carries on with that file",
-            SessionPlan.ContinueFrom(true, true, "log.0007.jsonl") == "log.0007.jsonl");
-        Check("a read that found nothing starts one instead",
-            SessionPlan.ContinueFrom(true, false, "log.0007.jsonl") == null);
-        Check("and so does a fresh editor",
-            SessionPlan.ContinueFrom(false, true, "log.0007.jsonl") == null);
+        Check("a reload reads its history back out of the file it remembers",
+            SessionPlan.Resolve(true, true, true, Remembered, there, read).Seeded);
+        Check("and carries on writing it",
+            SessionPlan.Resolve(true, true, true, Remembered, there, read).ContinuePath == Remembered);
+
+        Check("a read that found nothing still carries on with the file",
+            SessionPlan.Resolve(true, true, true, Remembered, there, readNothing).ContinuePath == Remembered);
+        Check("and says plainly that it seeded nothing",
+            !SessionPlan.Resolve(true, true, true, Remembered, there, readNothing).Seeded);
+
+        Check("a seed that would be thrown away is skipped, the file kept",
+            SessionPlan.Resolve(true, true, false, Remembered, there, read).ContinuePath == Remembered);
+        Check("and skipped means not seeded",
+            !SessionPlan.Resolve(true, true, false, Remembered, there, read).Seeded);
+
+        Check("a remembered file that has gone starts one",
+            SessionPlan.Resolve(true, true, true, Remembered, gone, read).ContinuePath == null);
+        Check("a fresh editor starts one",
+            SessionPlan.Resolve(false, true, true, Remembered, there, read).ContinuePath == null);
+        Check("with the session file turned off there is no file and no seed",
+            SessionPlan.Resolve(true, false, true, Remembered, there, read).ContinuePath == null);
+
+        int reads = 0;
+        SessionPlan.Resolve(true, true, false, Remembered, there, path => { reads++; return true; });
+        Check("a skipped seed does not touch the disk", reads == 0);
     }
 
     /// <summary>
@@ -1425,6 +1549,147 @@ public static class SmokeRunner {
 
     private static string Normalized(string path) =>
         path.Replace('\\', '/').TrimEnd('/');
+
+    /// <summary>
+    /// Stands in for a domain reload. Closes the session file through the editor sink's own
+    /// CloseSessionFile and reopens whatever <see cref="SessionPlan"/> decides on, in the order
+    /// Install does it - so unpicking either of them shows up here as behaviour rather than as a
+    /// compiler error.
+    /// <para>
+    /// It borrows the running editor session's field, its remembered path and its recorded
+    /// sequence, and puts all three back. Along with the reload subscriptions, which
+    /// CloseSessionFile takes off on its way out: without restoring them, running these checks
+    /// inside an open editor would leave it unable to close its own file for the rest of the
+    /// session, and in batchmode would lose the tail of the buffer at quit.
+    /// </para>
+    /// </summary>
+    private sealed class EditorSessionHarness {
+        private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Static;
+
+        private readonly FieldInfo _held;
+        private readonly MethodInfo _close;
+        private readonly PropertyInfo _remembered;
+        private readonly string _pathKey;
+        private readonly string _sequenceKey;
+        private readonly object _standing;
+        private readonly string _standingPath;
+        private readonly string _standingSequence;
+        private readonly string _directory;
+        private LogConfig _config;
+
+        private EditorSessionHarness(FieldInfo held, MethodInfo close, PropertyInfo remembered,
+                                     string pathKey, string sequenceKey, string directory) {
+            _held = held;
+            _close = close;
+            _remembered = remembered;
+            _pathKey = pathKey;
+            _sequenceKey = sequenceKey;
+            _directory = directory;
+
+            // The keys are one value shared with the editor running this. Left alone, a check
+            // that fails here reaches for whatever path that holds and opens the live editor's
+            // own file - which is how this first reported a sharing violation rather than the
+            // mismatch it had actually found.
+            _standing = held.GetValue(null);
+            _standingPath = SessionState.GetString(pathKey, string.Empty);
+            _standingSequence = SessionState.GetString(sequenceKey, string.Empty);
+            SessionState.SetString(pathKey, string.Empty);
+            SessionState.SetString(sequenceKey, string.Empty);
+
+            _config = LogConfig.Default();
+            _config.FileDirectory = directory;
+            _config.FileIncludesDevChannel = true;
+            _config.FileSizeLimitKb = 64;
+
+            Sink = new FileSink(in _config);
+        }
+
+        public FileSink Sink { get; private set; }
+
+        public string Remembered => (string)_remembered.GetValue(null);
+
+        public int FileCount => Directory.GetFiles(_directory, "log.*.jsonl").Length;
+
+        public long StoredSequence {
+            get {
+                string stored = SessionState.GetString(_sequenceKey, string.Empty);
+                return long.TryParse(stored, NumberStyles.None, CultureInfo.InvariantCulture, out long value)
+                    ? value
+                    : 0L;
+            }
+        }
+
+        public static EditorSessionHarness Open(string name) {
+            Type sink = typeof(EditorSink);
+            FieldInfo held = sink.GetField("_sessionFile", Hidden);
+            MethodInfo close = sink.GetMethod("CloseSessionFile", Hidden);
+            PropertyInfo remembered = sink.GetProperty("SessionFilePath", Hidden);
+            FieldInfo pathKey = sink.GetField("SessionFilePathKey", Hidden);
+            FieldInfo sequenceKey = sink.GetField("SessionSequenceKey", Hidden);
+
+            bool complete = held != null && close != null && remembered != null &&
+                            pathKey != null && sequenceKey != null;
+            Check("the editor sink still has the parts these lean on", complete);
+            if (!complete) {
+                return null;
+            }
+
+            return new EditorSessionHarness(held, close, remembered,
+                                            (string)pathKey.GetValue(null),
+                                            (string)sequenceKey.GetValue(null),
+                                            ScratchDirectory(name));
+        }
+
+        public void Write(string message) {
+            Sink.Write(Record(LogCore.NextSequence(), "Editor", message, LogLevel.Log, LogChannel.Dev, 0));
+        }
+
+        public void FillUntilRotation() {
+            string opened = Sink.CurrentFilePath;
+            string filler = new string('x', 512);
+            while (Sink.CurrentFilePath == opened) {
+                Write(filler);
+            }
+        }
+
+        public void Close() {
+            if (Sink == null) {
+                return;
+            }
+            _held.SetValue(null, Sink);
+            _close.Invoke(null, null);
+            Sink = null;
+        }
+
+        public void Reload(bool worthSeeding = true) {
+            Close();
+            LogCore.ReserveSequencesThrough(StoredSequence);
+            SessionDecision decision = SessionPlan.Resolve(true, true, worthSeeding, Remembered,
+                                                           System.IO.File.Exists, SeedFrom);
+            Sink = new FileSink(in _config, decision.ContinuePath != null, decision.ContinuePath);
+        }
+
+        public void Dispose() {
+            Sink?.Dispose();
+            Sink = null;
+            _held.SetValue(null, _standing);
+            SessionState.SetString(_pathKey, _standingPath);
+            SessionState.SetString(_sequenceKey, _standingSequence);
+
+            if (_standing == null) {
+                return;
+            }
+            AssemblyReloadEvents.beforeAssemblyReload +=
+                (AssemblyReloadEvents.AssemblyReloadCallback)Delegate.CreateDelegate(
+                    typeof(AssemblyReloadEvents.AssemblyReloadCallback), _close);
+            EditorApplication.quitting += (Action)Delegate.CreateDelegate(typeof(Action), _close);
+        }
+
+        private static bool SeedFrom(string path) {
+            List<LogRecord> into = new List<LogRecord>();
+            return LogSessionReader.ReadTail(path, 256, 1L << 20, into) > 0;
+        }
+    }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {
         return new LogRecord(sequence, tag, message, level, channel, 0.0, frame, null, 0, null, 0, captured);

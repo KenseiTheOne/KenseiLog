@@ -4,6 +4,39 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] - 2026-09-18
+
+### Fixed
+
+- Entering play mode no longer starts a session file every time. Carrying on with the file was
+  conditional on reading it back, and the reload that enters play mode with Clear on Play set -
+  both on by default, and the reload people do dozens of times a day - skips that read on
+  purpose, because the seed would be thrown away a moment later. So it started a file instead,
+  and four entries into play mode the morning's editor logs had been pruned off the disk. The
+  numbering is carried across on its own now, recorded when the file closes, so a reload that
+  reads nothing back still keeps to its file.
+- A rotation on the last record before a reload no longer strands the session. The new file held
+  a header and nothing else, the read came back empty, and the same conditional started yet
+  another - leaving the empty one to take up a slot in the pruning, and an old Clear watermark
+  to hide the next domain's records until the numbering grew past it. Same fix.
+- The window reads the file before the current one when a rotation has only just happened, so a
+  recompile a moment after one no longer comes back all but empty. Only while it is the same run
+  of numbering: a file left by another session numbers from its own beginning, and mixing the two
+  would leave the buffer unsorted.
+
+### Changed
+
+- `LogCore.RefreshChannelInterest` is public, and the README says what it is for. The answers
+  sinks give to `IChannelFilteredSink.Accepts` are cached until the sink list changes, so one
+  that changes its mind while registered was quietly held to what it said when it arrived.
+- `SessionPlan.Resolve` replaces `SeedFrom` and `ContinueFrom`, taking the read itself as an
+  argument so that Install and the checks go through the same decision rather than two copies of
+  it. `LogCore.CurrentSequence` is public, which is what lets the numbering cross a domain
+  without the records having to.
+- Documentation: the out-of-process profiler is named beside the import worker, `FileSink` says
+  what happens when the file it was told to continue has gone, and the harness README stops
+  claiming 167 assertions when there are 220.
+
 ## [0.14.2] - 2026-09-17
 
 ### Fixed

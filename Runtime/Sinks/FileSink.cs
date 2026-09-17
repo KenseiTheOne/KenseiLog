@@ -60,9 +60,9 @@ namespace KenseiLog {
         /// recompile would push a morning's logs out of the history by lunchtime.
         /// </para>
         /// <para>
-        /// <paramref name="continueFilePath"/> names which file that is. Without it the newest
-        /// in the directory is taken, which is only the right answer while this sink is the
-        /// one writing there.
+        /// <paramref name="continueFilePath"/> names which file that is. Without it, or when the
+        /// file it names has gone - pruned, or cleared by hand - the newest in the directory is
+        /// taken, which is only the right answer while this sink is the one writing there.
         /// </para>
         /// </summary>
         public FileSink(in LogConfig config, bool continueExistingFile, string continueFilePath = null) {
@@ -516,6 +516,31 @@ namespace KenseiLog {
 
         private static int CompareByIndexDescending(string left, string right) =>
             IndexOfFile(right).CompareTo(IndexOfFile(left));
+
+        /// <summary>
+        /// The file written immediately before this one in the same directory, or null when
+        /// there is none. Read when a rotation has only just happened and the file now current
+        /// holds a handful of records - on its own it would be the whole of a session's history.
+        /// </summary>
+        public static string FileBefore(string path) {
+            int index = IndexOfFile(path);
+            if (index <= 0) {
+                return null;
+            }
+
+            string directory = Path.GetDirectoryName(path);
+            string[] existing = Directory.GetFiles(directory, FilePattern);
+            string best = null;
+            int bestIndex = 0;
+            for (int i = 0; i < existing.Length; i++) {
+                int candidate = IndexOfFile(existing[i]);
+                if (candidate > 0 && candidate < index && candidate > bestIndex) {
+                    bestIndex = candidate;
+                    best = existing[i];
+                }
+            }
+            return best;
+        }
 
         /// <summary>The N in log.N.jsonl, or -1 for a name this sink did not write.</summary>
         private static int IndexOfFile(string path) {

@@ -11,7 +11,7 @@ In Unity's console a tag is only a word in the message, so filtering for `combat
 Package Manager → **Add package from git URL**:
 
 ```
-https://github.com/KenseiTheOne/KenseiLog.git#v0.14.2
+https://github.com/KenseiTheOne/KenseiLog.git#v0.14.3
 ```
 
 The tag pins the version — put the one you want after the `#`; the newest is at the top of
@@ -167,7 +167,7 @@ Lines are buffered, but an **error flushes immediately**, as does the app being 
 
 In the editor that sink only runs during play mode: it starts a run by opening a new file, and a script recompile is not a run.
 
-What the editor itself logs goes to `logs/editor`, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. One file per editor *process*, to be exact: an asset import worker reloads the domain just as the editor does and shares the project this directory is keyed by, so it stays out of here entirely. Entering play mode with **Clear on Play** set is the exception: that seed would be thrown away a moment later, so it is skipped — and with nothing read back there is nothing to carry on from, so that reload does start a file. It takes the dev channel, which is the point of it. During play mode in the editor both sinks are registered, so those records are written twice: once to the run's file, once to the editor's. `EditorSink.WriteSessionFile` turns the editor's file off, from the next domain reload on.
+What the editor itself logs goes to `logs/editor`, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. One file per editor *process*, to be exact: an asset import worker and an out-of-process profiler both reload the domain just as the editor does and share the project this directory is keyed by, so both stay out of here entirely. Entering play mode with **Clear on Play** set is the exception: that seed would be thrown away a moment later, so it is skipped — and with nothing read back there is nothing to carry on from, so that reload does start a file. It takes the dev channel, which is the point of it. During play mode in the editor both sinks are registered, so those records are written twice: once to the run's file, once to the editor's. `EditorSink.WriteSessionFile` turns the editor's file off, from the next domain reload on.
 
 The window reads back the last 2 MB of that file, which is what a recompile can afford; the rest stays on disk and opens with **Open file** like any other session. It skips the read when the reload is the one that enters play mode with Clear on Play set, since that seed would be thrown away a moment later. **Clear** stays cleared across a reload — the file keeps everything, but what you dismissed does not come back.
 
@@ -296,6 +296,8 @@ public sealed class MyProdOnlySink : ILogSink, IChannelFilteredSink {
 **`Accepts` is an optimisation, not a filter, and the `Write` check above is not redundant.** When *every* registered sink turns the dev channel down, a `Log.DevInfo` call stops before it builds a record at all — that is what keeps a dev call in a development build down to the message string you built, where the file sink is the only sink and the dev channel is off. The moment anything else takes the channel — the editor window does, and in the editor it is always registered — the record is built and handed to every sink, yours included. Prod records are built either way, stack traces on errors with them. So a sink that wants one channel has to say so in `Write` as well.
 
 A sink that does not implement the interface is asked for everything, which is the safe answer for one this package knows nothing about. `Accepts` is called while the sink list is held, so answer it without taking a lock of your own.
+
+The answers are cached and asked for again only when the sink list changes, so a sink that changes its mind while registered has to say so — `LogCore.RefreshChannelInterest()`. Until it does it goes on being treated as it answered when it arrived, and nothing will point at why it stopped seeing a channel.
 
 `MemorySink` is one you can use as it is: a fixed-capacity ring of recent records with a version that changes whenever one arrives, so a view of your own can poll it instead of subscribing. It is what the in-game overlay reads.
 

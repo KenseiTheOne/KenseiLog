@@ -40,7 +40,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-167 assertions over everything that does not need a GUI: the ring buffer including gapped and
+220 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -71,6 +71,11 @@ Each regression check names the bug it guards, because the interesting ones were
   everything expired behind it
 - a row count standing still while a full ring buffer moves underneath it, which is what the
   window repainted on
+- a process that is not the editor - an asset import worker, an out-of-process profiler - opening a
+  session file beside the editor's in the directory they all resolve to
+- a session file path recorded once at open, which a rotation then moved on without it
+- carrying on with the session file made conditional on reading it back, which entering play mode
+  with Clear on Play set never does
 - a null tag, which reached the viewers and threw there
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
