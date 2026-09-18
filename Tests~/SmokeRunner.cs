@@ -64,6 +64,7 @@ public static class SmokeRunner {
         Scenario(SeedingReachesBackOneFileButNotIntoAnotherSession);
         Scenario(ASessionJoinedMidwayLearnsWhereItBeganAtTheNextRotation);
         Scenario(SeedingReachesBackWhenTheCurrentFileHoldsOnlyItsHeader);
+        Scenario(SeedingStopsAtATailAlreadyCutAtTheFront);
         Scenario(OneBudgetCoversTheSeedRatherThanEachFileInIt);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(SourcePathsResolveAcrossMachines);
@@ -1535,6 +1536,65 @@ public static class SmokeRunner {
         } finally {
             harness.Dispose();
         }
+    }
+
+    /// <summary>
+    /// The seed may reach back one file only behind a file that came back entire, and entire has
+    /// two bounds rather than one. The budget is the obvious one, and closing it left the other
+    /// open: the read also keeps at most a buffer's worth of lines, overwriting the oldest once
+    /// it is full. A line the parser rejects - a torn write, a record from a newer schema - then
+    /// leaves the list one short of the buffer while the front of the file has already gone, so
+    /// what looks like room to spare is a gap, and the file behind it gets fitted in front of it.
+    /// An older stretch of the log in place of a newer one, with nothing in the window to say so.
+    /// </summary>
+    private static void SeedingStopsAtATailAlreadyCutAtTheFront() {
+        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-cut-tail", 64);
+        if (harness == null) {
+            return;
+        }
+
+        try {
+            LogConfig config = ScratchConfig(harness.Directory, 5120);
+
+            FileSink sink = new FileSink(in config);
+            string earlier = sink.CurrentFilePath;
+            for (long id = 1; id <= 100; id++) {
+                sink.Write(Record(id, "Editor", "earlier " + id, LogLevel.Log, LogChannel.Dev, 0));
+            }
+            sink.Dispose();
+
+            sink = new FileSink(in config);
+            string current = sink.CurrentFilePath;
+            for (long id = 101; id <= 200; id++) {
+                sink.Write(Record(id, "Editor", "current " + id, LogLevel.Log, LogChannel.Dev, 0));
+            }
+            sink.Dispose();
+
+            // One line the parser will refuse, which is what leaves room in a buffer that is
+            // otherwise full - a torn final write looks exactly like this.
+            System.IO.File.AppendAllText(current, "{ this line is not a record" + Environment.NewLine);
+
+            harness.StartedWith(earlier);
+            List<LogRecord> seeded = harness.Seed(current);
+
+            Check("a tail longer than the buffer comes back cut at the front",
+                seeded.Count > 0 && seeded.Count < 64 && seeded[0].Sequence > 101);
+            Check("and nothing older is fitted in front of the cut",
+                seeded.Count > 0 && seeded[0].Sequence > 100);
+            Check("so the window holds one unbroken stretch", IsAscendingByOne(seeded));
+        } finally {
+            harness.Dispose();
+        }
+    }
+
+    /// <summary>Whether the records run consecutively, which is what having no hole looks like.</summary>
+    private static bool IsAscendingByOne(List<LogRecord> records) {
+        for (int i = 1; i < records.Count; i++) {
+            if (records[i].Sequence != records[i - 1].Sequence + 1) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>

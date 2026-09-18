@@ -407,11 +407,19 @@ namespace KenseiLog.Editor {
         /// </para>
         /// </summary>
         private static bool SeedFromSessionFile(string path, List<LogRecord> into) {
-            LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into, out long spent);
+            LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into,
+                                      out long spent, out bool entire);
             // Whether or not this file gave anything back. A rotation on the last record before
             // the reload leaves it holding a header alone, and that is the case the file behind
             // it exists to cover: reading nothing is the reason to reach back, not to stop.
-            PrependPredecessor(path, SeedByteBudget - spent, into);
+            //
+            // But only behind a file that came back whole. A tail cut at the front already has
+            // records missing between it and anything older, and the file behind it would be
+            // fitted in front of that gap - an older stretch of the log in place of a newer one,
+            // with nothing in the window to say so.
+            if (entire) {
+                PrependPredecessor(path, SeedByteBudget - spent, into);
+            }
 
             if (into.Count == 0) {
                 return false;

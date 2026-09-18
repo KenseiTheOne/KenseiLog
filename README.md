@@ -11,7 +11,7 @@ In Unity's console a tag is only a word in the message, so filtering for `combat
 Package Manager → **Add package from git URL**:
 
 ```
-https://github.com/KenseiTheOne/KenseiLog.git#v0.14.5
+https://github.com/KenseiTheOne/KenseiLog.git#v0.14.6
 ```
 
 The tag pins the version — put the one you want after the `#`; the newest is at the top of

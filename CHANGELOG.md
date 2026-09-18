@@ -4,6 +4,21 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.6] - 2026-09-18
+
+### Fixed
+
+- The seed no longer reaches back behind a file whose own tail was cut at the front. Reading a
+  file has two bounds, not one: the byte budget, which makes the read begin part way in, and the
+  record count, which fills a ring and then overwrites its oldest line. Closing the first left
+  the second open, and a single line the parser rejects - a torn final write, a record from a
+  schema this build does not know - is enough to reach it: the ring stays full while the list
+  comes back one record short of the buffer, which reads as room to spare when the front of the
+  file has already gone. The file behind it was then fitted into that room, in front of a gap,
+  putting an older stretch of the log where a newer one belonged with nothing in the window to
+  say it had happened. `LogSessionReader.ReadTail` reports whether the file came back entire,
+  and entire is what the reach-back now asks for. 258 assertions.
+
 ## [0.14.5] - 2026-09-18
 
 ### Fixed

@@ -129,8 +129,30 @@ namespace KenseiLog.Editor {
         /// </para>
         /// </summary>
         public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into,
-                                   out long bytesScanned) {
+                                   out long bytesScanned) =>
+            ReadTail(path, maxRecords, maxBytes, into, out bytesScanned, out _);
+
+        /// <summary>
+        /// The same read again, saying as well whether the file came back entire.
+        /// <para>
+        /// <paramref name="fromTheStart"/> is false when the tail was cut at the front, by
+        /// either of the two bounds: the budget, which makes the read begin part way into the
+        /// file, or the record count, which fills and then overwrites the ring. Both leave
+        /// records missing between what came back and anything older, so neither can be followed
+        /// by the file behind this one - that would put an older stretch of the log in front of a
+        /// gap with nothing in the window to say it was there.
+        /// </para>
+        /// <para>
+        /// The two have to be asked about together. The byte bound alone looks sufficient, and
+        /// is not: a line the parser rejects - a torn write, a header, a record from a schema
+        /// this build does not know - leaves the ring full of lines but the list one record short
+        /// of the buffer, which reads as room to spare while the front has already gone.
+        /// </para>
+        /// </summary>
+        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into,
+                                   out long bytesScanned, out bool fromTheStart) {
             bytesScanned = 0;
+            fromTheStart = false;
 
             // Lines first, records second. Parsing is what costs - a JsonUtility call and an
             // object per line - and a tail of two megabytes holds more lines than the buffer can
@@ -139,11 +161,13 @@ namespace KenseiLog.Editor {
             string[] kept = new string[maxRecords];
             int count = 0;
             int next = 0;
+            bool droppedALine = false;
 
             try {
                 // ReadWrite for the same reason as above: this file usually has a writer.
+                bool startedMidFile;
                 using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
-                    bool startedMidFile = stream.Length > maxBytes;
+                    startedMidFile = stream.Length > maxBytes;
                     if (startedMidFile) {
                         stream.Seek(stream.Length - maxBytes, SeekOrigin.Begin);
                     }
@@ -164,12 +188,17 @@ namespace KenseiLog.Editor {
                             next = (next + 1) % kept.Length;
                             if (count < kept.Length) {
                                 count++;
+                            } else {
+                                droppedALine = true;
                             }
                         }
                     }
                 }
+
+                fromTheStart = !startedMidFile && !droppedALine;
             } catch (Exception) {
                 bytesScanned = 0;
+                fromTheStart = false;
                 return 0;
             }
 
