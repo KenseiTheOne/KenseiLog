@@ -4,6 +4,34 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.5] - 2026-09-18
+
+### Fixed
+
+- The harness can no longer reach the editor's own session sink. It remembered the field it was
+  taking over but left it holding what was there, and `OpenSessionFile` declines to open a file
+  when `WriteSessionFile` is off - a flag it reads from inside itself, so a run that met it
+  turned off mid-session found the developer's live sink still in the field and wrote filler
+  into their real editor log until it rotated at five megabytes. The field is emptied on the way
+  in, and a session that opens no file of its own is reported rather than used.
+
+### Changed
+
+- Two checks over the reach-back past a rotation counted the window's records and nothing more,
+  and a seed that finds nothing falls back to Unity's console - which by that point in a run is
+  not empty, because earlier scenarios put entries in it deliberately. So both passed with the
+  reach-back deleted outright. They count what only the file can supply now: the console has
+  nowhere to keep a tag or a channel, and a record still carrying both came out of the file. The
+  reload also reports whether it seeded, which is the same answer from the other side. Deleting
+  the reach-back took six checks red before and takes nine now. One companion assertion was
+  dropped rather than kept: by the second reload the current file holds a record of its own and
+  seeds whether or not anything reaches back, so it could not fail. The count in the harness
+  README is 254.
+- Documentation: the README said the file behind the current one is read "when the file has only
+  just rotated", and nothing in the code asks that - what gates it is room in the buffer, budget
+  left over, and the floor. The paragraph says that instead. A sentence about the assertion count
+  had also landed in the middle of a paragraph about scratch directories.
+
 ## [0.14.4] - 2026-09-18
 
 ### Fixed
@@ -45,10 +73,10 @@ All notable changes to this package are documented here. The format follows
   every check still passing.
 - The harness writes under a temp directory named after the process, empties it at both ends of
   a run, and starts each run on a report of its own rather than adding to the last one's. The
-  count in its README is 253, measured rather than reasoned about. One root shared by everything meant a run killed part way through left files whose
-  indices the next run's sink counted on from - so it reported a fault nobody had written - and
-  two editors on one machine, a checkout and a worktree, tidied each other's files away as they
-  ran.
+  One root shared by everything meant a run killed part way through left files whose indices the
+  next run's sink counted on from - so it reported a fault nobody had written - and two editors
+  on one machine, a checkout and a worktree, tidied each other's files away as they ran. The
+  count in its README is 253, measured rather than reasoned about.
 - Documentation: the README stops saying that entering play mode with Clear on Play set begins a
   file, which it has not done since 0.14.3, and the comment over `OpenSessionFile` stops
   describing a rule removed in the same release.

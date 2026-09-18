@@ -1297,14 +1297,19 @@ public static class SmokeRunner {
                 rotated.Sink.CurrentFilePath == headerOnly);
             // The window is the point of the read. A file holding a header alone is the one
             // case the reach-back past a rotation was added for, so a blank window here is the
-            // reach-back never happening.
+            // reach-back never happening. Counted by what only the file can supply: a window
+            // filled from the console instead would pass a plain count, and did.
             Check("and the window comes back holding what was written before the rotation",
-                rotated.WindowCount > 1);
+                rotated.WindowCountFromTheFile > 1);
+            Check("out of the file rather than off the console", rotated.Seeded);
 
             rotated.Write("first record after the rotation");
             rotated.Reload();
+            // No companion assertion on Seeded here: by now the current file holds a record of
+            // its own, so it seeds whether or not anything reaches back, and a check that cannot
+            // fail is worse than no check.
             Check("a second reload reaches back past the same rotation again",
-                rotated.WindowCount > 1);
+                rotated.WindowCountFromTheFile > 1);
             rotated.Close();
 
             Check("so a rotation on the last record leaves no empty file behind", rotated.FileCount == 2);
@@ -1904,6 +1909,11 @@ public static class SmokeRunner {
             SessionState.SetString(_clearedKey, string.Empty);
             SessionState.SetBool(_startedKey, false);
             SetWindow(NewWindow());
+            // Taken out of reach, not just remembered. Left in place, an OpenSessionFile that
+            // declines to open one - WriteSessionFile turned off mid-session, the flag being read
+            // inside - leaves the field holding the developer's live sink, and everything here
+            // writes filler into their real editor log until it rotates at five megabytes.
+            _held.SetValue(null, null);
         }
 
         /// <summary>False when the sink no longer has a part these lean on.</summary>
@@ -1931,6 +1941,31 @@ public static class SmokeRunner {
         /// <summary>How many records the window holds - what this reload's seed put there.</summary>
         public int WindowCount => ((EditorSink)_window.GetValue(null)).Buffer.Count;
 
+        /// <summary>
+        /// How many of those could only have come out of the file.
+        /// <para>
+        /// A count on its own says nothing about where they came from: a seed that found nothing
+        /// falls back to the console, which fills the window too - and in a run of these checks
+        /// the console is never empty, since earlier scenarios put entries in it on purpose. What
+        /// the console has nowhere to keep is the tag and the channel, so a record still carrying
+        /// both is one the file supplied.
+        /// </para>
+        /// </summary>
+        public int WindowCountFromTheFile {
+            get {
+                LogRingBuffer buffer = ((EditorSink)_window.GetValue(null)).Buffer;
+                LogRecord[] scratch = new LogRecord[buffer.Capacity];
+                int copied = buffer.CopyNewerThan(0, scratch);
+                int fromTheFile = 0;
+                for (int i = 0; i < copied; i++) {
+                    if (scratch[i].Channel == LogChannel.Dev && scratch[i].Tag == "Editor") {
+                        fromTheFile++;
+                    }
+                }
+                return fromTheFile;
+            }
+        }
+
         public long StoredSequence {
             get {
                 string stored = SessionState.GetString(_sequenceKey, string.Empty);
@@ -1952,6 +1987,11 @@ public static class SmokeRunner {
             LogCore.Configure(in config);
             harness._movedTheSettings = true;
             harness._open.Invoke(null, new object[] { harness.Directory, null });
+            if (harness.Sink == null) {
+                Check("the session opened a file of its own - is WriteSessionFile off?", false);
+                harness.Dispose();
+                return null;
+            }
             return harness;
         }
 
@@ -2011,6 +2051,7 @@ public static class SmokeRunner {
             SetWindow(NewWindow());
             _counter.SetValue(null, 0L);
             SessionDecision decision = (SessionDecision)_resume.Invoke(null, new object[] { true, worthSeeding });
+            Seeded = decision.Seeded;
             _open.Invoke(null, new object[] { Directory, decision.ContinuePath });
         }
 

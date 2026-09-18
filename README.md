@@ -11,7 +11,7 @@ In Unity's console a tag is only a word in the message, so filtering for `combat
 Package Manager → **Add package from git URL**:
 
 ```
-https://github.com/KenseiTheOne/KenseiLog.git#v0.14.3
+https://github.com/KenseiTheOne/KenseiLog.git#v0.14.5
 ```
 
 The tag pins the version — put the one you want after the `#`; the newest is at the top of
@@ -169,7 +169,7 @@ In the editor that sink only runs during play mode: it starts a run by opening a
 
 What the editor itself logs goes to `logs/editor`, one file per editor session rather than per domain reload, so records written from an editor tool survive a recompile — and an accidental **Clear**, which has never touched a file. One file per editor *process*, to be exact: an asset import worker and an out-of-process profiler both reload the domain just as the editor does and share the project this directory is keyed by, so both stay out of here entirely. A reload keeps to the file it was writing whether or not it read anything back — including the reload that enters play mode with **Clear on Play** set, which skips the read on purpose. It takes the dev channel, which is the point of it. During play mode in the editor both sinks are registered, so those records are written twice: once to the run's file, once to the editor's. `EditorSink.WriteSessionFile` turns the editor's file off, from the next domain reload on.
 
-The window reads back the last 2 MB of that file, which is what a recompile can afford; the rest stays on disk and opens with **Open file** like any other session. When the file has only just rotated it reads the one behind it as well, out of the same 2 MB and never further back than the file this editor session started with — so a recompile a moment after a rotation does not come back empty, and an editor that has since closed does not leave its records in your window. It skips the read altogether when the reload is the one that enters play mode with Clear on Play set, since that seed would be thrown away a moment later. **Clear** stays cleared across a reload — the file keeps everything, but what you dismissed does not come back.
+The window reads back the last 2 MB of that file, which is what a recompile can afford; the rest stays on disk and opens with **Open file** like any other session. It reads the file behind that one as well, out of the same 2 MB and never further back than the file this editor session started with — so a recompile a moment after a rotation does not come back empty, and an editor that has since closed does not leave its records in your window. Out of the same 2 MB: the file being written is served first, and the one behind it gets whatever room and budget are left, which after a rotation is nearly all of it and later on is nothing. It skips the read altogether when the reload is the one that enters play mode with Clear on Play set, since that seed would be thrown away a moment later. **Clear** stays cleared across a reload — the file keeps everything, but what you dismissed does not come back.
 
 Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — set `FileIncludesDevChannel` if you want them.
 
