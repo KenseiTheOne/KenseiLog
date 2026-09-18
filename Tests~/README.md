@@ -97,6 +97,67 @@ Each regression check names the bug it guards, because the interesting ones were
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
 
+## What nothing here checks
+
+The list above is what is guarded. This is the other half: what is believed but has not been
+watched happen, what no check would catch, and what was looked at and left. It is here rather
+than in the CHANGELOG because the CHANGELOG is for what shipped, and rather than in a commit
+because a commit is for what changed. Neither has anywhere to put "not sure yet".
+
+**Every entry says how it leaves.** An entry that cannot say what would remove it is a wish, not
+a note, and belongs in neither place. This section is meant to shrink.
+
+### Believed, not watched happen
+
+The headless checks cover these as far as a batchmode process can, which is not as far as a
+running editor. Each was reasoned about and shipped; none has been seen working.
+
+- **An out-of-process profiler leaves `logs/editor` alone.** Added to the guard alongside the
+  asset import worker in 0.14.2, on the same reasoning, but never observed - the worker half was
+  confirmed with `lsof` on a real project and this half was not.
+  *Leaves when:* a standalone Profiler has been run against a project and no file carrying
+  `Editor started` appeared in `logs/editor` for it.
+- **Entering play mode keeps to one file.** 0.14.3. With Clear on Play and domain reload both at
+  their defaults this is the reload that happens dozens of times a day, and the failure it fixed
+  was the pruning taking the morning's records off the disk on the fourth entry.
+  *Leaves when:* five entries into play mode in a row have left one file in the directory, with
+  what was logged before the first still in it.
+- **A recompile straight after a rotation comes back with its history.** 0.14.4 and 0.14.6. The
+  harness drives this, but through its own stand-in for a domain reload rather than a real one.
+  *Leaves when:* a recompile immediately after a file passes the size limit has left the window
+  holding the session rather than a handful of records, with no new file behind it.
+
+### Known gaps, where a check would not catch it
+
+Mutations that leave the whole harness green. Recorded so that the next person to trust it knows
+where the floor is.
+
+- **Nothing sees whether `Install` actually calls `SessionPlan.Resolve`.** The decisions are
+  covered and the wiring is not: the harness calls `Resolve` itself, because the only thing that
+  calls `Install` is a domain reload.
+  *Leaves when:* the harness can drive a real reload, or the call moves somewhere reachable.
+- **Recording the session path before `Dispose` rather than after is not caught.** The two differ
+  only when a rotation is running on a logging thread at that moment, and nothing here runs one.
+  *Leaves when:* a check exists that rotates from another thread while the file is closing.
+
+### Looked at and left
+
+Real, understood, not worth what fixing them costs today. Each says what would change that.
+
+- **`FileSink.WrittenBefore` fails open.** A name it cannot parse answers "not below the floor",
+  which lets a file through. Every caller today passes a name this sink wrote, so it is
+  unreachable - but the safe answer for a barrier is the other one.
+  *Leaves when:* any path can hand it a name from somewhere else.
+- **The harness winds the record counter back without unregistering the live sinks.** Standing in
+  for a reload means setting the counter to zero, and anything logging through `LogCore` while it
+  is down - a foreign log on a background thread - would take a duplicate id in the developer's
+  own file. Harmless in batchmode, which is how these are run.
+  *Leaves when:* anything offers to run them from a menu inside a live editor.
+- **A killed run leaves its scratch directory behind.** Each run empties its own
+  `%TEMP%/kenseilog-smoke.<pid>` at both ends and touches no other, so one that is killed part
+  way through is never collected by anything.
+  *Leaves when:* the accumulation is ever noticed on a real machine.
+
 ## The branches a build takes
 
 ```
