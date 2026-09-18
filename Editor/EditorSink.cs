@@ -37,6 +37,21 @@ namespace KenseiLog.Editor {
         private const string SessionFilePathKey = "KenseiLog.EditorSessionFilePath";
 
         /// <summary>
+        /// The first file this editor session opened, which is where its history begins.
+        /// Seeding reaches back past a rotation, and how far back is not a question the record
+        /// ids can answer: the directory outlives the editor, and a short file left in it
+        /// yesterday numbers below everything a session that has been up an hour holds. Kept in
+        /// SessionState because that is the thing whose lifetime is the session's own.
+        /// <para>
+        /// Absent only until a file is opened, including in a session this sink joined midway.
+        /// A file is then named all the same - see <see cref="OpenSessionFile"/> - so that it is
+        /// never read as "no session", which would leave the reach-back off until the editor
+        /// is restarted.
+        /// </para>
+        /// </summary>
+        private const string SessionFirstFileKey = "KenseiLog.EditorSessionFirstFile";
+
+        /// <summary>
         /// The highest record id the last domain issued. Carried across so that a session which
         /// keeps to its file keeps to its numbering, whether or not the records came back: the
         /// counter starts again at zero with every domain, and the file does not.
@@ -138,6 +153,16 @@ namespace KenseiLog.Editor {
             }
         }
 
+        /// <summary>
+        /// The file this editor session started with, or null before it has one.
+        /// </summary>
+        private static string SessionFirstFilePath {
+            get {
+                string path = SessionState.GetString(SessionFirstFileKey, string.Empty);
+                return string.IsNullOrEmpty(path) ? null : path;
+            }
+        }
+
         /// <summary>The highest record id the last domain issued, or 0 when there was none.</summary>
         private static long SessionSequence {
             get {
@@ -213,11 +238,38 @@ namespace KenseiLog.Editor {
             // read back out of the session file - where the tag, the channel and the call site
             // survive, none of which Unity's console has anywhere to keep. Anything else, and
             // a fresh editor, falls back to the console.
-            //
-            // Whatever any of it makes of a Unity version that has moved things, it must not
-            // cost us the two lines below: without them the sink is never registered and the
-            // window records nothing at all, while still opening and looking healthy.
             bool continuing = SessionState.GetBool(SessionStartedKey, false);
+            SessionDecision decision = ResumeSession(continuing, ShouldSeed());
+
+            // Whatever a Unity version that has moved things makes of the line above, it must
+            // not cost us the two below: without them the sink is never registered and the
+            // window records nothing at all, while still opening and looking healthy.
+            LogCore.AddSink(Instance);
+            LogCore.Initialize();
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+            CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
+
+            OpenSessionFile(SessionFileDirectory, decision.ContinuePath);
+
+            // After the sink is open, so the marker reaches the file as well as the window. Not
+            // when entering play mode: that has a marker of its own a moment later, and this one
+            // would be wiped by Clear on Play in between.
+            if (!EditorApplication.isPlayingOrWillChangePlaymode) {
+                Mark(continuing ? "Scripts reloaded" : "Editor started");
+            }
+        }
+
+        /// <summary>
+        /// Takes up the session this domain is joining: carries its numbering across, and reads
+        /// the window's history back out of its file.
+        /// <para>
+        /// Handed what Install reads off the editor rather than reaching for it again, for the
+        /// reason <see cref="SessionPlan"/> is apart from Install at all: a domain reload is the
+        /// only thing that runs Install, and this is the wiring every fault in this file has
+        /// been in.
+        /// </para>
+        /// </summary>
+        private static SessionDecision ResumeSession(bool continuing, bool worthSeeding) {
             // Before anything is written, and whether or not the records come back below: what
             // this domain logs goes into the same file as what the last one logged, so repeating
             // its numbers would leave the file unsorted and every lookup into it wrong.
@@ -228,33 +280,17 @@ namespace KenseiLog.Editor {
             SessionDecision decision = new SessionDecision(false, null);
             try {
                 List<LogRecord> fromFile = new List<LogRecord>();
-                decision = SessionPlan.Resolve(continuing, WriteSessionFile, ShouldSeed(), SessionFilePath,
+                decision = SessionPlan.Resolve(continuing, WriteSessionFile, worthSeeding, SessionFilePath,
                                                File.Exists, path => SeedFromSessionFile(path, fromFile));
                 if (decision.Seeded) {
                     SeedRemainingConsoleEntries(fromFile);
-                } else if (ShouldSeed()) {
+                } else if (worthSeeding) {
                     SeedFromConsole();
                 }
             } catch (Exception exception) {
                 Debug.LogWarning("KenseiLog: could not seed the window (" + exception.Message + ")");
             }
-
-            LogCore.AddSink(Instance);
-            LogCore.Initialize();
-            EditorApplication.playModeStateChanged += OnPlayModeChanged;
-            CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
-
-            // Continuing the file makes sense only if its records came back. When the read
-            // failed, carrying on with it would put records numbered from one after records
-            // numbered in the hundreds - an unsorted file, and every lookup into it wrong.
-            OpenSessionFile(decision.ContinuePath);
-
-            // After the sink is open, so the marker reaches the file as well as the window. Not
-            // when entering play mode: that has a marker of its own a moment later, and this one
-            // would be wiped by Clear on Play in between.
-            if (!EditorApplication.isPlayingOrWillChangePlaymode) {
-                Mark(continuing ? "Scripts reloaded" : "Editor started");
-            }
+            return decision;
         }
 
         /// <summary>
@@ -278,14 +314,14 @@ namespace KenseiLog.Editor {
         /// rest of the pipeline exactly as it was.
         /// </para>
         /// </summary>
-        private static void OpenSessionFile(string continuePath) {
+        private static void OpenSessionFile(string directory, string continuePath) {
             if (!WriteSessionFile) {
                 return;
             }
 
             try {
                 LogConfig config = LogCore.Config;
-                config.FileDirectory = SessionFileDirectory;
+                config.FileDirectory = directory;
                 // The point of the file is the channel the runtime's own sink leaves out: a
                 // dev record written from an editor tool has nowhere else to survive.
                 config.FileIncludesDevChannel = true;
@@ -301,6 +337,19 @@ namespace KenseiLog.Editor {
 
                 SessionState.SetBool(SessionStartedKey, true);
                 SessionState.SetString(SessionFilePathKey, _sessionFile.CurrentFilePath);
+                if (continuePath == null || SessionFirstFilePath == null) {
+                    // A file of its own is where this session begins, and seeding never reaches
+                    // below it: what is under it in the directory was left by a session that is
+                    // over, numbering from a beginning of its own.
+                    //
+                    // A session already under way with no answer here is one this sink joined
+                    // midway - the package resolved again in a running editor - and the file in
+                    // hand is the earliest of it anything can vouch for. That gives up the
+                    // reach-back until the next rotation, which is the cost of not guessing:
+                    // the file behind this one is as likely to belong to an editor that has
+                    // closed, and the point of this key is to keep that out.
+                    SessionState.SetString(SessionFirstFileKey, _sessionFile.CurrentFilePath);
+                }
                 LogCore.AddSink(_sessionFile);
             } catch (Exception exception) {
                 _sessionFile = null;
@@ -340,7 +389,8 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Fills the buffer from the file this editor session has been writing.
+        /// Fills the buffer from the file this editor session has been writing, and from the
+        /// one behind it when a rotation has only just happened.
         /// <para>
         /// The records come back whole - tag, channel, frame, call site, stack trace - which is
         /// the difference between this and reading the console, where none of that exists. Their
@@ -348,14 +398,23 @@ namespace KenseiLog.Editor {
         /// highest: the file carries on being written after the reload, and records repeating
         /// numbers already in it would leave it unsorted and every lookup into it wrong.
         /// </para>
+        /// <para>
+        /// One budget covers the whole seed, and the file being written is served out of it
+        /// first. A budget per file lets the one behind a rotation fill the room left in the
+        /// buffer with records older than the ones the budget has just cut off the front of
+        /// this one - a window holding an older stretch of the log in place of a newer one,
+        /// with a hole between them and nothing in it to say so.
+        /// </para>
         /// </summary>
         private static bool SeedFromSessionFile(string path, List<LogRecord> into) {
-            if (LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into) == 0) {
-                return false;
-            }
+            LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into, out long spent);
+            // Whether or not this file gave anything back. A rotation on the last record before
+            // the reload leaves it holding a header alone, and that is the case the file behind
+            // it exists to cover: reading nothing is the reason to reach back, not to stop.
+            PrependPredecessor(path, SeedByteBudget - spent, into);
 
-            if (into.Count < Instance.Buffer.Capacity) {
-                PrependPredecessor(path, into);
+            if (into.Count == 0) {
+                return false;
             }
 
             long clearedThrough = ClearedThrough;
@@ -376,42 +435,38 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Reads the file before this one as well, when there is room left in the buffer.
+        /// Reads the file before this one as well, while there is room left in the buffer and
+        /// budget left over.
         /// <para>
         /// A rotation shortly before the reload leaves the file now current holding a handful of
         /// records, and the session's history in the one behind it. Read on its own, the window
         /// would come back all but empty and look as though a recompile had eaten the morning.
         /// </para>
         /// <para>
-        /// Only once it is the same run of numbering, which is what the comparison is for: a
-        /// file left by another session - one that Clear on Play started, or a build's - numbers
-        /// from its own beginning, and mixing the two would leave the buffer unsorted and every
-        /// lookup into it wrong. Ids rise within a session and never repeat, so the whole of the
-        /// earlier file coming in below the whole of this one is the proof that they are one run.
+        /// Never below the file this editor session started with. What is under that file was
+        /// left by a session that is over - yesterday's editor, a run of the game - and it
+        /// numbers from a beginning of its own, so mixing the two would leave the buffer
+        /// unsorted and every lookup into it wrong. The ids cannot be read for this: they rise
+        /// within a session, so a short file left behind yesterday sits below everything an
+        /// editor that has been up an hour holds, and clears any bar its own history clears.
+        /// Where the session began is what answers it, and that is a file rather than a number.
         /// </para>
         /// </summary>
-        private static void PrependPredecessor(string path, List<LogRecord> into) {
-            string earlier = FileSink.FileBefore(path);
-            if (earlier == null) {
+        private static void PrependPredecessor(string path, long byteBudget, List<LogRecord> into) {
+            int room = Instance.Buffer.Capacity - into.Count;
+            if (room <= 0 || byteBudget <= 0) {
                 return;
             }
 
-            long oldest = long.MaxValue;
-            for (int i = 0; i < into.Count; i++) {
-                if (into[i].Sequence < oldest) {
-                    oldest = into[i].Sequence;
-                }
+            string first = SessionFirstFilePath;
+            string earlier = FileSink.FileBefore(path);
+            if (first == null || earlier == null || FileSink.WrittenBefore(earlier, first)) {
+                return;
             }
 
             List<LogRecord> before = new List<LogRecord>();
-            if (LogSessionReader.ReadTail(earlier, Instance.Buffer.Capacity - into.Count, SeedByteBudget, before) == 0) {
+            if (LogSessionReader.ReadTail(earlier, room, byteBudget, before) == 0) {
                 return;
-            }
-
-            for (int i = 0; i < before.Count; i++) {
-                if (before[i].Sequence >= oldest) {
-                    return;
-                }
             }
 
             into.InsertRange(0, before);

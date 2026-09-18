@@ -4,6 +4,55 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.4] - 2026-09-18
+
+### Fixed
+
+- The window no longer fills itself from an editor session that is over. Reaching back past a
+  rotation was allowed as long as every id in the earlier file came below every id already in
+  hand, and that is a consequence of one run rather than proof of one: a short file left in the
+  directory yesterday sits below everything an editor that has been up an hour holds, so it
+  cleared the bar and its records arrived in this morning's window looking like part of it.
+  Which file this editor session started with is written down instead, and the reach-back stops
+  there.
+- A rotation on the last record before a reload gets its history back. The file then current
+  holds a header and nothing else, and the empty read returned before the reach-back that exists
+  for exactly that case was ever reached - so the window fell back to the console, and a
+  morning's records came back with no tag, no channel, no call site and no stack trace among
+  them.
+- The 2 MB a seed may read covers the whole of it rather than being spent again on each file.
+  A file past that on its own came back cut off at the front, and the file behind it then filled
+  the room left in the buffer with records older than the ones just cut - so the window held an
+  older stretch of the log in place of a newer one, with a hole between the two and nothing in
+  it to say so. The file being written is served first, and the one behind it gets what is left.
+- A session this sink joins midway - the package resolved again in a running editor, which is
+  how the first session on any new version begins - takes the file it is continuing as where
+  that session started, rather than reading the silence as no session at all. Read the second
+  way, the reach-back above stayed off until the editor was restarted. The file in hand is the
+  earliest of the session anything can vouch for, so the reach-back is off for one more rotation
+  and right from then on, with nothing belonging to a closed editor let in on the way.
+
+### Changed
+
+- `FileSink.WrittenBefore` answers which of two files in a log directory was written first, and
+  `LogSessionReader.ReadTail` has an overload reporting how much of its budget a read took. Both
+  are what the seeding above decides with, and both belong beside the answers those types
+  already give.
+- Installing the sink hands what it reads off the editor - whether a seed is worth making, and
+  where the session file goes - to the two methods that do the work, so the harness drives the
+  sink's own wiring instead of reopening the file with a `FileSink` of its own. Reopening it by
+  hand was how the reserve that carries the numbering across a reload could be deleted with
+  every check still passing.
+- The harness writes under a temp directory named after the process, empties it at both ends of
+  a run, and starts each run on a report of its own rather than adding to the last one's. The
+  count in its README is 253, measured rather than reasoned about. One root shared by everything meant a run killed part way through left files whose
+  indices the next run's sink counted on from - so it reported a fault nobody had written - and
+  two editors on one machine, a checkout and a worktree, tidied each other's files away as they
+  ran.
+- Documentation: the README stops saying that entering play mode with Clear on Play set begins a
+  file, which it has not done since 0.14.3, and the comment over `OpenSessionFile` stops
+  describing a rule removed in the same release.
+
 ## [0.14.3] - 2026-09-18
 
 ### Fixed

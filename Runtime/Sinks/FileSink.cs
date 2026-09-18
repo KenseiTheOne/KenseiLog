@@ -542,6 +542,21 @@ namespace KenseiLog {
             return best;
         }
 
+        /// <summary>
+        /// Whether one file in a log directory was written before another. Both have to be
+        /// names this sink wrote; anything else has no place in the order and answers false.
+        /// <para>
+        /// Public for the reason <see cref="FileBefore"/> is: the editor has to know how far
+        /// back a session of its own reaches, and two answers to "which came first" is one
+        /// too many.
+        /// </para>
+        /// </summary>
+        public static bool WrittenBefore(string path, string other) {
+            int index = IndexOfFile(path);
+            int reference = IndexOfFile(other);
+            return index > 0 && reference > 0 && index < reference;
+        }
+
         /// <summary>The N in log.N.jsonl, or -1 for a name this sink did not write.</summary>
         private static int IndexOfFile(string path) {
             string name = Path.GetFileNameWithoutExtension(path);

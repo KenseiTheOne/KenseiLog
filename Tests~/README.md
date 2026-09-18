@@ -40,7 +40,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-220 assertions over everything that does not need a GUI: the ring buffer including gapped and
+253 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -51,9 +51,14 @@ failure rather than ending the run. Before that, a throw ended `Run` where it st
 report was never printed, `Exit(1)` was never reached, and `-batchmode -quit` returned zero -
 a harness reporting success because it had fallen over.
 
-Anything that writes to disk writes under `%TEMP%/kenseilog-smoke`, and the run deletes that
-directory afterwards whether or not it passed. Pointing the file checks at `persistentDataPath` meant every run pushed the
-developer's own logs out of the rotation and left its own behind.
+Anything that writes to disk writes under `%TEMP%/kenseilog-smoke.<process id>`, and the run
+empties that directory at both ends whether or not it passed. Pointing the file checks at
+`persistentDataPath` meant every run pushed the developer's own logs out of the rotation and left
+its own behind. The process id and the sweep on the way in are for the other half of it: the
+sink names each file from the highest index it finds, so leftovers from a run that was killed
+shift the next run's indices and turn checks red with nothing wrong in the package - and two
+editors on one machine, a checkout and a worktree, share a temp directory and would otherwise
+delete each other's files mid-check.
 
 Each regression check names the bug it guards, because the interesting ones were all silent:
 
@@ -76,6 +81,18 @@ Each regression check names the bug it guards, because the interesting ones were
 - a session file path recorded once at open, which a rotation then moved on without it
 - carrying on with the session file made conditional on reading it back, which entering play mode
   with Clear on Play set never does
+- seeding reaching below the file this editor session started with, on the strength of ids that
+  only looked like one run: yesterday's short file numbers below everything an editor that has
+  been up an hour holds
+- a rotation on the last record before a reload, whose empty read returned before the reach-back
+  added for exactly that case
+- a seed budget spent again on every file it touched, which put an older stretch of the log in
+  the window in place of a newer one
+- the reserve that carries the numbering across a reload, which nothing here ran until the
+  session checks went through the sink's own wiring rather than reopening the file themselves
+- a session joined midway, which is what the package resolving again in a running editor leaves
+  behind and therefore what the first session on a new version always is: with nothing saying
+  where that session began, the reach-back stayed off until the editor was restarted
 - a null tag, which reached the viewers and threw there
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else

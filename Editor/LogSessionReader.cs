@@ -116,7 +116,22 @@ namespace KenseiLog.Editor {
         /// own: an instance id means something only inside the session that issued it.
         /// </para>
         /// </summary>
-        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) {
+        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) =>
+            ReadTail(path, maxRecords, maxBytes, into, out _);
+
+        /// <summary>
+        /// The same read, reporting what it cost.
+        /// <para>
+        /// <paramref name="bytesScanned"/> is how much of the budget went on this file, so a
+        /// seed spanning two files can spend one budget between them rather than one each.
+        /// A read that found nothing costs nothing, which is what leaves the whole budget to
+        /// the file behind a rotation.
+        /// </para>
+        /// </summary>
+        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into,
+                                   out long bytesScanned) {
+            bytesScanned = 0;
+
             // Lines first, records second. Parsing is what costs - a JsonUtility call and an
             // object per line - and a tail of two megabytes holds more lines than the buffer can
             // keep, so parsing them all and then dropping the front would be paying for records
@@ -132,6 +147,7 @@ namespace KenseiLog.Editor {
                     if (startedMidFile) {
                         stream.Seek(stream.Length - maxBytes, SeekOrigin.Begin);
                     }
+                    bytesScanned = startedMidFile ? maxBytes : stream.Length;
 
                     using (StreamReader reader = new StreamReader(stream)) {
                         bool skipPartialLine = startedMidFile;
@@ -153,6 +169,7 @@ namespace KenseiLog.Editor {
                     }
                 }
             } catch (Exception) {
+                bytesScanned = 0;
                 return 0;
             }
 
