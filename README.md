@@ -11,7 +11,7 @@ In Unity's console a tag is only a word in the message, so filtering for `combat
 Package Manager → **Add package from git URL**:
 
 ```
-https://github.com/KenseiTheOne/KenseiLog.git#v0.14.6
+https://github.com/KenseiTheOne/KenseiLog.git#v0.15.0
 ```
 
 The tag pins the version — put the one you want after the `#`; the newest is at the top of
@@ -188,7 +188,7 @@ LogCore.Configure(config);
 ![The collapsed bubble](Documentation~/images/overlay-bubble.png)
 ![The overlay's tag list](Documentation~/images/overlay-tags.png)
 
-A small bubble appears in the corner. It reads the error count if there are errors, the warning count if there are warnings but no errors, and the total otherwise — whichever matters most, in one glance. Drag it anywhere, tap it to open the viewer: level toggles with counts, a tag list, tap a row for its detail, and Copy to put the whole thing on the clipboard.
+A small bubble appears in the corner, holding all three counts at once: errors, warnings, logs, always in that order and always all three. Each carries a mark rather than a word — a round badge with an exclamation in it, a triangle, three lines — so the level is told by silhouette before colour, which is what survives a screenshot pasted into a bug report in greyscale. A level with nothing to report keeps its place, goes grey and drops its number, so the badge never changes shape as it counts. The worst level present, if it is a warning or an error, is inverted onto a plate of its own colour: that is the part the corner of the eye catches without reading anything. Logs never light it up — a badge that brightens because the game logged at all is the panel nobody asked for. Past 999 a count reads `1k+`. Drag it anywhere, tap it to open the viewer: level toggles with counts, a tag list, tap a row for its detail, and Copy to put the whole thing on the clipboard.
 
 The tag list offers the tags this session actually logged, so unlike the editor window it will not show a `Combat` entry unless something logged under exactly that tag. Selecting one follows the same rule as the window, so `Combat` brings in `Combat.Damage` too.
 

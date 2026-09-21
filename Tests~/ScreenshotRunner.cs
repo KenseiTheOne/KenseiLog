@@ -39,8 +39,12 @@ public sealed class ScreenshotRunner : MonoBehaviour {
     private IEnumerator Start() {
         Directory.CreateDirectory(_directory);
 
-        // Let the demo's timed logs build up a few tags first.
+        // Let the demo's timed logs build up a few tags first, then put one of each level in:
+        // the bubble's whole job is showing all three at once, and a shot taken before anything
+        // has gone wrong is the one state that demonstrates none of it.
         yield return new WaitForSecondsRealtime(3f);
+        Log.Error("Net", "desync at tick 4417, client ahead by 3 frames");
+        yield return new WaitForSecondsRealtime(0.4f);
         yield return Capture("01-bubble");
 
         LogOverlay.IsOpen = true;

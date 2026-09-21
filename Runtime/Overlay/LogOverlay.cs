@@ -30,7 +30,28 @@ namespace KenseiLog {
         // Squared once here because it is compared against a squared length.
         private const float DragThresholdSquared = 6f * 6f;
 
+        // The bubble is three chips - error, warning, log, in that order and always all three,
+        // so the eye learns a position instead of re-reading a sentence that changes shape as
+        // events arrive. Its width is fixed for the same reason: one thing moving on the screen
+        // is the game, and a badge that grows as it counts is a second.
+        private const float BubbleHeight = 34f;
+        private const float BubblePad = 7f;
+        private const float ChipGap = 7f;
+        private const float IconSize = 14f;
+        // Deliberately smaller than ChipGap, so each mark groups with its own number rather than
+        // with the chip beside it.
+        private const float IconGap = 3f;
+        // The marks are rasterised at this and then resampled to whatever the matrix scale makes
+        // of a fourteen point icon - smaller than the mask on a desktop, larger on a phone.
+        // Sixteen samples a texel and a mip chain, so the edge is already smooth either way.
+        private const int IconTexSize = 32;
+
         private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
+        private static readonly Color _iconOffColor = new Color(0.58f, 0.58f, 0.63f, 0.5f);
+        private static readonly Color _invertedInk = new Color(0.07f, 0.07f, 0.09f);
+        // Uneven on purpose: three lines of text, not a stack of equal bars, which would read as
+        // a hamburger menu.
+        private static readonly float[] _logBarWidths = { 1f, 0.62f, 0.84f };
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
         private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
 
@@ -55,15 +76,19 @@ namespace KenseiLog {
         private long _selected = -1;
         private long _detailSequence = -1;
         private string _detailBody;
-        private string _bubbleLabel;
-        private bool _bubbleLabelDirty = true;
+        private readonly string[] _bubbleCounts = new string[3];
+        // The level whose chip is inverted, or -1 when nothing is worth lighting up for.
+        private int _bubbleAccent = -1;
+        private bool _bubbleDirty = true;
+        private float _digitSlot;
+        private float _bubbleWidth;
         private readonly string[] _levelLabels = new string[3];
         private bool _levelLabelsDirty = true;
         private bool _tagRowsDirty;
         private Vector2 _scroll;
         private Vector2 _tagScroll;
         private Vector2 _bubble = new Vector2(12f, 12f);
-        private bool _draggingBubble;
+        private readonly BubbleGesture _bubbleGesture = new BubbleGesture();
         private bool _didDrag;
         private Vector2 _pressPosition;
 
@@ -74,11 +99,14 @@ namespace KenseiLog {
         private GUIStyle _button;
         private GUIStyle _detail;
         private GUIStyle _meta;
+        private GUIStyle _count;
         private Texture2D _panelTex;
         private Texture2D _paneTex;
         private Texture2D _rowTex;
         private Texture2D _barTex;
         private Texture2D _chipTex;
+        private Texture2D _warningIconTex;
+        private Texture2D _errorIconTex;
 
         public static void Ensure(MemorySink sink, float scale) {
             if (!Application.isPlaying) {
@@ -206,6 +234,8 @@ namespace KenseiLog {
             DestroyTexture(ref _rowTex);
             DestroyTexture(ref _barTex);
             DestroyTexture(ref _chipTex);
+            DestroyTexture(ref _warningIconTex);
+            DestroyTexture(ref _errorIconTex);
         }
 
         // =====================================================================
@@ -245,7 +275,7 @@ namespace KenseiLog {
                 }
             }
             if (copied > 0) {
-                _bubbleLabelDirty = true;
+                _bubbleDirty = true;
                 _levelLabelsDirty = true;
                 _tagRowsDirty = true;
             }
@@ -275,7 +305,7 @@ namespace KenseiLog {
             _selected = -1;
             _detailSequence = -1;
             _detailBody = null;
-            _bubbleLabelDirty = true;
+            _bubbleDirty = true;
             _levelLabelsDirty = true;
             _tagRowsDirty = true;
             _followTail = true;
@@ -376,44 +406,123 @@ namespace KenseiLog {
         }
 
         private void DrawBubble(float width, float height) {
-            const float size = 34f;
-            _bubble.x = Mathf.Clamp(_bubble.x, 0f, Mathf.Max(0f, width - size * 3f));
-            _bubble.y = Mathf.Clamp(_bubble.y, 0f, Mathf.Max(0f, height - size));
+            // Rebuilt when a record arrives rather than per pass: this is the state the overlay
+            // is in for almost all of a session, and OnGUI runs at least twice a frame.
+            if (_bubbleDirty) {
+                RebuildBubble();
+            }
 
-            Rect rect = new Rect(_bubble.x, _bubble.y, size * 3f, size);
+            _bubble.x = Mathf.Clamp(_bubble.x, 0f, Mathf.Max(0f, width - _bubbleWidth));
+            _bubble.y = Mathf.Clamp(_bubble.y, 0f, Mathf.Max(0f, height - BubbleHeight));
+
+            Rect rect = new Rect(_bubble.x, _bubble.y, _bubbleWidth, BubbleHeight);
             Event current = Event.current;
+            // Read before GUI.Button, which consumes the MouseUp it answers: a reset keyed on
+            // the type afterwards never ran, and one drag left the bubble unopenable for good.
+            EventType type = current.type;
 
-            if (current.type == EventType.MouseDrag && rect.Contains(current.mousePosition)) {
-                _bubble += current.delta;
-                _draggingBubble = true;
+            if (type == EventType.MouseDown) {
+                _bubbleGesture.Press(rect.Contains(current.mousePosition), _bubble);
+            }
+
+            // _didDrag carries the same threshold the rows use. Without it any movement at all
+            // began a drag, and a finger never lands without a pixel or two of travel.
+            if (type == EventType.MouseDrag &&
+                _bubbleGesture.TryDrag(_didDrag, current.mousePosition - _pressPosition, out Vector2 dragged)) {
+                _bubble = dragged;
                 current.Use();
                 return;
             }
 
             GUI.Box(rect, GUIContent.none, _panel);
 
-            int errors = _levelCounts[(int)LogLevel.Error];
-            int warnings = _levelCounts[(int)LogLevel.Warning];
-            // Rebuilt when a record arrives rather than per pass: this is the state the overlay
-            // is in for almost all of a session, and OnGUI runs at least twice a frame.
-            if (_bubbleLabelDirty) {
-                int total = _levelCounts[0] + _levelCounts[1] + _levelCounts[2];
-                _bubbleLabel = errors > 0
-                    ? errors + " error" + (errors == 1 ? string.Empty : "s")
-                    : warnings > 0
-                        ? warnings + " warning" + (warnings == 1 ? string.Empty : "s")
-                        : total + " logs";
-                _bubbleLabelDirty = false;
-            }
-            GUI.color = errors > 0 ? new Color(1f, 0.45f, 0.4f) : warnings > 0 ? new Color(1f, 0.8f, 0.3f) : Color.white;
+            // The whole bubble is one control, drawn before the chips so that they sit on top of
+            // it, and its answer acted on after they are drawn rather than inside the call:
+            // SetOpen swaps the overlay to its open state, and doing that half way through
+            // drawing the collapsed one would leave a frame drawn from two different states.
+            bool tapped = _bubbleGesture.Opens(GUI.Button(rect, GUIContent.none, _button));
 
-            if (GUI.Button(rect, _bubbleLabel, _button) && !_draggingBubble) {
+            float x = rect.x + BubblePad;
+            for (int level = 2; level >= 0; level--) {
+                DrawChip(x, rect.y, level);
+                x += IconSize + IconGap + _digitSlot + ChipGap;
+            }
+
+            if (tapped) {
                 SetOpen(true);
             }
-            GUI.color = Color.white;
+            if (type == EventType.MouseUp) {
+                _bubbleGesture.Release();
+            }
+        }
 
-            if (current.type == EventType.MouseUp) {
-                _draggingBubble = false;
+        private void RebuildBubble() {
+            _bubbleAccent = -1;
+            for (int level = 2; level >= 0; level--) {
+                int count = _levelCounts[level];
+                _bubbleCounts[level] = count == 0
+                    ? null
+                    : count > 999 ? "1k+" : count.ToString(CultureInfo.InvariantCulture);
+
+                // Only a warning or an error is worth lighting up for. A badge that brightens
+                // because the game logged at all is the panel nobody asked for.
+                if (_bubbleAccent < 0 && count > 0 && level > (int)LogLevel.Log) {
+                    _bubbleAccent = level;
+                }
+            }
+            _bubbleDirty = false;
+        }
+
+        /// <summary>
+        /// One level's mark and count. A level with nothing to report keeps its place and loses
+        /// its digits, so the layout never moves; the worst level present is drawn inverted - its
+        /// own colour as a plate with the mark and digits knocked out of it - which is the part
+        /// the corner of the eye picks up without reading anything.
+        /// </summary>
+        private void DrawChip(float x, float y, int level) {
+            bool accent = _bubbleAccent == level;
+            string count = _bubbleCounts[level];
+            float chipWidth = IconSize + IconGap + _digitSlot;
+
+            if (accent) {
+                GUI.color = LevelColor((LogLevel)level);
+                GUI.DrawTexture(new Rect(x - 4f, y + 4f, chipWidth + 8f, BubbleHeight - 8f), _chipTex);
+            }
+
+            GUI.color = accent ? _invertedInk : count == null ? _iconOffColor : LevelColor((LogLevel)level);
+            DrawIcon(x, y + (BubbleHeight - IconSize) * 0.5f, level);
+
+            if (count != null) {
+                GUI.Label(new Rect(x + IconSize + IconGap, y, _digitSlot, BubbleHeight), count, _count);
+            }
+            GUI.color = Color.white;
+        }
+
+        /// <summary>
+        /// The three marks, told apart by silhouette before colour: a round badge holding an
+        /// exclamation for an error, a solid triangle for a warning, horizontal lines for a log.
+        /// Round against pointed against level is a distinction that survives a colour-blind
+        /// reader, a screen in sunlight, and a screenshot pasted into a report in greyscale -
+        /// which is the state the two coloured chips arrive in most often.
+        /// </summary>
+        private void DrawIcon(float x, float y, int level) {
+            if (level == (int)LogLevel.Error) {
+                GUI.DrawTexture(new Rect(x, y, IconSize, IconSize), _errorIconTex);
+                return;
+            }
+            if (level == (int)LogLevel.Warning) {
+                GUI.DrawTexture(new Rect(x, y, IconSize, IconSize), _warningIconTex);
+                return;
+            }
+
+            // Drawn as quads rather than rasterised like the other two: a two point line baked
+            // into a mask resamples into a grey smear at this size, while a stretched quad keeps
+            // its edge at every scale.
+            float bar = IconSize * 0.17f;
+            float step = IconSize * 0.3f;
+            float top = y + (IconSize - (bar + step * 2f)) * 0.5f;
+            for (int i = 0; i < _logBarWidths.Length; i++) {
+                GUI.DrawTexture(new Rect(x, top + step * i, IconSize * _logBarWidths[i], bar), _chipTex);
             }
         }
 
@@ -690,6 +799,104 @@ namespace KenseiLog {
             };
 
             _meta = new GUIStyle(_row) { alignment = TextAnchor.MiddleRight, fontSize = 11 };
+
+            _count = new GUIStyle(_row) {
+                fontSize = 13,
+                fontStyle = FontStyle.Bold,
+                // _row pads four points at each side, which would inflate every width measured
+                // from this style and push the digits away from the mark they belong to.
+                padding = new RectOffset(0, 0, 0, 0)
+            };
+
+            _warningIconTex = MaskTexture(InTriangle);
+            _errorIconTex = MaskTexture(InErrorBadge);
+
+            // Measured rather than guessed. The widest the slot ever needs to be is whichever of
+            // these the font draws wider, and the font is not the same font on every platform.
+            _digitSlot = Mathf.Max(_count.CalcSize(new GUIContent("999")).x,
+                                   _count.CalcSize(new GUIContent("1k+")).x);
+            _bubbleWidth = BubblePad * 2f + ChipGap * 2f + (IconSize + IconGap + _digitSlot) * 3f;
+        }
+
+        /// <summary>
+        /// Rasterises a shape into a mask: white throughout, with coverage in the alpha.
+        /// <para>
+        /// Built here rather than shipped, because the package ships no assets - turning the flag
+        /// on is the whole installation - and drawn rather than typed, because a character like a
+        /// warning sign is not in every font a player build falls back to, and a glyph that is
+        /// missing on the device is a box on the screen that nothing in the editor would show.
+        /// </para>
+        /// </summary>
+        private static Texture2D MaskTexture(Func<float, float, bool> inside) {
+            Texture2D texture = new Texture2D(IconTexSize, IconTexSize, TextureFormat.RGBA32, true) {
+                hideFlags = HideFlags.HideAndDontSave,
+                wrapMode = TextureWrapMode.Clamp
+            };
+
+            Color[] pixels = new Color[IconTexSize * IconTexSize];
+            for (int y = 0; y < IconTexSize; y++) {
+                for (int x = 0; x < IconTexSize; x++) {
+                    int hits = 0;
+                    for (int sy = 0; sy < 4; sy++) {
+                        for (int sx = 0; sx < 4; sx++) {
+                            float u = (x + (sx + 0.5f) * 0.25f) / IconTexSize;
+                            float v = (y + (sy + 0.5f) * 0.25f) / IconTexSize;
+                            if (inside(u, v)) {
+                                hits++;
+                            }
+                        }
+                    }
+                    // Texture rows run bottom-up; the shapes below are described top-down.
+                    pixels[(IconTexSize - 1 - y) * IconTexSize + x] = new Color(1f, 1f, 1f, hits / 16f);
+                }
+            }
+
+            texture.SetPixels(pixels);
+            texture.Apply();
+            return texture;
+        }
+
+        private static bool InTriangle(float u, float v) {
+            if (v < 0.08f || v > 0.9f) {
+                return false;
+            }
+            return Mathf.Abs(u - 0.5f) <= 0.46f * (v - 0.08f) / 0.82f;
+        }
+
+        /// <summary>
+        /// A round badge with an exclamation cut out of it.
+        /// <para>
+        /// Not a cross, which is what this was first drawn as and is the worse answer twice
+        /// over. A bare saltire is the universal close affordance, and this is a small tappable
+        /// thing in the corner of a screen - the one place it would be read as a button that
+        /// dismisses it. And a round badge carrying an exclamation is already what an error
+        /// looks like in the console beside it, so the reader has the meaning before the legend.
+        /// </para>
+        /// <para>
+        /// The cut-out is what keeps it from being a blob. A filled shape and the warning's
+        /// filled triangle differ only by having a point, which is not enough once the two
+        /// colours have collapsed together for a reader who cannot tell red from amber.
+        /// </para>
+        /// </summary>
+        private static bool InErrorBadge(float u, float v) {
+            return InOctagon(u, v, 1f) && !InBang(u, v, 0.62f);
+        }
+
+        private static bool InOctagon(float u, float v, float size) {
+            float cu = Mathf.Abs(u - 0.5f) / size;
+            float cv = Mathf.Abs(v - 0.5f) / size;
+            return cu <= 0.45f && cv <= 0.45f && cu + cv <= 0.64f;
+        }
+
+        private static bool InBang(float u, float v, float size) {
+            float cu = (u - 0.5f) / size;
+            float cv = (v - 0.5f) / size;
+            if (Mathf.Abs(cu) <= 0.13f && cv >= -0.4f && cv <= 0.1f) {
+                return true;
+            }
+
+            float dv = cv - 0.29f;
+            return cu * cu + dv * dv <= 0.145f * 0.145f;
         }
 
         private static Texture2D SolidTexture(Color color) {

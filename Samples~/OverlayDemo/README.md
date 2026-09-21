@@ -2,9 +2,11 @@
 
 Open `LogDemo.unity` and press Play.
 
-A bubble appears in the corner. It reads the error count if there are errors, the warning
-count if there are warnings but no errors, and the total otherwise. Drag it anywhere, tap it to
-open the viewer. The buttons on the right produce records to look at:
+A bubble appears in the corner holding all three counts at once - errors, warnings, logs, each
+with a mark of its own. Press the buttons and watch which chip lights up: the worst level present
+takes a plate in its own colour, and a level with nothing to report goes grey and drops its
+number. Drag it anywhere, tap it to open the viewer. The buttons on the right produce records to
+look at:
 
 - **Prod log / Warning / Error** — records written through this API.
 - **Unity exception** — thrown through `Debug.LogException`, so it arrives under the `Unity`

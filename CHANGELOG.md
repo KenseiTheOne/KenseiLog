@@ -4,6 +4,48 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-09-21
+
+### Changed
+
+- The overlay's bubble shows every level at once. It used to read the error count, or failing
+  that the warning count, or failing that the total - so two of the three numbers were always
+  hidden, and the one on show changed meaning as events arrived. It is three fixed chips now,
+  error, warning and log, always in that order and always all three, each with a mark of its own
+  and its own count. A level with nothing to report keeps its place, goes grey and drops its
+  digits, so the badge never changes shape while it counts. The worst level present, if it is a
+  warning or an error, is inverted onto a plate of its own colour - the part the corner of the
+  eye catches without reading anything. Logs never light it: a badge that brightens because the
+  game logged at all is the panel nobody asked for. Past 999 a count reads `1k+`.
+- The marks are drawn rather than typed: a round badge with an exclamation cut out of it for an
+  error, a filled triangle for a warning, three uneven lines for a log, rasterised into
+  antialiased masks at load. Not a character - a warning sign or a cross is not in every font a
+  player build falls back to, and a glyph that is missing on the device is a box on the screen
+  that nothing in the editor would ever show. Not a cross either, which is what the error mark
+  was first drawn as: a bare saltire is the universal close affordance, and the bubble is a small
+  tappable thing in the corner of a screen, the one place it reads as a button that dismisses it.
+  Round against pointed against level is a distinction that survives a reader who cannot tell red
+  from amber, and a screenshot pasted into a report in greyscale.
+
+### Fixed
+
+- The bubble stopped opening after it had been dragged once, until the app was restarted. The
+  drag flag was cleared on a MouseUp read after `GUI.Button`, and the button consumes the MouseUp
+  it answers - by then the event type is Used, so the clear never ran and every later tap was
+  discarded. Found with a finger on an Android device, and independently by reading; not by
+  running anything, because the overlay has no play-mode coverage and a tap that fails to open
+  looks exactly like a tap that did nothing, with the button lighting up under it either way.
+- An ordinary tap on the bubble often did not open it at all. Any movement whatever started a
+  drag, and a finger never lands without a pixel or two of travel. The bubble uses the same
+  threshold the rows have had all along, and a drag now follows the finger from where the press
+  began rather than accumulating each event, so crossing the threshold no longer leaves the
+  bubble behind by however far the finger travelled to get there.
+- `BubbleGesture` holds what a run of events means - a drag, a tap, or neither - so the two
+  faults above are reachable from a check. `SmokeRunner` drives the sequences: a drag then a tap,
+  a wobble below the threshold, a drag begun off the bubble. Each of the three guards fails on
+  its own when taken out; the two that clear the flag were masking one another until the checks
+  were tightened to ask about each separately. 271 assertions.
+
 ## [0.14.6] - 2026-09-18
 
 ### Fixed

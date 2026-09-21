@@ -67,6 +67,7 @@ public static class SmokeRunner {
         Scenario(SeedingStopsAtATailAlreadyCutAtTheFront);
         Scenario(OneBudgetCoversTheSeedRatherThanEachFileInIt);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
+        Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2149,6 +2150,65 @@ public static class SmokeRunner {
         private void SetWindow(object sink) {
             _window.GetSetMethod(true).Invoke(null, new[] { sink });
         }
+    }
+
+    /// <summary>
+    /// Found with a finger on an Android device, and by reading, and neither by running anything:
+    /// the overlay has no play-mode coverage at all, and a tap that fails to open the viewer
+    /// looks exactly like a tap that did nothing, with the button lighting up under it either way.
+    /// <para>
+    /// Two faults, both here. The drag flag was cleared on a MouseUp read AFTER GUI.Button, and
+    /// the button consumes the MouseUp it answers - so the clear never ran, and one drag left the
+    /// bubble unopenable until the app was restarted. And any movement at all started a drag,
+    /// while a finger never lands without a pixel or two of travel, so ordinary taps became drags.
+    /// </para>
+    /// </summary>
+    private static void TheBubbleStillOpensAfterItHasBeenDragged() {
+        BubbleGesture gesture = new BubbleGesture();
+        UnityEngine.Vector2 start = new UnityEngine.Vector2(12f, 12f);
+
+        gesture.Press(true, start);
+        Check("a press on its own is not a drag", !gesture.Dragging);
+        Check("and would open the viewer", gesture.Opens(true));
+
+        bool moved = gesture.TryDrag(true, new UnityEngine.Vector2(40f, 6f), out UnityEngine.Vector2 dragged);
+        Check("travel past the threshold drags it", moved && gesture.Dragging);
+        Check("to where the finger is, measured from the press", dragged == start + new UnityEngine.Vector2(40f, 6f));
+        Check("and the release that ends a drag opens nothing", !gesture.Opens(true));
+
+        // The whole bug: this release used to be swallowed by the button, so the flag stayed set.
+        // Both ends of the gesture clear it, and each is checked on its own - together they were
+        // masking one another, and a mutation to either passed with the pair still in place.
+        gesture.Release();
+        Check("a release ends the drag", !gesture.Dragging);
+
+        // Pressed again first, or the release just above has already disarmed the drag and this
+        // would be asking a question whose answer cannot be no.
+        gesture.Press(true, dragged);
+        gesture.TryDrag(true, new UnityEngine.Vector2(40f, 6f), out UnityEngine.Vector2 _);
+        gesture.Press(true, dragged);
+        Check("and so does the next press, whether or not the release was seen", !gesture.Dragging);
+        Check("so the tap after a drag opens the viewer again", gesture.Opens(true));
+
+        // Measured from the press rather than accumulated, or the bubble lags the finger by
+        // however far it travelled to cross the threshold.
+        gesture.Press(true, start);
+        gesture.TryDrag(true, new UnityEngine.Vector2(30f, 0f), out UnityEngine.Vector2 first);
+        gesture.TryDrag(true, new UnityEngine.Vector2(60f, 0f), out UnityEngine.Vector2 second);
+        Check("a drag tracks the finger rather than accumulating",
+            first == start + new UnityEngine.Vector2(30f, 0f) && second == start + new UnityEngine.Vector2(60f, 0f));
+
+        gesture.Release();
+        gesture.Press(true, start);
+        Check("a wobble below the threshold is not a drag",
+            !gesture.TryDrag(false, new UnityEngine.Vector2(2f, 1f), out UnityEngine.Vector2 held));
+        Check("and leaves the bubble where it was", held == start);
+        Check("so a tap with a shaking finger still opens it", gesture.Opens(true));
+
+        gesture.Release();
+        gesture.Press(false, start);
+        Check("a drag that began off the bubble does not move it",
+            !gesture.TryDrag(true, new UnityEngine.Vector2(40f, 0f), out UnityEngine.Vector2 _));
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {
