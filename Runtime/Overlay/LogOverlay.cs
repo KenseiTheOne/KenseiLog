@@ -52,6 +52,7 @@ namespace KenseiLog {
         // Uneven on purpose: three lines of text, not a stack of equal bars, which would read as
         // a hamburger menu.
         private static readonly float[] _logBarWidths = { 1f, 0.62f, 0.84f };
+        private static readonly string[] _countShapes = { "999", "9.9k", "999k", "999M", "1B+" };
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
         private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
 
@@ -61,7 +62,6 @@ namespace KenseiLog {
         private readonly List<Row> _visible = new List<Row>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly List<TagRow> _tagRows = new List<TagRow>();
-        private readonly int[] _levelCounts = new int[3];
 
         private MemorySink _sink;
         private LogRecord[] _scratch;
@@ -262,7 +262,6 @@ namespace KenseiLog {
                 // batch, assigning blindly would re-copy it on the next poll and keep doing so,
                 // growing the list without end. Clamping turns that into a duplicated row.
                 _lastSequence = Math.Max(_lastSequence, record.Sequence);
-                _levelCounts[(int)record.Level]++;
                 _tagCounts.TryGetValue(record.Tag, out int seen);
                 _tagCounts[record.Tag] = seen + 1;
 
@@ -274,11 +273,12 @@ namespace KenseiLog {
                     _visible.Add(new Row(in record));
                 }
             }
-            if (copied > 0) {
-                _bubbleDirty = true;
-                _levelLabelsDirty = true;
-                _tagRowsDirty = true;
-            }
+            // Not gated on what was copied. This runs only when the sink's version moved, which
+            // means records arrived - and in a burst longer than the ring most of them are
+            // already gone by now, counted by the sink and never seen here.
+            _bubbleDirty = true;
+            _levelLabelsDirty = true;
+            _tagRowsDirty = true;
 
             int drop = 0;
             while (drop < _visible.Count && _visible[drop].Sequence < oldest) {
@@ -310,9 +310,6 @@ namespace KenseiLog {
             _tagRowsDirty = true;
             _followTail = true;
             _scroll = Vector2.zero;
-            for (int i = 0; i < _levelCounts.Length; i++) {
-                _levelCounts[i] = 0;
-            }
         }
 
         /// <summary>
@@ -456,13 +453,40 @@ namespace KenseiLog {
             }
         }
 
+        /// <summary>
+        /// A count narrow enough for a chip: exact to three digits, then thousands to one
+        /// decimal, then whole thousands, then whole millions, and pinned at a billion.
+        /// <para>
+        /// The ladder has to terminate, and the top has to be a shape the slot was measured
+        /// from. Left open it returned "1000M" at a billion - five characters into a label
+        /// measured for four and clipped rather than overflowed, so a billion records read as a
+        /// thousand. Understating at a ceiling the reader can see is one thing; a number a
+        /// million times too small, in the digits this counting exists to make trustworthy, is
+        /// another. Every branch here returns one of the shapes in <see cref="_countShapes"/>.
+        /// </para>
+        /// </summary>
+        private static string Compact(long count) {
+            if (count < 1000L) {
+                return count.ToString(CultureInfo.InvariantCulture);
+            }
+            if (count < 10000L) {
+                return (count / 1000L).ToString(CultureInfo.InvariantCulture) + "." +
+                       (count % 1000L / 100L).ToString(CultureInfo.InvariantCulture) + "k";
+            }
+            if (count < 1000000L) {
+                return (count / 1000L).ToString(CultureInfo.InvariantCulture) + "k";
+            }
+            if (count < 1000000000L) {
+                return (count / 1000000L).ToString(CultureInfo.InvariantCulture) + "M";
+            }
+            return "1B+";
+        }
+
         private void RebuildBubble() {
             _bubbleAccent = -1;
             for (int level = 2; level >= 0; level--) {
-                int count = _levelCounts[level];
-                _bubbleCounts[level] = count == 0
-                    ? null
-                    : count > 999 ? "1k+" : count.ToString(CultureInfo.InvariantCulture);
+                long count = _sink.LevelCount((LogLevel)level);
+                _bubbleCounts[level] = count == 0L ? null : Compact(count);
 
                 // Only a warning or an error is worth lighting up for. A badge that brightens
                 // because the game logged at all is the panel nobody asked for.
@@ -557,7 +581,7 @@ namespace KenseiLog {
             // changes when a record arrives, and OnGUI runs at least twice a frame.
             if (_levelLabelsDirty) {
                 for (int i = 0; i < _levelLabels.Length; i++) {
-                    _levelLabels[i] = _levelCaptions[i] + " " + _levelCounts[i];
+                    _levelLabels[i] = _levelCaptions[i] + " " + Compact(_sink.LevelCount((LogLevel)i));
                 }
                 _levelLabelsDirty = false;
             }
@@ -811,10 +835,12 @@ namespace KenseiLog {
             _warningIconTex = MaskTexture(InTriangle);
             _errorIconTex = MaskTexture(InErrorBadge);
 
-            // Measured rather than guessed. The widest the slot ever needs to be is whichever of
-            // these the font draws wider, and the font is not the same font on every platform.
-            _digitSlot = Mathf.Max(_count.CalcSize(new GUIContent("999")).x,
-                                   _count.CalcSize(new GUIContent("1k+")).x);
+            // Measured over every shape Compact can produce rather than guessed: the widest of
+            // them is not the same string on every platform, because the font is not either.
+            _digitSlot = 0f;
+            for (int i = 0; i < _countShapes.Length; i++) {
+                _digitSlot = Mathf.Max(_digitSlot, _count.CalcSize(new GUIContent(_countShapes[i])).x);
+            }
             _bubbleWidth = BubblePad * 2f + ChipGap * 2f + (IconSize + IconGap + _digitSlot) * 3f;
         }
 

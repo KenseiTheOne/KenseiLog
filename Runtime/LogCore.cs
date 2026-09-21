@@ -445,14 +445,10 @@ namespace KenseiLog {
                     // A later Configure reaches the file sink through Reconfigure. The overlay's
                     // buffer is fixed at construction, so a changed capacity needs a new sink -
                     // without this the setting was accepted and ignored. What it already holds
-                    // moves across: a capacity change that emptied the viewer would trade one
-                    // silent surprise for another.
-                    MemorySink resized = new MemorySink(capacity);
-                    LogRecord[] carried = new LogRecord[_overlaySink.Buffer.Count];
-                    int copied = _overlaySink.Buffer.CopyNewerThan(0, carried);
-                    for (int i = 0; i < copied; i++) {
-                        resized.Write(in carried[i]);
-                    }
+                    // moves across, and so do its totals: a capacity change that emptied the
+                    // viewer, or quietly reset the counts to whatever had survived the old ring,
+                    // would trade one silent surprise for another.
+                    MemorySink resized = new MemorySink(capacity, _overlaySink);
                     RemoveSink(_overlaySink);
                     _overlaySink = resized;
                     AddSink(_overlaySink);

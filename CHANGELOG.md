@@ -4,6 +4,38 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] - 2026-09-21
+
+### Fixed
+
+- The counts on the badge no longer lose a burst. They were tallied as the overlay polled the
+  records out of its ring, and a reader only ever sees what survived: a burst longer than the
+  ring pushes its own beginning out before the next poll, and `Ingest` then skips the gap
+  outright. Those records were counted nowhere. Measured on a build, twelve hundred logs written
+  in one frame reached the badge as twenty-one - not as five hundred and twelve, because by the
+  time anything looked the ring held the warnings logged after them. `MemorySink` counts per
+  level on its write path now, with `Interlocked` because a sink is written from whichever thread
+  logged, and exposes `LevelCount`. `Clear` takes the totals with it.
+- A later `Configure` with a different `OverlayRecordCapacity` no longer resets those totals. The
+  capacity change builds a sink of the new size and moves what the old one held across; replaying
+  those records would count them and nothing else, undoing in one settings call exactly the
+  undercount this release exists to fix. `MemorySink` has a constructor that carries the records
+  and the totals together.
+
+### Changed
+
+- A count past 999 is shortened rather than capped: `1.2k`, `47k`, `3M`. The old `1k+` was a fair
+  answer while the counter could hardly reach a thousand; against true totals it would have read
+  `1k+` on every chip for the rest of the session. The ladder stops at `1B+`, which is not
+  squeamishness about big numbers but the chip's width: the digit slot is measured once over the
+  shapes the formatter can produce and the label clips rather than overflows, so a shape that was
+  never measured is not a layout glitch but a wrong number. Left open, the ladder returned
+  `1000M` at a billion and the chip showed `1000`.
+- The three numbers now mean records written since the sink was made or cleared, where they used
+  to mean records this overlay had polled. The viewer's level toggles say the same thing, so a
+  toggle can read `1.2k` above a list holding five hundred rows - the count is how many happened,
+  the list is what is still kept. `MemorySink.LevelCount` is new public API; nothing was removed.
+
 ## [0.15.0] - 2026-09-21
 
 ### Changed

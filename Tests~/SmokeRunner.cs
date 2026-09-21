@@ -68,6 +68,9 @@ public static class SmokeRunner {
         Scenario(OneBudgetCoversTheSeedRatherThanEachFileInIt);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
+        Scenario(CountsSurviveABurstLongerThanTheBuffer);
+        Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
+        Scenario(CountsSurviveAChangeOfCapacity);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2209,6 +2212,102 @@ public static class SmokeRunner {
         gesture.Press(false, start);
         Check("a drag that began off the bubble does not move it",
             !gesture.TryDrag(true, new UnityEngine.Vector2(40f, 0f), out UnityEngine.Vector2 _));
+    }
+
+    /// <summary>
+    /// The overlay used to count what it read, and a reader only ever sees what survived. A
+    /// burst longer than the ring pushes its own beginning out before anything polls, so the
+    /// records that went that way were counted nowhere: a thousand logs in one frame showed on
+    /// the badge as the couple of dozen still in the buffer. Counted on the way in now.
+    /// </summary>
+    private static void CountsSurviveABurstLongerThanTheBuffer() {
+        MemorySink sink = new MemorySink(8);
+        for (long i = 1; i <= 100; i++) {
+            sink.Write(Record(i, "Burst", "record " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        for (long i = 101; i <= 130; i++) {
+            sink.Write(Record(i, "Burst", "warn " + i, LogLevel.Warning, LogChannel.Prod, 0));
+        }
+        sink.Write(Record(131, "Burst", "the one error", LogLevel.Error, LogChannel.Prod, 0));
+
+        Check("the ring kept only what fits", sink.Buffer.Count == 8);
+        Check("but every log was counted", sink.LevelCount(LogLevel.Log) == 100L);
+        Check("and every warning", sink.LevelCount(LogLevel.Warning) == 30L);
+        Check("and the error that would have been the only one left",
+            sink.LevelCount(LogLevel.Error) == 1L);
+
+        sink.Clear();
+        Check("clearing takes the counts with it",
+            sink.LevelCount(LogLevel.Log) == 0L && sink.LevelCount(LogLevel.Warning) == 0L &&
+            sink.LevelCount(LogLevel.Error) == 0L);
+        Check("and empties the buffer", sink.Buffer.Count == 0);
+    }
+
+    /// <summary>
+    /// The chip's digit slot is measured once, over the shapes the formatter is supposed to
+    /// produce, and the label clips rather than overflows. So a shape the measuring never saw is
+    /// not a layout glitch but a wrong number: the ladder used to run off its top end and return
+    /// "1000M" at a billion, five characters into a slot measured for four, and the reader saw a
+    /// thousand where a billion had happened.
+    /// </summary>
+    private static void ACountNeverOutgrowsTheChipItIsDrawnIn() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Static;
+        MethodInfo compact = typeof(LogOverlay).GetMethod("Compact", Hidden);
+        FieldInfo shapes = typeof(LogOverlay).GetField("_countShapes", Hidden);
+        Check("the overlay still has the parts this leans on", compact != null && shapes != null);
+        if (compact == null || shapes == null) {
+            return;
+        }
+
+        string[] known = (string[])shapes.GetValue(null);
+        int widest = 0;
+        for (int i = 0; i < known.Length; i++) {
+            widest = Math.Max(widest, known[i].Length);
+        }
+
+        long[] boundaries = {
+            0L, 1L, 999L, 1000L, 1099L, 1100L, 9999L, 10000L, 999999L, 1000000L,
+            999999999L, 1000000000L, 1073741824L, long.MaxValue
+        };
+        string offender = null;
+        for (int i = 0; i < boundaries.Length; i++) {
+            string text = (string)compact.Invoke(null, new object[] { boundaries[i] });
+            if (text.Length > widest) {
+                offender = boundaries[i] + " -> " + text;
+            }
+        }
+        Check("no count is ever wider than the slot measured for it", offender == null);
+
+        Check("under a thousand it is exact", (string)compact.Invoke(null, new object[] { 999L }) == "999");
+        Check("then thousands to one decimal", (string)compact.Invoke(null, new object[] { 1200L }) == "1.2k");
+        Check("then whole thousands", (string)compact.Invoke(null, new object[] { 47000L }) == "47k");
+        Check("then whole millions", (string)compact.Invoke(null, new object[] { 3000000L }) == "3M");
+        Check("and it pins rather than running off the end",
+            (string)compact.Invoke(null, new object[] { long.MaxValue }) == "1B+");
+    }
+
+    /// <summary>
+    /// Changing OverlayRecordCapacity builds a sink of the new size and moves what the old one
+    /// held across. Replaying those records would count them again and nothing else, so a
+    /// settings change quietly reset the totals to whatever had survived the ring - undoing, in
+    /// one call, the undercount that counting on the way in exists to prevent.
+    /// </summary>
+    private static void CountsSurviveAChangeOfCapacity() {
+        MemorySink small = new MemorySink(8);
+        for (long i = 1; i <= 500; i++) {
+            small.Write(Record(i, "Burst", "log " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        small.Write(Record(501, "Burst", "the error", LogLevel.Error, LogChannel.Prod, 0));
+
+        MemorySink resized = new MemorySink(64, small);
+        Check("the totals come across whole",
+            resized.LevelCount(LogLevel.Log) == 500L && resized.LevelCount(LogLevel.Error) == 1L);
+        Check("and are not counted twice", resized.LevelCount(LogLevel.Log) == small.LevelCount(LogLevel.Log));
+        Check("with what the old ring still held", resized.Buffer.Count == small.Buffer.Count);
+        Check("and room for the new size", resized.Buffer.Capacity == 64);
+
+        resized.Write(Record(502, "Burst", "after the change", LogLevel.Warning, LogChannel.Prod, 0));
+        Check("counting carries on from there", resized.LevelCount(LogLevel.Warning) == 1L);
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {
