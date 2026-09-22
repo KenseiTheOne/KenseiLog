@@ -71,6 +71,7 @@ public static class SmokeRunner {
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
         Scenario(CountsSurviveAChangeOfCapacity);
+        Scenario(TheTagCensusHoldsOnlyWhatTheBufferHolds);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2308,6 +2309,60 @@ public static class SmokeRunner {
 
         resized.Write(Record(502, "Burst", "after the change", LogLevel.Warning, LogChannel.Prod, 0));
         Check("counting carries on from there", resized.LevelCount(LogLevel.Warning) == 1L);
+    }
+
+    /// <summary>
+    /// The overlay's tag pane used to be built from a dictionary it filled as it polled, and
+    /// nothing ever took a tag out of it: a tag whose every record had been pushed out of the
+    /// ring stayed listed, and tapping it filtered the rows down to nothing. The ring is the
+    /// only place that sees a record arrive and the record it displaced leave, so the census
+    /// lives there.
+    /// </summary>
+    private static void TheTagCensusHoldsOnlyWhatTheBufferHolds() {
+        LogRingBuffer buffer = new LogRingBuffer(8);
+        List<LogRingBuffer.TagCount> census = new List<LogRingBuffer.TagCount>();
+
+        for (long i = 1; i <= 8; i++) {
+            buffer.Add(Record(i, "Early", "early " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        buffer.CopyTagCounts(census);
+        Check("a full ring counts what it holds", census.Count == 1 && census[0].Tag == "Early" && census[0].Held == 8);
+
+        // Eight of another tag push the first out entirely.
+        for (long i = 9; i <= 16; i++) {
+            buffer.Add(Record(i, "Later", "later " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        buffer.CopyTagCounts(census);
+        Check("a tag whose last record has left is gone from the census",
+            census.Count == 1 && census[0].Tag == "Later" && census[0].Held == 8);
+
+        // Half and half, so both are held at once.
+        for (long i = 17; i <= 20; i++) {
+            buffer.Add(Record(i, "Early", "early again " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        buffer.CopyTagCounts(census);
+        census.Sort((left, right) => string.CompareOrdinal(left.Tag, right.Tag));
+        Check("and two tags are counted apart",
+            census.Count == 2 && census[0].Tag == "Early" && census[0].Held == 4 &&
+            census[1].Tag == "Later" && census[1].Held == 4);
+
+        int total = 0;
+        for (int i = 0; i < census.Count; i++) {
+            total += census[i].Held;
+        }
+        Check("the census adds up to what the buffer holds", total == buffer.Count);
+
+        // The same tag arriving as the same tag leaves must not drop the key.
+        for (long i = 21; i <= 40; i++) {
+            buffer.Add(Record(i, "Early", "one tag only " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        buffer.CopyTagCounts(census);
+        Check("one tag replacing itself keeps its place",
+            census.Count == 1 && census[0].Tag == "Early" && census[0].Held == 8);
+
+        buffer.Clear();
+        buffer.CopyTagCounts(census);
+        Check("clearing takes the census with it", census.Count == 0);
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {

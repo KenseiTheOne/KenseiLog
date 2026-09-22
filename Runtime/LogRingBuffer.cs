@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace KenseiLog {
     /// <summary>
@@ -12,6 +13,12 @@ namespace KenseiLog {
     public sealed class LogRingBuffer {
         private readonly object _lock = new object();
         private readonly LogRecord[] _records;
+        // How many records of each tag the buffer is holding right now. Kept here because this
+        // is the only place that sees both ends: a record arrives on the logging thread and the
+        // one it displaced leaves in the same breath, and nothing that polls afterwards can know
+        // what went. A viewer that counted for itself could only count arrivals, which is how
+        // the overlay's tag pane came to offer tags whose every record had already gone.
+        private readonly Dictionary<string, int> _tags = new Dictionary<string, int>();
         private int _head;
         private int _count;
 
@@ -23,6 +30,17 @@ namespace KenseiLog {
         }
 
         public int Capacity => _records.Length;
+
+        /// <summary>One tag and how many of its records the buffer is holding.</summary>
+        public readonly struct TagCount {
+            public readonly string Tag;
+            public readonly int Held;
+
+            public TagCount(string tag, int held) {
+                Tag = tag;
+                Held = held;
+            }
+        }
 
         public int Count {
             get {
@@ -47,11 +65,47 @@ namespace KenseiLog {
                     _records[(_head + _count) % _records.Length] = record;
                     _count++;
                 } else {
+                    // Read before it is written over, and counted out before the new one is
+                    // counted in: the two can be the same tag, and the order keeps the tally
+                    // from dipping through zero and dropping the key.
+                    Forget(_records[_head].Tag);
                     _records[_head] = record;
                     _head = (_head + 1) % _records.Length;
                 }
+                Remember(record.Tag);
                 SettleLast();
             }
+        }
+
+        /// <summary>
+        /// The tags the buffer is holding, with how many records of each. Written into the
+        /// caller's list so that a viewer polling every frame allocates nothing once its list
+        /// has grown. A tag whose last record has left is not in it.
+        /// </summary>
+        public int CopyTagCounts(List<TagCount> into) {
+            into.Clear();
+            lock (_lock) {
+                foreach (KeyValuePair<string, int> pair in _tags) {
+                    into.Add(new TagCount(pair.Key, pair.Value));
+                }
+            }
+            return into.Count;
+        }
+
+        private void Remember(string tag) {
+            _tags.TryGetValue(tag, out int held);
+            _tags[tag] = held + 1;
+        }
+
+        private void Forget(string tag) {
+            if (!_tags.TryGetValue(tag, out int held)) {
+                return;
+            }
+            if (held <= 1) {
+                _tags.Remove(tag);
+                return;
+            }
+            _tags[tag] = held - 1;
         }
 
         /// <summary>
@@ -88,6 +142,7 @@ namespace KenseiLog {
         public void Clear() {
             lock (_lock) {
                 Array.Clear(_records, 0, _records.Length);
+                _tags.Clear();
                 _head = 0;
                 _count = 0;
             }

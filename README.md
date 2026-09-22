@@ -11,7 +11,7 @@ In Unity's console a tag is only a word in the message, so filtering for `combat
 Package Manager → **Add package from git URL**:
 
 ```
-https://github.com/KenseiTheOne/KenseiLog.git#v0.15.1
+https://github.com/KenseiTheOne/KenseiLog.git#v0.15.2
 ```
 
 The tag pins the version — put the one you want after the `#`; the newest is at the top of
@@ -235,7 +235,7 @@ private static void SetUpLogging() {
 | `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once (at least 0.5) |
 | `FileIncludesDevChannel` | `false` | Also write dev records to the file |
 | `ShowOverlay` | `false` | Draw the in-game log viewer |
-| `OverlayRecordCapacity` | `512` | How many records the overlay keeps (at least 32) |
+| `OverlayRecordCapacity` | `4096` | How many records the overlay keeps (at least 32) |
 | `OverlayScale` | `0` | Overlay UI scale, or 0 to derive one from screen DPI, falling back to screen height |
 
 `Configure` can be called at any time from the main thread; logging starts with the defaults during early initialisation so that nothing is lost before your call arrives.

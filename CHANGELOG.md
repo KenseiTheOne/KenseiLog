@@ -4,6 +4,32 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2026-09-22
+
+### Fixed
+
+- The overlay's tag pane no longer offers tags it cannot show. It was built from a dictionary the
+  viewer filled as it polled, and nothing ever took a tag out of it: once a tag's records had
+  been pushed out of the ring the tag stayed listed, and tapping it filtered the rows down to
+  nothing. The row list, meanwhile, is pruned to the ring - so the two disagreed by construction.
+  The census lives in `LogRingBuffer` now, incremented as a record arrives and decremented on the
+  one it displaced, which is the only place that sees both ends: eviction happens on the logging
+  thread inside `Add`, and nothing that polls afterwards can know what went.
+- A tag's number is now what tapping it produces. Selecting `Combat` brings in `Combat.Damage`
+  as well, so counting the exact key would have put a number on the row that the list it opens
+  does not match - a smaller lie than the one it replaced, and the same kind.
+- The hint under an empty list stopped claiming a tag "has not appeared in this session" when it
+  had appeared and been pushed out since. It says which of the two happened.
+
+### Changed
+
+- `OverlayRecordCapacity` defaults to 4096 rather than 512. The ring is shared by every tag, both
+  channels, and the logs captured from outside this package, so one tag's share of five hundred
+  slots was a few dozen - a tag would leave the pane while the session was still young. Four
+  thousand records is about a megabyte and a half on a phone, counting the equal-sized scratch
+  array the viewer keeps beside the ring.
+- `LogRingBuffer.CopyTagCounts` is new public API; nothing was removed.
+
 ## [0.15.1] - 2026-09-21
 
 ### Fixed

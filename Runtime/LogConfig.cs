@@ -66,7 +66,17 @@ namespace KenseiLog {
         /// </summary>
         public bool ShowOverlay;
 
-        /// <summary>How many records the overlay keeps. Kept small; phones are not desktops.</summary>
+        /// <summary>
+        /// How many records the overlay keeps. The ring is shared by every tag, both channels
+        /// and the logs captured from outside this package, so one tag's share of it is a
+        /// fraction - at five hundred it was a few dozen, and a tag would leave the pane while
+        /// the session was still young.
+        /// <para>
+        /// A record is sixty four bytes and holds on to its message, around two hundred more.
+        /// Four thousand of them is a megabyte and a half on a phone, counting the equal-sized
+        /// scratch array the viewer keeps beside it.
+        /// </para>
+        /// </summary>
         public int OverlayRecordCapacity;
 
         /// <summary>UI scale for the overlay, or 0 to derive one from screen DPI.</summary>
@@ -92,7 +102,7 @@ namespace KenseiLog {
                 FileFlushIntervalSeconds = 5f,
                 FileIncludesDevChannel = false,
                 ShowOverlay = false,
-                OverlayRecordCapacity = 512,
+                OverlayRecordCapacity = 4096,
                 OverlayScale = 0f
             };
         }

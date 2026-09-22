@@ -60,7 +60,7 @@ namespace KenseiLog {
 
         private readonly LogFilter _filter = new LogFilter { Name = "Overlay" };
         private readonly List<Row> _visible = new List<Row>();
-        private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
+        private readonly List<LogRingBuffer.TagCount> _tagCensus = new List<LogRingBuffer.TagCount>();
         private readonly List<TagRow> _tagRows = new List<TagRow>();
 
         private MemorySink _sink;
@@ -262,8 +262,6 @@ namespace KenseiLog {
                 // batch, assigning blindly would re-copy it on the next poll and keep doing so,
                 // growing the list without end. Clamping turns that into a duplicated row.
                 _lastSequence = Math.Max(_lastSequence, record.Sequence);
-                _tagCounts.TryGetValue(record.Tag, out int seen);
-                _tagCounts[record.Tag] = seen + 1;
 
                 // A row costs a colour conversion, two substrings and a concatenation, and
                 // while the bubble is collapsed nothing reads one. The list is built from the
@@ -299,7 +297,7 @@ namespace KenseiLog {
 
         private void Reset() {
             _visible.Clear();
-            _tagCounts.Clear();
+            _tagCensus.Clear();
             _tagRows.Clear();
             _lastSequence = 0;
             _selected = -1;
@@ -716,9 +714,7 @@ namespace KenseiLog {
             GUI.color = new Color(0f, 0f, 0f, 0.5f);
             GUI.DrawTexture(new Rect(area.xMax - 1f, area.y, 1f, area.height), _chipTex);
             GUI.color = Color.white;
-            if (_tagRowsDirty) {
-                RebuildTagRows();
-            }
+            EnsureTagRows();
 
             float content = _tagRows.Count * RowHeight;
             _tagScroll = GUI.BeginScrollView(area, _tagScroll, new Rect(0f, 0f, area.width - 16f, content));
@@ -750,33 +746,52 @@ namespace KenseiLog {
         }
 
         /// <summary>
-        /// Rebuilds the tag rows from the counts. Same reason the list rows are cached: the
-        /// label is a concatenation and the chip is an HSV conversion, and neither changes
+        /// Rebuilds the census and the rows drawn from it. Same reason the list rows are cached:
+        /// the label is a concatenation and the chip is an HSV conversion, and neither changes
         /// between records - only between passes, of which there are hundreds a second.
         /// </summary>
-        private void RebuildTagRows() {
+        private void EnsureTagRows() {
+            if (!_tagRowsDirty) {
+                return;
+            }
+
+            _sink.Buffer.CopyTagCounts(_tagCensus);
             _tagRows.Clear();
-            foreach (KeyValuePair<string, int> pair in _tagCounts) {
-                _tagRows.Add(new TagRow(pair.Key, pair.Value));
+            for (int i = 0; i < _tagCensus.Count; i++) {
+                // A tag's number has to be what tapping it produces, and tapping Combat brings
+                // in Combat.Damage as well. Counting the key alone would put a number on the row
+                // that the list it opens does not match - a smaller lie than the one this
+                // replaced, but the same kind. Quadratic over distinct tags, which are tens.
+                int held = 0;
+                for (int other = 0; other < _tagCensus.Count; other++) {
+                    if (LogFilter.TagMatches(_tagCensus[other].Tag, _tagCensus[i].Tag)) {
+                        held += _tagCensus[other].Held;
+                    }
+                }
+                _tagRows.Add(new TagRow(_tagCensus[i].Tag, held));
             }
             _tagRows.Sort(_byTagName);
             _tagRowsDirty = false;
         }
 
         private string EmptyHint() {
-            if (_tagCounts.Count == 0) {
+            EnsureTagRows();
+            if (_tagCensus.Count == 0) {
                 return "  No records yet.";
             }
             for (int i = 0; i < _filter.Tags.Count; i++) {
-                bool seen = false;
-                foreach (string tag in _tagCounts.Keys) {
-                    if (LogFilter.TagMatches(tag, _filter.Tags[i])) {
-                        seen = true;
+                bool held = false;
+                for (int other = 0; other < _tagCensus.Count; other++) {
+                    if (LogFilter.TagMatches(_tagCensus[other].Tag, _filter.Tags[i])) {
+                        held = true;
                         break;
                     }
                 }
-                if (!seen) {
-                    return "  Tag '" + _filter.Tags[i] + "' has not appeared in this session.";
+                if (!held) {
+                    // Not "has not appeared": it may well have, and been pushed out since. The
+                    // pane no longer lists it, so say which of the two happened rather than
+                    // leaving the reader to guess at an empty list.
+                    return "  Nothing under '" + _filter.Tags[i] + "' is still in the buffer.";
                 }
             }
             return "  Nothing matches the current filter.";
