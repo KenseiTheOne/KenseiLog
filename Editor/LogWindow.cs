@@ -38,7 +38,7 @@ namespace KenseiLog.Editor {
         [SerializeField] private List<LogFilter> _filters = new List<LogFilter>();
         [SerializeField] private int _activeTab;
 
-        private readonly List<TabView> _views = new List<TabView>();
+        private readonly List<LogIndex> _views = new List<LogIndex>();
         private readonly Dictionary<string, int> _tagCounts = new Dictionary<string, int>();
         private readonly int[] _levelCounts = new int[3];
         private readonly int[] _renderedCounts = { -1, -1, -1 };
@@ -104,7 +104,7 @@ namespace KenseiLog.Editor {
 
         private LogFilter ActiveFilter => _filters[Mathf.Clamp(_activeTab, 0, _filters.Count - 1)];
 
-        private TabView ActiveView => _views[Mathf.Clamp(_activeTab, 0, _views.Count - 1)];
+        private LogIndex ActiveView => _views[Mathf.Clamp(_activeTab, 0, _views.Count - 1)];
 
         // Compact is a mode laid over the preferences, never a write into them: pressing it
         // must not cost you the column layout you chose, and leaving it must give that back
@@ -762,7 +762,7 @@ namespace KenseiLog.Editor {
             // What the reader is looking at, and what they have selected, are both held by
             // position - and the prune takes rows out from underneath both. Remembered by
             // sequence across it, which is the only identity a row has that survives.
-            TabView active = ActiveView;
+            LogIndex active = ActiveView;
             int countBefore = active.Count;
             long anchorSequence = TopVisibleSequence(active);
             long selectedSequence = SelectedSequence(active);
@@ -788,7 +788,7 @@ namespace KenseiLog.Editor {
         /// The sequence of the row at the top of the viewport, or -1 when the list is empty or
         /// following the tail - where holding the position is the opposite of what is wanted.
         /// </summary>
-        private long TopVisibleSequence(TabView view) {
+        private long TopVisibleSequence(LogIndex view) {
             if (_followTail || view.Count == 0) {
                 return -1;
             }
@@ -802,7 +802,7 @@ namespace KenseiLog.Editor {
             return view.Sequences[first];
         }
 
-        private long SelectedSequence(TabView view) {
+        private long SelectedSequence(LogIndex view) {
             int index = _listView.selectedIndex;
             return index >= 0 && index < view.Count ? view.Sequences[index] : -1;
         }
@@ -817,7 +817,7 @@ namespace KenseiLog.Editor {
         /// view then stays where the list puts it.
         /// </para>
         /// </summary>
-        private void RestoreView(TabView view, long anchorSequence, long selectedSequence) {
+        private void RestoreView(LogIndex view, long anchorSequence, long selectedSequence) {
             if (anchorSequence >= 0) {
                 int index = view.Sequences.IndexOf(anchorSequence);
                 ScrollView scroll = ListScroll();
@@ -860,7 +860,7 @@ namespace KenseiLog.Editor {
         private void RebuildViews() {
             _views.Clear();
             for (int i = 0; i < _filters.Count; i++) {
-                _views.Add(new TabView(_filters[i]));
+                _views.Add(new LogIndex(_filters[i]));
             }
         }
 
@@ -871,7 +871,7 @@ namespace KenseiLog.Editor {
             RefreshList();
         }
 
-        private void RebuildView(TabView view) {
+        private void RebuildView(LogIndex view) {
             _lastRenderedRevision = -1;
             EnsureScratch();
             view.Clear();
@@ -929,7 +929,7 @@ namespace KenseiLog.Editor {
         /// </summary>
         public void AddTab(LogFilter filter) {
             _filters.Add(filter);
-            TabView view = new TabView(filter);
+            LogIndex view = new LogIndex(filter);
             RebuildView(view);
             _views.Add(view);
             SelectTab(_filters.Count - 1);
@@ -940,7 +940,7 @@ namespace KenseiLog.Editor {
         /// detail pane. Handy on a "jump to the last error" shortcut.
         /// </summary>
         public void SelectNewest(LogLevel level) {
-            TabView view = ActiveView;
+            LogIndex view = ActiveView;
             for (int i = view.Sequences.Count - 1; i >= 0; i--) {
                 if (Source.TryGetBySequence(view.Sequences[i], out LogRecord record) && record.Level == level) {
                     _listView.SetSelection(i);
@@ -969,7 +969,7 @@ namespace KenseiLog.Editor {
                 IsolatedFrame = source.IsolatedFrame
             };
             _filters.Add(copy);
-            TabView view = new TabView(copy);
+            LogIndex view = new LogIndex(copy);
             RebuildView(view);
             _views.Add(view);
             SelectTab(_filters.Count - 1);
@@ -1218,7 +1218,7 @@ namespace KenseiLog.Editor {
         }
 
         private void BindRow(VisualElement element, int index) {
-            TabView view = ActiveView;
+            LogIndex view = ActiveView;
             if (index >= view.Sequences.Count) {
                 return;
             }
@@ -1286,7 +1286,7 @@ namespace KenseiLog.Editor {
             if (!(row.userData is RowState state) || state.Index < 0) {
                 return;
             }
-            TabView view = ActiveView;
+            LogIndex view = ActiveView;
             if (state.Index >= view.Sequences.Count) {
                 return;
             }
@@ -1359,7 +1359,7 @@ namespace KenseiLog.Editor {
         private bool TryGetSelectedRecord(out LogRecord record) {
             record = default;
             int index = _listView.selectedIndex;
-            TabView view = ActiveView;
+            LogIndex view = ActiveView;
             if (index < 0 || index >= view.Sequences.Count) {
                 return false;
             }

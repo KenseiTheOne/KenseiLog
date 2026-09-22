@@ -59,7 +59,12 @@ namespace KenseiLog {
         private static LogOverlay _instance;
 
         private readonly LogFilter _filter = new LogFilter { Name = "Overlay" };
+        // The same index the editor window keeps, so that collapsing repeats is written once.
+        // The rows beside it are this viewer's own: it redraws every frame where the window
+        // polls fifteen times a second, so it cannot format a row per pass.
+        private readonly LogIndex _index;
         private readonly List<Row> _visible = new List<Row>();
+        private readonly List<int> _keptSlots = new List<int>();
         private readonly List<LogRingBuffer.TagCount> _tagCensus = new List<LogRingBuffer.TagCount>();
         private readonly List<TagRow> _tagRows = new List<TagRow>();
 
@@ -100,6 +105,7 @@ namespace KenseiLog {
         private GUIStyle _detail;
         private GUIStyle _meta;
         private GUIStyle _count;
+        private GUIStyle _counter;
         private Texture2D _panelTex;
         private Texture2D _paneTex;
         private Texture2D _rowTex;
@@ -107,6 +113,10 @@ namespace KenseiLog {
         private Texture2D _chipTex;
         private Texture2D _warningIconTex;
         private Texture2D _errorIconTex;
+
+        private LogOverlay() {
+            _index = new LogIndex(_filter);
+        }
 
         public static void Ensure(MemorySink sink, float scale) {
             if (!Application.isPlaying) {
@@ -154,6 +164,23 @@ namespace KenseiLog {
                 if (_instance != null) {
                     _instance._showTags = value;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Whether repeats are folded into one row with a count, as the editor window's Collapse
+        /// does. Changing it rebuilds the list, which is why it is not a plain field like the
+        /// one above: the fold happens as records are taken in, so the ones already taken have
+        /// to be taken again.
+        /// </summary>
+        public static bool Collapsed {
+            get => _instance != null && _instance._filter.Collapse;
+            set {
+                if (_instance == null || _instance._filter.Collapse == value) {
+                    return;
+                }
+                _instance._filter.Collapse = value;
+                _instance.RebuildVisible();
             }
         }
 
@@ -267,8 +294,8 @@ namespace KenseiLog {
                 // while the bubble is collapsed nothing reads one. The list is built from the
                 // buffer when the viewer opens instead, so a build shipped with the overlay
                 // enabled pays for the counts and nothing else.
-                if (_listBuilt && _filter.Matches(in record)) {
-                    _visible.Add(new Row(in record));
+                if (_listBuilt) {
+                    TakeRow(in record);
                 }
             }
             // Not gated on what was copied. This runs only when the sink's version moved, which
@@ -279,11 +306,20 @@ namespace KenseiLog {
             _tagRowsDirty = true;
 
             int drop = 0;
-            while (drop < _visible.Count && _visible[drop].Sequence < oldest) {
-                drop++;
+            if (_listBuilt && _index.PruneBelow(oldest, _keptSlots, out int droppedFromFront)) {
+                if (droppedFromFront >= 0) {
+                    drop = droppedFromFront;
+                    _visible.RemoveRange(0, drop);
+                } else {
+                    // A collapsed view loses rows from anywhere, not off the front, so the
+                    // survivors are moved down over the gaps in the order the index moved them.
+                    for (int i = 0; i < _keptSlots.Count; i++) {
+                        _visible[i] = _visible[_keptSlots[i]];
+                    }
+                    _visible.RemoveRange(_keptSlots.Count, _visible.Count - _keptSlots.Count);
+                }
             }
             if (drop > 0) {
-                _visible.RemoveRange(0, drop);
                 // Rows left the top of the list, so the same offset now points further down it.
                 // Without this the content slides under the finger every time the ring wraps,
                 // which on a busy scene is continuous.
@@ -296,6 +332,7 @@ namespace KenseiLog {
         }
 
         private void Reset() {
+            _index.Clear();
             _visible.Clear();
             _tagCensus.Clear();
             _tagRows.Clear();
@@ -315,15 +352,31 @@ namespace KenseiLog {
         /// opens, since nothing is kept up to date while it is collapsed.
         /// </summary>
         private void RebuildVisible() {
+            _index.Clear();
             _visible.Clear();
             int copied = _sink.Buffer.CopyNewerThan(0, _scratch);
             for (int i = 0; i < copied; i++) {
-                if (_filter.Matches(in _scratch[i])) {
-                    _visible.Add(new Row(in _scratch[i]));
-                }
+                TakeRow(in _scratch[i]);
             }
             _listBuilt = true;
             ScrollToSelectionOrTail();
+        }
+
+        /// <summary>
+        /// Offers a record to the index and keeps this viewer's formatted row beside whichever
+        /// slot came back: a new slot appends one, and a slot a repeat folded into replaces the
+        /// row there, because the index points a folded row at the newest occurrence.
+        /// </summary>
+        private void TakeRow(in LogRecord record) {
+            int slot = _index.Append(in record);
+            if (slot < 0) {
+                return;
+            }
+            if (slot == _visible.Count) {
+                _visible.Add(new Row(in record));
+                return;
+            }
+            _visible[slot] = new Row(in record);
         }
 
         /// <summary>
@@ -595,9 +648,27 @@ namespace KenseiLog {
             GUI.color = Color.white;
             x += 58f;
 
-            if (_filter.Tags.Count > 0 && GUI.Button(new Rect(x, 3f, 54f, BarHeight - 6f), "All tags", _button)) {
-                _filter.Tags.Clear();
-                RebuildVisible();
+            if (_filter.Tags.Count > 0) {
+                if (GUI.Button(new Rect(x, 3f, 54f, BarHeight - 6f), "All tags", _button)) {
+                    _filter.Tags.Clear();
+                    RebuildVisible();
+                }
+                x += 58f;
+            }
+
+            // Short caption when the bar is tight, which on a phone held upright it is: the
+            // level counts, Tags, Clear and Close were already most of the width. Drawn at
+            // whichever size fits rather than dropped, because a control that silently is not
+            // there is the failure this package keeps having.
+            float room = width - 122f - x;
+            if (room > 30f) {
+                float span = room > 72f ? 68f : 44f;
+                GUI.color = _filter.Collapse ? new Color(0.5f, 0.9f, 1f) : Color.white;
+                if (GUI.Button(new Rect(x, 3f, span, BarHeight - 6f), span > 50f ? "Collapse" : "Fold", _button)) {
+                    _filter.Collapse = !_filter.Collapse;
+                    RebuildVisible();
+                }
+                GUI.color = Color.white;
             }
 
             if (GUI.Button(new Rect(width - 118f, 3f, 54f, BarHeight - 6f), "Clear", _button)) {
@@ -633,7 +704,8 @@ namespace KenseiLog {
 
             bool showFrame = area.width > 520f;
             for (int i = first; i < last; i++) {
-                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), _visible[i], showFrame);
+                DrawRow(new Rect(0f, i * RowHeight, area.width - 16f, RowHeight), _visible[i],
+                    _index.Repeats[i], showFrame);
             }
 
             GUI.EndScrollView();
@@ -643,7 +715,7 @@ namespace KenseiLog {
             }
         }
 
-        private void DrawRow(Rect rect, Row row, bool showFrame) {
+        private void DrawRow(Rect rect, Row row, int repeats, bool showFrame) {
             bool selected = row.Sequence == _selected;
             if (selected) {
                 GUI.Box(rect, GUIContent.none, _bar);
@@ -663,9 +735,26 @@ namespace KenseiLog {
             GUI.Label(new Rect(x, rect.y, 44f, rect.height), row.Time, _meta);
             x += 50f;
 
+            // The counter sits at the right end and takes its width out of the message, which
+            // is the only thing on the row that can give any up.
+            float counter = repeats > 1 ? 46f : 0f;
+
             GUI.color = LevelColor(row.Level);
-            if (GUI.Button(new Rect(x, rect.y, rect.xMax - x, rect.height), row.Text, _row) && !_didDrag) {
+            if (GUI.Button(new Rect(x, rect.y, rect.xMax - x - counter, rect.height), row.Text, _row) && !_didDrag) {
                 _selected = selected ? -1 : row.Sequence;
+            }
+
+            if (repeats > 1) {
+                // Plain text rather than a chip: a filled block at the end of a row reads as a
+                // control to press, and this one does nothing. The count carries itself.
+                //
+                // Held within reach of the message rather than pinned to the right edge. On a
+                // phone the two are the same place; on a desktop window the edge is half a
+                // screen away from the text it belongs to, and a number that far off reads as
+                // belonging to whatever the game happens to be drawing under it.
+                float at = Mathf.Min(rect.xMax - counter, x + 330f);
+                GUI.color = _metaColor;
+                GUI.Label(new Rect(at, rect.y, counter - 6f, rect.height), "x" + Compact(repeats), _counter);
             }
             GUI.color = Color.white;
         }
@@ -838,6 +927,12 @@ namespace KenseiLog {
             };
 
             _meta = new GUIStyle(_row) { alignment = TextAnchor.MiddleRight, fontSize = 11 };
+
+            _counter = new GUIStyle(_row) {
+                fontSize = 12,
+                alignment = TextAnchor.MiddleRight,
+                padding = new RectOffset(0, 0, 0, 0)
+            };
 
             _count = new GUIStyle(_row) {
                 fontSize = 13,

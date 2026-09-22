@@ -72,6 +72,7 @@ public static class SmokeRunner {
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
         Scenario(CountsSurviveAChangeOfCapacity);
         Scenario(TheTagCensusHoldsOnlyWhatTheBufferHolds);
+        Scenario(TheIndexSaysWhichSlotItTouched);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -156,7 +157,7 @@ public static class SmokeRunner {
 
     private static void CollapseFoldsRepeatsAndTracksNewest() {
         LogFilter filter = new LogFilter { Collapse = true };
-        TabView view = new TabView(filter);
+        LogIndex view = new LogIndex(filter);
 
         view.Append(Record(1, "Combat", "same", LogLevel.Log, LogChannel.Dev, 0));
         view.Append(Record(2, "Combat", "same", LogLevel.Log, LogChannel.Dev, 0));
@@ -171,7 +172,7 @@ public static class SmokeRunner {
 
     private static void PruneDropsRolledEntriesAndKeepsCollapseIndex() {
         LogFilter filter = new LogFilter { Collapse = true };
-        TabView view = new TabView(filter);
+        LogIndex view = new LogIndex(filter);
 
         view.Append(Record(1, "A", "first", LogLevel.Log, LogChannel.Dev, 0));
         view.Append(Record(2, "A", "second", LogLevel.Log, LogChannel.Dev, 0));
@@ -728,7 +729,7 @@ public static class SmokeRunner {
     /// late sequence and left every expired row behind it on screen for good.
     /// </summary>
     private static void PruneClearsExpiredRowsInACollapsedView() {
-        TabView view = new TabView(new LogFilter { Name = "Collapsed", Collapse = true });
+        LogIndex view = new LogIndex(new LogFilter { Name = "Collapsed", Collapse = true });
 
         view.Append(Record(1, "T", "a", LogLevel.Log, LogChannel.Prod, 0));
         view.Append(Record(2, "T", "b", LogLevel.Log, LogChannel.Prod, 0));
@@ -753,7 +754,7 @@ public static class SmokeRunner {
     /// moving while the contents keep moving. The window repaints on the revision instead.
     /// </summary>
     private static void ViewRevisionMovesWhenTheContentsDo() {
-        TabView plain = new TabView(new LogFilter { Name = "All" });
+        LogIndex plain = new LogIndex(new LogFilter { Name = "All" });
         int before = plain.Revision;
         plain.Append(Record(1, "T", "one", LogLevel.Log, LogChannel.Prod, 0));
         Check("a new row moves the revision", plain.Revision != before);
@@ -762,7 +763,7 @@ public static class SmokeRunner {
         plain.PruneBelow(2);
         Check("dropping a row moves the revision", plain.Revision != before);
 
-        TabView collapsed = new TabView(new LogFilter { Name = "Collapsed", Collapse = true });
+        LogIndex collapsed = new LogIndex(new LogFilter { Name = "Collapsed", Collapse = true });
         collapsed.Append(Record(1, "T", "same", LogLevel.Log, LogChannel.Prod, 0));
         int count = collapsed.Count;
         before = collapsed.Revision;
@@ -2363,6 +2364,53 @@ public static class SmokeRunner {
         buffer.Clear();
         buffer.CopyTagCounts(census);
         Check("clearing takes the census with it", census.Count == 0);
+    }
+
+    /// <summary>
+    /// The index is shared by both viewers now, and the in-game one keeps a formatted row beside
+    /// every slot - it redraws per frame where the window polls fifteen times a second, so it
+    /// cannot format a row per pass. That only works while the index says which slot it touched:
+    /// a repeat folds into an earlier slot and must replace the row there, not add one. And a
+    /// prune has to say what went, because a collapsed view loses rows from anywhere rather than
+    /// off the front.
+    /// </summary>
+    private static void TheIndexSaysWhichSlotItTouched() {
+        LogIndex plain = new LogIndex(new LogFilter { Name = "Plain" });
+        Check("an accepted record takes the next slot",
+            plain.Append(Record(1, "A", "one", LogLevel.Log, LogChannel.Prod, 0)) == 0 &&
+            plain.Append(Record(2, "A", "two", LogLevel.Log, LogChannel.Prod, 0)) == 1);
+
+        LogFilter narrow = new LogFilter { Name = "Narrow" };
+        narrow.SetLevel(LogLevel.Log, false);
+        LogIndex refused = new LogIndex(narrow);
+        Check("a record the filter refuses takes none",
+            refused.Append(Record(3, "A", "three", LogLevel.Log, LogChannel.Prod, 0)) == -1);
+
+        LogIndex folded = new LogIndex(new LogFilter { Name = "Folded", Collapse = true });
+        folded.Append(Record(10, "A", "same", LogLevel.Log, LogChannel.Prod, 0));
+        folded.Append(Record(11, "B", "other", LogLevel.Log, LogChannel.Prod, 0));
+        Check("a repeat folds into the slot it first took",
+            folded.Append(Record(12, "A", "same", LogLevel.Log, LogChannel.Prod, 0)) == 0);
+        Check("and the slot points at the newest of them",
+            folded.Sequences[0] == 12 && folded.Repeats[0] == 2);
+
+        List<int> kept = new List<int>();
+        Check("a prune that drops nothing says so",
+            !folded.PruneBelow(0, kept, out int front) && front == -1);
+
+        // The first slot is the newer record now, so a collapsed prune loses the middle.
+        Check("a collapsed prune names the survivors",
+            folded.PruneBelow(12, kept, out front) && front == -1 &&
+            kept.Count == 1 && kept[0] == 0);
+        Check("and leaves the index holding them", folded.Count == 1 && folded.Sequences[0] == 12);
+
+        LogIndex ordered = new LogIndex(new LogFilter { Name = "Ordered" });
+        for (long i = 1; i <= 5; i++) {
+            ordered.Append(Record(i, "A", "n " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        Check("an uncollapsed prune counts off the front instead",
+            ordered.PruneBelow(3, kept, out front) && front == 2 && kept.Count == 0);
+        Check("and drops exactly that many", ordered.Count == 3 && ordered.Sequences[0] == 3);
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {

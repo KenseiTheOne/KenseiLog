@@ -4,6 +4,34 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-09-22
+
+### Added
+
+- The in-game viewer collapses repeats. A loop logging the same line no longer fills the list
+  with it: the row stays where it is and takes a count beside the message, exactly as the editor
+  window's Collapse does. The toggle sits in the bar, and shortens to `Fold` where the bar is
+  tight rather than disappearing - a control that is silently not there is the failure this
+  package keeps having. `LogOverlay.Collapsed` turns it on from a debug menu of your own, beside
+  `IsOpen` and `TagPaneVisible`.
+
+### Changed
+
+- **Breaking.** `KenseiLog.Editor.TabView` is `KenseiLog.LogIndex`, in the runtime assembly. The
+  fold was written for the editor window and the in-game viewer needed the same one; two
+  implementations of one fold is one more than this package wants to keep right. The file moved
+  as it stood - it imported nothing from Unity - and the window uses it unchanged.
+- `LogIndex.Append` answers which slot now stands for the record: the one appended, the earlier
+  one a repeat folded into, or -1 when the filter refused it. `PruneBelow` gained an overload
+  saying what it dropped - a count off the front for an uncollapsed view, the surviving slots
+  named for a collapsed one, which lose rows from anywhere. Both exist because the in-game viewer
+  keeps a formatted row beside every slot: it redraws per frame where the window polls fifteen
+  times a second, so it cannot format a row per pass and has to follow the index rather than
+  rebuild after it.
+- A repeat count is drawn near its message rather than pinned to the right edge. On a phone the
+  two are the same place; in a desktop window the edge is half a screen from the text it belongs
+  to, and a number that far off reads as belonging to whatever the game is drawing under it.
+
 ## [0.15.2] - 2026-09-22
 
 ### Fixed
