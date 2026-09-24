@@ -17,6 +17,14 @@ namespace KenseiLog.Editor {
     /// </summary>
     public sealed class LogWindow : EditorWindow {
         private const double RefreshInterval = 1.0 / 15.0;
+
+        /// <summary>
+        /// How many records a single copy out of the source moves. A batch rather than the size
+        /// of the source: every drain below loops until the source is empty, advancing a
+        /// watermark per record, so a small buffer costs another turn and nothing else - while
+        /// one sized from the source is an array as large as the whole session.
+        /// </summary>
+        private const int DrainBatch = 4096;
         private const float RowHeight = 20f;
 
         /// <summary>
@@ -50,6 +58,7 @@ namespace KenseiLog.Editor {
         private List<TagNode> _tagRoots = new List<TagNode>();
         private int _rowGeneration;
         private LogRecord[] _scratch;
+        private long _lastPrunedOldest = -1;
         private long _lastSequence;
         private int _lastVersion = -1;
         private double _lastRefresh;
@@ -704,18 +713,18 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Keeps the copy buffer as large as the source.
+        /// The buffer every copy out of the source goes through.
         /// <para>
-        /// CopyNewerThan stops when the destination is full and returns the oldest of what it
-        /// had, so a scratch smaller than the buffer silently loses the newest records - which
-        /// is what raising EditorSink.Capacity used to do, since the array was sized once when
-        /// the window was built.
+        /// It used to be sized from the source, because CopyNewerThan stops when the
+        /// destination is full and a short one loses the rest without saying so. That was the
+        /// right answer while the source was a small ring and the wrong one the moment it could
+        /// hold a session: an array as large as the source, never shrunk, reallocated whenever
+        /// the source grew past it. The drains loop instead, which is correct at any size.
         /// </para>
         /// </summary>
         private void EnsureScratch() {
-            int capacity = Mathf.Max(64, Source.Capacity);
-            if (_scratch == null || _scratch.Length < capacity) {
-                _scratch = new LogRecord[capacity];
+            if (_scratch == null) {
+                _scratch = new LogRecord[DrainBatch];
             }
         }
 
@@ -738,24 +747,34 @@ namespace KenseiLog.Editor {
                 _lastSequence = oldest - 1;
             }
 
-            int copied = buffer.CopyNewerThan(_lastSequence, _scratch);
             bool tagsChanged = false;
 
-            for (int i = 0; i < copied; i++) {
-                ref LogRecord record = ref _scratch[i];
-                _lastSequence = record.Sequence;
-                _levelCounts[(int)record.Level]++;
-
-                if (_tagCounts.TryGetValue(record.Tag, out int seen)) {
-                    _tagCounts[record.Tag] = seen + 1;
-                    BumpTagNodes(record.Tag);
-                } else {
-                    _tagCounts[record.Tag] = 1;
-                    tagsChanged = true;
+            // Drained until the source has nothing newer, rather than one batch a poll. A poll
+            // only happens when the sink's version has moved, so a burst that filled the batch
+            // and then stopped would leave its own tail unshown until something else happened
+            // to be logged.
+            while (true) {
+                int copied = buffer.CopyNewerThan(_lastSequence, _scratch);
+                if (copied == 0) {
+                    break;
                 }
 
-                for (int t = 0; t < _views.Count; t++) {
-                    _views[t].Append(in record);
+                for (int i = 0; i < copied; i++) {
+                    ref LogRecord record = ref _scratch[i];
+                    _lastSequence = record.Sequence;
+                    _levelCounts[(int)record.Level]++;
+
+                    if (_tagCounts.TryGetValue(record.Tag, out int seen)) {
+                        _tagCounts[record.Tag] = seen + 1;
+                        BumpTagNodes(record.Tag);
+                    } else {
+                        _tagCounts[record.Tag] = 1;
+                        tagsChanged = true;
+                    }
+
+                    for (int t = 0; t < _views.Count; t++) {
+                        _views[t].Append(in record);
+                    }
                 }
             }
 
@@ -767,8 +786,15 @@ namespace KenseiLog.Editor {
             long anchorSequence = TopVisibleSequence(active);
             long selectedSequence = SelectedSequence(active);
 
-            for (int t = 0; t < _views.Count; t++) {
-                _views[t].PruneBelow(oldest);
+            // Only when the floor has actually moved. A collapsed tab cannot prune by a leading
+            // run - a repeat writes a late sequence into an early slot - so it tests every row,
+            // and with nothing leaving the source that is a full walk of every tab, fifteen
+            // times a second, structurally unable to find anything.
+            if (oldest != _lastPrunedOldest) {
+                _lastPrunedOldest = oldest;
+                for (int t = 0; t < _views.Count; t++) {
+                    _views[t].PruneBelow(oldest);
+                }
             }
 
             if (active.Count != countBefore) {
@@ -846,6 +872,9 @@ namespace KenseiLog.Editor {
             // the numbers say.
             _rowGeneration++;
             _lastSequence = 0;
+            // The floor is whatever the new source says it is, so the next poll must prune
+            // against it rather than skip on a comparison with the old source's.
+            _lastPrunedOldest = -1;
             Array.Clear(_levelCounts, 0, _levelCounts.Length);
             _tagCounts.Clear();
             _consoleContexts.Clear();
@@ -876,9 +905,20 @@ namespace KenseiLog.Editor {
             EnsureScratch();
             view.Clear();
             LogRingBuffer buffer = Source;
-            int copied = buffer.CopyNewerThan(0, _scratch);
-            for (int i = 0; i < copied; i++) {
-                view.Append(in _scratch[i]);
+
+            // In batches, with a watermark of its own. One copy from the beginning rebuilt only
+            // the first batch of a source larger than the buffer, and the rest of the tab was
+            // simply not there - no error, no gap, just a tab that ended early.
+            long from = 0;
+            while (true) {
+                int copied = buffer.CopyNewerThan(from, _scratch);
+                if (copied == 0) {
+                    return;
+                }
+                for (int i = 0; i < copied; i++) {
+                    view.Append(in _scratch[i]);
+                    from = _scratch[i].Sequence;
+                }
             }
         }
 
