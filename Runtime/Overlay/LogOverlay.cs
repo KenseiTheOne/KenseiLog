@@ -53,6 +53,11 @@ namespace KenseiLog {
         // Uneven on purpose: three lines of text, not a stack of equal bars, which would read as
         // a hamburger menu.
         private static readonly float[] _logBarWidths = { 1f, 0.62f, 0.84f };
+
+        // Worst first, in the bubble and in the bar alike. They are the same three counts, and
+        // with an order of their own each, opening the bubble laid them out the other way round
+        // under the thumb that had just tapped it.
+        private static readonly LogLevel[] _levelOrder = { LogLevel.Error, LogLevel.Warning, LogLevel.Log };
         private static readonly string[] _countShapes = { "999", "9.9k", "999k", "999M", "1B+" };
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
         private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
@@ -494,8 +499,8 @@ namespace KenseiLog {
             bool tapped = _bubbleGesture.Opens(GUI.Button(rect, GUIContent.none, _button));
 
             float x = rect.x + BubblePad;
-            for (int level = 2; level >= 0; level--) {
-                DrawChip(x, rect.y, level);
+            for (int i = 0; i < _levelOrder.Length; i++) {
+                DrawChip(x, rect.y, (int)_levelOrder[i]);
                 x += IconSize + IconGap + _digitSlot + ChipGap;
             }
 
@@ -650,9 +655,9 @@ namespace KenseiLog {
                 _levelLabelsDirty = false;
             }
 
-            x += LevelButton(x, LogLevel.Log);
-            x += LevelButton(x, LogLevel.Warning);
-            x += LevelButton(x, LogLevel.Error);
+            for (int i = 0; i < _levelOrder.Length; i++) {
+                x += LevelButton(x, _levelOrder[i]);
+            }
 
             GUI.color = _showTags ? new Color(0.5f, 0.9f, 1f) : Color.white;
             if (GUI.Button(new Rect(x, 3f, 54f, BarHeight - 6f), "Tags", _button)) {

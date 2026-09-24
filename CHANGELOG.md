@@ -37,6 +37,9 @@ All notable changes to this package are documented here. The format follows
 
 ### Fixed
 
+- The open viewer's level toggles run errors, warnings, logs - the order the bubble shows them
+  in. They ran the other way, so opening the bubble reversed the three counts under the thumb
+  that had just tapped it. Both are drawn from one order now, so they cannot drift apart again.
 - Every file a session fills now names the same session. The header's identity and start time
   were minted per file, so a run long enough to rotate looked, from its files, like two runs -
   and after a restart nothing could put them back together, since only the editor's
