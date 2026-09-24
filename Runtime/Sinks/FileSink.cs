@@ -38,6 +38,12 @@ namespace KenseiLog {
         private int _retainedFiles;
         private double _flushInterval;
         private bool _includeDev;
+        // Minted when a session starts and written into the header of every file the session
+        // goes on to fill. It was minted per file, so a run that rotated looked, from its files,
+        // like two runs - and nothing but the editor's SessionState could say otherwise, and
+        // that only while the editor stayed up.
+        private string _sessionId;
+        private string _sessionStarted;
         private readonly string _app;
         private readonly string _unity;
         private readonly string _platform;
@@ -250,6 +256,7 @@ namespace KenseiLog {
         /// </summary>
         private void StartSession() {
             lock (_lock) {
+                BeginSession();
                 int next;
                 try {
                     Directory.CreateDirectory(LogDirectory);
@@ -302,12 +309,71 @@ namespace KenseiLog {
                     return;
                 }
 
+                // The file already carries the session's identity in its header, and the next
+                // rotation has to write the same one - the editor carries on like this across
+                // every domain reload, so a fresh identity here would split one editor session
+                // into as many as it had recompiles before it next rotated.
+                if (!TryReadSession(target)) {
+                    BeginSession();
+                }
                 CurrentFilePath = target;
                 OpenWriter(startSession: false);
                 if (_writer != null) {
                     _bytesWritten = existing;
                 }
             }
+        }
+
+        private void BeginSession() {
+            _sessionId = Guid.NewGuid().ToString("N");
+            _sessionStarted = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Reads the session a file on disk belongs to out of its header line. False for a file
+        /// with no header this sink recognises - one written by hand, or by a version old enough
+        /// not to have written one - in which case carrying on with it starts a session of its own.
+        /// </summary>
+        private bool TryReadSession(string path) {
+            string header;
+            try {
+                // ReadWrite because this is the file about to be appended to, and on the editor's
+                // side a previous domain's writer may not have let go of it a moment ago.
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) {
+                    header = reader.ReadLine();
+                }
+            } catch (Exception) {
+                return false;
+            }
+
+            string id = HeaderValue(header, LogJson.SessionKey);
+            string started = HeaderValue(header, "started");
+            if (id == null || started == null) {
+                return false;
+            }
+            _sessionId = id;
+            _sessionStarted = started;
+            return true;
+        }
+
+        /// <summary>
+        /// A string value out of the header line, by key. Enough for the header alone: this sink
+        /// wrote it, both values it reads - a hexadecimal identity and a round-trip timestamp -
+        /// contain no quote, and it is only ever asked of the first line of the file.
+        /// </summary>
+        private static string HeaderValue(string line, string key) {
+            if (line == null) {
+                return null;
+            }
+            string marker = "\"" + key + "\":\"";
+            int at = line.IndexOf(marker, StringComparison.Ordinal);
+            if (at < 0) {
+                return null;
+            }
+            int start = at + marker.Length;
+            int end = line.IndexOf('"', start);
+            return end < 0 ? null : line.Substring(start, end - start);
         }
 
         private void Rotate() {
@@ -411,14 +477,7 @@ namespace KenseiLog {
                 if (startSession) {
                     StringBuilder builder = LineBuilder();
                     builder.Length = 0;
-                    LogJson.AppendSessionHeader(
-                        builder,
-                        Guid.NewGuid().ToString("N"),
-                        _app,
-                        _unity,
-                        _platform,
-                        _device,
-                        DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    LogJson.AppendSessionHeader(builder, _sessionId, _app, _unity, _platform, _device, _sessionStarted);
 
                     string header = builder.ToString();
                     _writer.Write(header);

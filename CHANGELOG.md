@@ -26,6 +26,17 @@ All notable changes to this package are documented here. The format follows
   is new, and a sink rebuilt larger by a later `Configure` carries it across rather than claiming
   a whole history it does not have.
 
+### Fixed
+
+- Every file a session fills now names the same session. The header's identity and start time
+  were minted per file, so a run long enough to rotate looked, from its files, like two runs -
+  and after a restart nothing could put them back together, since only the editor's
+  SessionState knew, and only while the editor stayed up. They are minted once when a session
+  starts and written into the header of each file it goes on to fill. Carrying on with a file,
+  which the editor does across every domain reload, reads them back out of that file's header, so
+  an editor session is not split into as many as it had recompiles before it next rotated. A run
+  that really is new still gets an identity of its own.
+
 ### Changed
 
 - **Breaking.** `KenseiLog.Editor.TabView` is `KenseiLog.LogIndex`, in the runtime assembly. The

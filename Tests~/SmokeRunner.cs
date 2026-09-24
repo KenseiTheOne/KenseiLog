@@ -75,6 +75,7 @@ public static class SmokeRunner {
         Scenario(TheIndexSaysWhichSlotItTouched);
         Scenario(TheRingKnowsWhenItHasLetARecordGo);
         Scenario(OnlyAFileThatIsWritingCountsAsKeepingRecords);
+        Scenario(ARotatedFileKeepsItsSessionsIdentity);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2494,6 +2495,60 @@ public static class SmokeRunner {
             prod.Dispose();
             all.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Each file opens with a header naming the session it belongs to. The identity was minted
+    /// per file, so a run long enough to rotate looked, from its files, like two runs - and after
+    /// a restart nothing could put them back together. One identity per session now, carried by
+    /// every file it fills, and read back out of the header when the editor carries on with a
+    /// file across a domain reload.
+    /// </summary>
+    private static void ARotatedFileKeepsItsSessionsIdentity() {
+        string directory = ScratchDirectory("session-identity");
+        LogConfig config = ScratchConfig(directory, 64);
+        string filler = new string('x', 512);
+
+        FileSink sink = new FileSink(in config);
+        string first = sink.CurrentFilePath;
+        long sequence = 1;
+        while (sink.CurrentFilePath == first) {
+            sink.Write(Record(sequence++, "T", filler, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        string second = sink.CurrentFilePath;
+        sink.Dispose();
+
+        string session = HeaderField(first, "session");
+        Check("the first file names its session", !string.IsNullOrEmpty(session));
+        Check("and the file a rotation opens names the same one", HeaderField(second, "session") == session);
+        Check("with the same start, since the session did not start again",
+            HeaderField(second, "started") == HeaderField(first, "started"));
+
+        // Carrying on with the file, as the editor does after every domain reload, then rotating.
+        FileSink resumed = new FileSink(in config, true, second);
+        while (resumed.CurrentFilePath == second) {
+            resumed.Write(Record(sequence++, "T", filler, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        string third = resumed.CurrentFilePath;
+        resumed.Dispose();
+        Check("a session carried on across a reload keeps its identity through the next rotation",
+            HeaderField(third, "session") == session);
+
+        FileSink fresh = new FileSink(in config);
+        string fourth = fresh.CurrentFilePath;
+        fresh.Dispose();
+        Check("while a session that really is new gets one of its own", HeaderField(fourth, "session") != session);
+    }
+
+    private static string HeaderField(string path, string key) {
+        string header = ReadWhileOpen(path).Split('\n')[0];
+        string marker = "\"" + key + "\":\"";
+        int at = header.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) {
+            return null;
+        }
+        int start = at + marker.Length;
+        return header.Substring(start, header.IndexOf('"', start) - start);
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {
