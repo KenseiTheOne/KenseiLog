@@ -53,6 +53,8 @@ public static class SmokeRunner {
         Scenario(AFileWithOnlyAHeaderStillOpens);
         Scenario(ASessionFileComesBackWholeForSeeding);
         Scenario(TheRelatedObjectComesBackForTheEditorsOwnFileOnly);
+        Scenario(AWrittenLineReadsBackAsItWasWritten);
+        Scenario(ALineFromElsewhereIsReadAsItAlwaysWas);
         Scenario(MemorySinkStoresAndVersions);
         Scenario(TagColoursAreStableAndDistinct);
         Scenario(FileSettingsApplyAfterTheSinkExists);
@@ -1246,6 +1248,295 @@ public static class SmokeRunner {
             opened && session.Buffer.TryGetBySequence(1, out LogRecord back) && back.ContextInstanceId == 0);
 
         UnityEngine.Object.DestroyImmediate(target);
+    }
+
+    /// <summary>
+    /// A recompile reads the whole session back, and JsonUtility was nearly all of what that
+    /// cost, so the lines the writer produces are read by a parser for that one shape. What it
+    /// has to get right is everything the writer can put in a line - every escape, every sign,
+    /// every field that is sometimes there - so thousands of records are made out of the worst
+    /// of it, written, and read back field by field.
+    /// <para>
+    /// Against the record itself rather than against JsonUtility, because JsonUtility is wrong
+    /// about two of the escapes the writer uses on purpose: it threw on a lone high surrogate,
+    /// losing the record, returned the whole message empty for a lone low one, and cut a
+    /// message off at an escaped NUL.
+    /// </para>
+    /// </summary>
+    private static void AWrittenLineReadsBackAsItWasWritten() {
+        LineReaders readers = LineReaders.Find();
+        Check("the reader still has the parts these lean on", readers != null);
+        if (readers == null) {
+            return;
+        }
+
+        string emoji = char.ConvertFromUtf32(0x1F600);
+        List<LogRecord> records = new List<LogRecord> {
+            new LogRecord(1, "Text", "cut mid-character: " + emoji[0], LogLevel.Log, LogChannel.Prod, 0.0, 0, null, 0, null, 0),
+            new LogRecord(2, "Text", "the other half: " + emoji[1] + " and on", LogLevel.Log, LogChannel.Prod, 0.0, 0, null, 0, null, 0),
+            new LogRecord(3, "Text", "a NUL \0 in the middle", LogLevel.Log, LogChannel.Prod, 0.0, 0, null, 0, null, 0),
+            new LogRecord(4, "Text", "whole: " + emoji, LogLevel.Log, LogChannel.Prod, 0.0, 0, null, 0, null, 0),
+            new LogRecord(long.MaxValue / 2, "", "", LogLevel.Error, LogChannel.Dev, 0.001, int.MaxValue,
+                          "C:\\Users\\dev\\Project\\Assets\\A.cs", int.MaxValue, "at A()\r\n\tat B()", int.MinValue, true),
+            new LogRecord(6, "Deep.Nested.Tag", "\"\\/\b\f\n\r\t\u001f", LogLevel.Warning, LogChannel.Dev,
+                          999999999999.999, -1, "Assets/B.cs", 0, "", -42, false),
+            // The writer's null, which only a record built by hand can carry - and with half a
+            // surrogate beside it, a record JsonUtility would have lost outright.
+            new LogRecord(7, null, null, LogLevel.Log, LogChannel.Prod, 0.0, 0, null, 0, null, 0),
+            new LogRecord(8, "T" + emoji[0], null, LogLevel.Log, LogChannel.Prod, 1.5, 1, null, 0, null, 0),
+        };
+
+        // The rest from a fixed seed, so a failure can be run again exactly as it was.
+        System.Random random = new System.Random(20260924);
+        string[] pieces = {
+            "a", "Z", "9", " ", "\"", "\\", "/", "\n", "\r", "\t", "\b", "\f", "\0", "\u0001", "\u001f",
+            "ж", "✓", "€", emoji, emoji.Substring(0, 1), emoji.Substring(1, 1), "\ufffd", "\uffff", "{", "}", ",", ":"
+        };
+        string Text(int longest) {
+            StringBuilder text = new StringBuilder();
+            int length = random.Next(0, longest);
+            for (int i = 0; i < length; i++) {
+                text.Append(pieces[random.Next(pieces.Length)]);
+            }
+            return text.ToString();
+        }
+        // Tags, call sites and traces recur in a real file, and a recurring one is found by its raw
+        // text - escapes and all - rather than read again. Half of them come from here, so that
+        // what is found is checked as well as what is read.
+        string[] recurring = {
+            "Net.Sync", "", "q\"uote", "back\\slash\\", "C:\\Users\\dev\\Project\\Assets\\A.cs", "/Users/dev/A.cs",
+            "at A()\r\n\tat B()\n", "\"\\\"", emoji, emoji.Substring(0, 1), "tab\there", "nul\0here"
+        };
+        string Recurring(int longest) =>
+            random.Next(2) == 0 ? recurring[random.Next(recurring.Length)] : Text(longest);
+        for (int i = 0; i < 4000; i++) {
+            double time = random.NextDouble() * Math.Pow(10, random.Next(0, 12));
+            records.Add(new LogRecord(
+                ((long)random.Next() << 31) | (long)random.Next(),
+                Recurring(12),
+                Text(80),
+                (LogLevel)random.Next(0, 3),
+                (LogChannel)random.Next(0, 2),
+                time,
+                random.Next(int.MinValue, int.MaxValue),
+                random.Next(3) == 0 ? null : Recurring(40),
+                random.Next(int.MinValue, int.MaxValue),
+                random.Next(3) == 0 ? null : Recurring(200),
+                random.Next(int.MinValue, int.MaxValue),
+                random.Next(2) == 0));
+        }
+
+        int refusedByTheParser = 0;
+        int wrong = 0;
+        int disagreedWithJson = 0;
+        string firstWrong = null;
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < records.Count; i++) {
+            LogRecord original = records[i];
+            builder.Length = 0;
+            LogJson.AppendRecord(builder, in original);
+            string line = builder.ToString();
+
+            if (!readers.Written(line, out LogRecord fast)) {
+                refusedByTheParser++;
+                continue;
+            }
+            string difference = Difference(original, fast);
+            if (difference != null) {
+                wrong++;
+                firstWrong = firstWrong ?? "#" + i + " " + difference;
+            }
+
+            // Where JsonUtility is right, the two have to agree as well.
+            if (!HasEscapeJsonUtilityGetsWrong(original) && readers.AnyJson(line, out LogRecord slow) &&
+                Difference(slow, fast) != null) {
+                disagreedWithJson++;
+            }
+        }
+
+        Check("the parser takes every line the writer writes (" + refusedByTheParser + " refused)", refusedByTheParser == 0);
+        Check("and reads every one back as it was written" + (firstWrong != null ? ": " + firstWrong : string.Empty), wrong == 0);
+        Check("agreeing with JsonUtility wherever JsonUtility is right (" + disagreedWithJson + " did not)", disagreedWithJson == 0);
+
+        builder.Length = 0;
+        LogJson.AppendRecord(builder, records[0]);
+        Check("a lone surrogate comes back where JsonUtility lost the record",
+            readers.Read(builder.ToString(), out LogRecord lone) && lone.Message == records[0].Message);
+
+        LogRecord windows = new LogRecord(7, "Net.Sync", "one", LogLevel.Log, LogChannel.Prod, 0.0, 0,
+                                          "C:\\Users\\dev\\Project\\Assets\\A.cs", 1, null, 0);
+        LogRecord again = new LogRecord(8, "Net.Sync", "two", LogLevel.Log, LogChannel.Prod, 0.0, 0,
+                                        "C:\\Users\\dev\\Project\\Assets\\A.cs", 2, null, 0);
+        builder.Length = 0;
+        LogJson.AppendRecord(builder, in windows);
+        string first = builder.ToString();
+        builder.Length = 0;
+        LogJson.AppendRecord(builder, in again);
+        Check("a call site seen before is the one string it was the first time, escapes and all",
+            readers.Written(first, out LogRecord one) && readers.Written(builder.ToString(), out LogRecord two) &&
+            one.File == windows.File && ReferenceEquals(one.File, two.File) && ReferenceEquals(one.Tag, two.Tag));
+
+        // "Aa" and "BB" hash alike under h * 31 + c, as every pair of their doublings does. Random
+        // text never collides often enough to show a table that trusted the hash alone.
+        string[] colliding = { "Aa", "BB", "AaBB", "BBAa", "AaAa", "BBBB" };
+        bool apart = true;
+        for (int i = 0; i < colliding.Length; i++) {
+            builder.Length = 0;
+            LogJson.AppendRecord(builder, new LogRecord(20 + i, colliding[i], "m", LogLevel.Log, LogChannel.Prod, 0.0, 0,
+                                                        colliding[colliding.Length - 1 - i], 1, null, 0));
+            apart &= readers.Written(builder.ToString(), out LogRecord told) &&
+                     told.Tag == colliding[i] && told.File == colliding[colliding.Length - 1 - i];
+        }
+        Check("two texts that hash alike are still told apart", apart);
+    }
+
+    /// <summary>
+    /// What the parser does not recognise goes to JsonUtility, and has to come back exactly as it
+    /// did before there was a parser: a line from a schema this build does not know, one somebody
+    /// edited, a torn last line. Each is refused by the parser - taking one would mean guessing at
+    /// a shape the writer never produces - and the result is JsonUtility's own.
+    /// </summary>
+    private static void ALineFromElsewhereIsReadAsItAlwaysWas() {
+        LineReaders readers = LineReaders.Find();
+        if (readers == null) {
+            return;
+        }
+
+        const string Head = "{\"t\":1.5,\"sq\":7,\"f\":2,\"lv\":0,\"ch\":1,\"tag\":\"T\",";
+        string[] elsewhere = {
+            "{ \"t\":1.5,\"sq\":7,\"f\":2,\"lv\":0,\"ch\":1,\"tag\":\"T\",\"msg\":\"spaced\" }",
+            Head + "\"msg\":\"a field from later\",\"zz\":5}",
+            Head + "\"msg\":\"first\",\"msg\":\"twice\"}",
+            "{\"t\":1.5,\"sq\":007,\"f\":2,\"lv\":0,\"ch\":1,\"tag\":\"T\",\"msg\":\"m\"}",
+            "{\"t\":1e3,\"sq\":7,\"f\":2,\"lv\":0,\"ch\":1,\"tag\":\"T\",\"msg\":\"m\"}",
+            "{\"t\":1.5,\"sq\":7,\"f\":2.5,\"lv\":0,\"ch\":1,\"tag\":\"T\",\"msg\":\"m\"}",
+            "{\"t\":1.5,\"sq\":7,\"f\":3000000000,\"lv\":0,\"ch\":1,\"tag\":\"T\",\"msg\":\"m\"}",
+            "{\"t\":1.5,\"sq\":7,\"f\":2,\"lv\":0,\"ch\":1,\"msg\":\"no tag\"}",
+            "{\"t\":1.5,\"sq\":7,\"f\":2,\"lv\"",
+            Head + "\"msg\":\"m\"}trailing",
+            Head + "\"msg\":\"a raw \u0001 control\"}",
+            Head + "\"msg\":\"a bad \\x escape\"}",
+            "{\"session\":\"abc\",\"v\":1,\"app\":\"A\"}",
+            string.Empty,
+        };
+
+        int taken = 0;
+        int changed = 0;
+        for (int i = 0; i < elsewhere.Length; i++) {
+            if (readers.Written(elsewhere[i], out _)) {
+                taken++;
+            }
+            bool before = readers.AnyJson(elsewhere[i], out LogRecord old);
+            bool now = readers.Read(elsewhere[i], out LogRecord read);
+            if (before != now || (now && Difference(old, read) != null)) {
+                changed++;
+            }
+        }
+        Check("the parser refuses every line the writer would not have written (" + taken + " taken)", taken == 0);
+        Check("and each reads exactly as JsonUtility read it (" + changed + " did not)", changed == 0);
+    }
+
+    /// <summary>The first field in which two records differ, or null when none does.</summary>
+    private static string Difference(LogRecord expected, LogRecord actual) {
+        double time = double.Parse(expected.TimeMs.ToString("0.###", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+        if (BitConverter.DoubleToInt64Bits(time) != BitConverter.DoubleToInt64Bits(actual.TimeMs)) {
+            return "time " + time.ToString("R", CultureInfo.InvariantCulture) + " came back " + actual.TimeMs.ToString("R", CultureInfo.InvariantCulture);
+        }
+        if (expected.Sequence != actual.Sequence) {
+            return "sequence";
+        }
+        // A null tag or message is written as null and read as empty, as JsonUtility read it.
+        if ((expected.Tag ?? string.Empty) != actual.Tag) {
+            return "tag";
+        }
+        if ((expected.Message ?? string.Empty) != actual.Message) {
+            return "message";
+        }
+        if (expected.Level != actual.Level || expected.Channel != actual.Channel) {
+            return "level or channel";
+        }
+        if (expected.Frame != actual.Frame) {
+            return "frame";
+        }
+        // The writer leaves the line out with the file, and an empty file or trace reads as none.
+        string file = string.IsNullOrEmpty(expected.File) ? null : expected.File;
+        if (file != actual.File || (file != null && expected.Line != actual.Line)) {
+            return "call site";
+        }
+        string trace = string.IsNullOrEmpty(expected.StackTrace) ? null : expected.StackTrace;
+        if (trace != actual.StackTrace) {
+            return "stack trace";
+        }
+        if (expected.ContextInstanceId != actual.ContextInstanceId) {
+            return "related object";
+        }
+        if (expected.Captured != actual.Captured) {
+            return "captured";
+        }
+        return null;
+    }
+
+    private static bool HasEscapeJsonUtilityGetsWrong(LogRecord record) {
+        foreach (string text in new[] { record.Tag, record.Message, record.File, record.StackTrace }) {
+            if (text == null) {
+                continue;
+            }
+            for (int i = 0; i < text.Length; i++) {
+                if (text[i] == '\0' || (char.IsSurrogate(text[i]) &&
+                    !(char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])))) {
+                    return true;
+                }
+                if (char.IsHighSurrogate(text[i])) {
+                    i++;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The reader's three ways into a line, reached by reflection since none of them is public:
+    /// the parser alone, JsonUtility alone, and the two in the order the reader tries them. All
+    /// three share one pool of strings, as the lines of one file do - a pool made fresh for each
+    /// line would never be asked for a string it had seen, which is the half of it that can go
+    /// wrong quietly.
+    /// </summary>
+    private sealed class LineReaders {
+        private MethodInfo _written;
+        private MethodInfo _anyJson;
+        private MethodInfo _read;
+        private object _shared;
+
+        public static LineReaders Find() {
+            const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Static;
+            Type parser = typeof(LogSessionReader).GetNestedType("WrittenLine", BindingFlags.NonPublic);
+            Type pool = typeof(LogSessionReader).GetNestedType("SharedStrings", BindingFlags.NonPublic);
+            LineReaders readers = new LineReaders {
+                _written = parser?.GetMethod("TryRead", BindingFlags.Public | BindingFlags.Static),
+                _anyJson = typeof(LogSessionReader).GetMethod("TryReadAnyJson", Hidden),
+                _read = typeof(LogSessionReader).GetMethod("TryReadRecord", Hidden),
+                _shared = pool != null ? Activator.CreateInstance(pool, nonPublic: true) : null,
+            };
+            return readers._written != null && readers._anyJson != null && readers._read != null && readers._shared != null
+                ? readers
+                : null;
+        }
+
+        public bool Written(string line, out LogRecord record) =>
+            Invoke(_written, line, out record);
+
+        public bool AnyJson(string line, out LogRecord record) =>
+            Invoke(_anyJson, line, out record);
+
+        public bool Read(string line, out LogRecord record) =>
+            Invoke(_read, line, out record);
+
+        private bool Invoke(MethodInfo method, string line, out LogRecord record) {
+            object[] arguments = { line, true, _shared, null };
+            bool read = (bool)method.Invoke(null, arguments);
+            record = read ? (LogRecord)arguments[3] : default;
+            return read;
+        }
     }
 
     /// <summary>

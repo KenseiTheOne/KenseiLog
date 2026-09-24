@@ -40,7 +40,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-339 assertions over everything that does not need a GUI: the ring buffer including gapped and
+348 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -99,6 +99,10 @@ Each regression check names the bug it guards, because the interesting ones were
   behind and therefore what the first session on a new version always is: with nothing saying
   where that session began, the reach-back stayed off until the editor was restarted
 - a null tag, which reached the viewers and threw there
+- the escapes the writer uses on purpose, which JsonUtility read wrong: a lone high surrogate
+  lost the whole record, a lone low one emptied the message, an escaped NUL cut it short - and a
+  parser that reads the writer's lines has to take every one of them, since a line it refuses
+  goes to JsonUtility and would be slow and silently wrong at once
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
 

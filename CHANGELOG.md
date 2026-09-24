@@ -4,6 +4,31 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-09-24
+
+### Fixed
+
+- A message cut mid-character comes back from a file. The writer escapes half a surrogate pair as
+  `\uXXXX` so that the reader gets the code unit back rather than the U+FFFD the encoder would
+  leave, and JsonUtility threw on a high half - losing the whole record, silently from the window
+  after a recompile, and as an unreadable line from a file opened by hand - and returned the whole
+  message empty for a low one. An escaped NUL cut a message off where it stood. Every escape is
+  now the code unit it names.
+
+### Changed
+
+- A recompile reads the session back faster: 200,000 records took 0.57 s against 0.95 s in the
+  editor's default Debug code mode, and 0.30 s against 0.71 s in Release. A line made of what the
+  writer produces is read by a parser for exactly that; anything else - a schema this build does
+  not know, a file edited by hand, a torn last line - still goes to JsonUtility and comes back as
+  it did. The parser was written against Debug mode, because what is fast there is
+  not what is fast anywhere else: the class library's own string scans slow down by ten times,
+  while a plain loop over a string does not. Its first two versions leant on `IndexOf` and
+  `CompareOrdinal` and were slower than JsonUtility.
+- A tag, call site or stack trace read back before is found by the raw text of the line, escapes
+  and all, rather than read again. A Windows call site is all backslashes, each written as two,
+  on every record that has one.
+
 ## [0.16.0] - 2026-09-24
 
 ### Added

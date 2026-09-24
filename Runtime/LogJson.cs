@@ -11,7 +11,9 @@ namespace KenseiLog {
     /// <para>
     /// Written by hand rather than through JsonUtility: that would need a serializable object
     /// per record, which is an allocation on a path that runs whenever anything is logged.
-    /// Reading back is a cold, editor-only path and does use JsonUtility.
+    /// Reading back is editor-only, and is by hand too for the lines this writes -
+    /// LogSessionReader.WrittenLine knows its keys and value forms, and leaves anything else to
+    /// JsonUtility. A key added here reads correctly without it, and slowly until it learns it.
     /// </para>
     /// </summary>
     public static class LogJson {
