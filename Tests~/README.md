@@ -40,7 +40,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-304 assertions over everything that does not need a GUI: the ring buffer including gapped and
+316 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -127,6 +127,14 @@ running editor. Each was reasoned about and shipped; none has been seen working.
   *Leaves when:* a recompile immediately after a file passes the size limit has left the window
   holding the session rather than a handful of records, with no new file behind it.
 
+- **The in-game list keeps following the newest line when the notice at the top appears.**
+  The notice takes twenty points out of the list between one poll and the next, and the old
+  scroll offset used to read as having scrolled away - the view froze on a window the ring then
+  aged out from under it. Pinned now, but it needs play mode and a record landing at a particular
+  moment in the frame, which the harness cannot arrange.
+  *Leaves when:* the viewer, open at the newest line, has been watched staying there as a burst
+  first pushes records out of the ring.
+
 ### Known gaps, where a check would not catch it
 
 Mutations that leave the whole harness green. Recorded so that the next person to trust it knows
@@ -153,6 +161,14 @@ Real, understood, not worth what fixing them costs today. Each says what would c
   is down - a foreign log on a background thread - would take a duplicate id in the developer's
   own file. Harmless in batchmode, which is how these are run.
   *Leaves when:* anything offers to run them from a menu inside a live editor.
+- **The overlay's notice describes the file sinks as they are, not as they were.** It asks each
+  pass whether a writing file takes each channel, which is right for everything logged since -
+  but a record that left the ring was written, or not, when it was logged. Turn `WriteToFile` or
+  `FileIncludesDevChannel` on after records have gone and the notice sends the reader to a file
+  those records never reached. Getting it exactly right means knowing, per record, whether a file
+  took it at the time.
+  *Leaves when:* anything relies on the notice staying true across a change to the file settings
+  in the middle of a session.
 - **A killed run leaves its scratch directory behind.** Each run empties its own
   `%TEMP%/kenseilog-smoke.<pid>` at both ends and touches no other, so one that is killed part
   way through is never collected by anything.

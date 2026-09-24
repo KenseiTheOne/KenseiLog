@@ -19,6 +19,9 @@ namespace KenseiLog {
         // what went. A viewer that counted for itself could only count arrivals, which is how
         // the overlay's tag pane came to offer tags whose every record had already gone.
         private readonly Dictionary<string, int> _tags = new Dictionary<string, int>();
+        // Written under the lock, read without it: it only ever turns true until a Clear, so a
+        // reader that sees it a frame late has missed nothing it could act on.
+        private volatile bool _evicted;
         private int _head;
         private int _count;
 
@@ -30,6 +33,23 @@ namespace KenseiLog {
         }
 
         public int Capacity => _records.Length;
+
+        /// <summary>
+        /// Whether a record has been pushed out since the buffer was made or last cleared - so
+        /// whether what it holds is still everything it was given.
+        /// </summary>
+        public bool HasEvicted => _evicted;
+
+        /// <summary>
+        /// For a buffer built to carry on from one that had already let records go: those records
+        /// are gone whether or not this one ever evicts, and a new buffer with room to spare would
+        /// otherwise report a whole history it does not have.
+        /// </summary>
+        internal void MarkEvicted() {
+            lock (_lock) {
+                _evicted = true;
+            }
+        }
 
         /// <summary>One tag and how many of its records the buffer is holding.</summary>
         public readonly struct TagCount {
@@ -69,6 +89,7 @@ namespace KenseiLog {
                     // counted in: the two can be the same tag, and the order keeps the tally
                     // from dipping through zero and dropping the key.
                     Forget(_records[_head].Tag);
+                    _evicted = true;
                     _records[_head] = record;
                     _head = (_head + 1) % _records.Length;
                 }
@@ -143,6 +164,7 @@ namespace KenseiLog {
             lock (_lock) {
                 Array.Clear(_records, 0, _records.Length);
                 _tags.Clear();
+                _evicted = false;
                 _head = 0;
                 _count = 0;
             }

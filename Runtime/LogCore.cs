@@ -489,6 +489,29 @@ namespace KenseiLog {
         /// <summary>The active file sink, or null when file logging is off.</summary>
         public static FileSink File => _fileSink;
 
+        /// <summary>
+        /// Whether some registered file sink is putting records of this channel on disk right
+        /// now - the runtime's own, the editor's session file, or any other.
+        /// <para>
+        /// Asked of the sinks rather than read off the configuration, because the two disagree
+        /// in exactly the cases that matter. A file sink whose writer has failed - a full disk, a
+        /// path that cannot be written - stays registered and stays <see cref="File"/>, so a
+        /// null check calls it a working file. And the editor registers a second file sink of its
+        /// own that takes the dev channel whatever the runtime's is set to.
+        /// </para>
+        /// </summary>
+        internal static bool AnyFileKeeps(LogChannel channel) =>
+            AnyFileKeeps(_sinks, channel);
+
+        private static bool AnyFileKeeps(ILogSink[] sinks, LogChannel channel) {
+            for (int i = 0; i < sinks.Length; i++) {
+                if (sinks[i] is FileSink file && file.IsWriting && file.Accepts(channel)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>Pushes every buffering sink to its destination.</summary>
         public static void FlushSinks() {
             ILogSink[] sinks = _sinks;

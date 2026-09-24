@@ -15,6 +15,17 @@ All notable changes to this package are documented here. The format follows
   package keeps having. `LogOverlay.Collapsed` turns it on from a debug menu of your own, beside
   `IsOpen` and `TagPaneVisible`.
 
+- One line appears at the top of the in-game viewer once records have started leaving its
+  ring, and only then: *Earlier messages are now only in the log file.* Tags show what is held and
+  nothing else - there is no note beside a tag, or under an empty list, about what went; the one
+  line says it for the whole viewer. It is worded from what the file sinks are actually doing,
+  asked of them each pass: where the dev channel is not written to any file it says *Prod in the
+  log file, Dev not kept*, and where no file is being written - file logging off, or a writer that
+  has failed on a full disk - it says the earlier messages are no longer kept. Reading it off the
+  configuration would have pointed at a file in both of those cases. `LogRingBuffer.HasEvicted`
+  is new, and a sink rebuilt larger by a later `Configure` carries it across rather than claiming
+  a whole history it does not have.
+
 ### Changed
 
 - **Breaking.** `KenseiLog.Editor.TabView` is `KenseiLog.LogIndex`, in the runtime assembly. The
@@ -28,6 +39,13 @@ All notable changes to this package are documented here. The format follows
   keeps a formatted row beside every slot: it redraws per frame where the window polls fifteen
   times a second, so it cannot format a row per pass and has to follow the index rather than
   rebuild after it.
+- The editor window copies out of its source in fixed batches and drains in a loop, where it
+  used to size its copy buffer from the source. Sized that way the buffer was an array as large
+  as everything the source held, never shrunk, and the one rebuild that copied from the beginning
+  in a single call would have stopped at its length. Tabs are pruned only when the oldest record
+  has actually moved: a collapsed tab tests every row, and with nothing leaving the source that
+  was a full walk of every tab fifteen times a second that could never find anything. No change
+  against today's ring; it is what has to hold first for the window to keep a whole session.
 - A repeat count is drawn near its message rather than pinned to the right edge. On a phone the
   two are the same place; in a desktop window the edge is half a screen from the text it belongs
   to, and a number that far off reads as belonging to whatever the game is drawing under it.

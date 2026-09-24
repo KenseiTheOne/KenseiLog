@@ -73,6 +73,8 @@ public static class SmokeRunner {
         Scenario(CountsSurviveAChangeOfCapacity);
         Scenario(TheTagCensusHoldsOnlyWhatTheBufferHolds);
         Scenario(TheIndexSaysWhichSlotItTouched);
+        Scenario(TheRingKnowsWhenItHasLetARecordGo);
+        Scenario(OnlyAFileThatIsWritingCountsAsKeepingRecords);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2411,6 +2413,87 @@ public static class SmokeRunner {
         Check("an uncollapsed prune counts off the front instead",
             ordered.PruneBelow(3, kept, out front) && front == 2 && kept.Count == 0);
         Check("and drops exactly that many", ordered.Count == 3 && ordered.Sequences[0] == 3);
+    }
+
+    /// <summary>
+    /// The in-game viewer shows one line at its top once records have started to leave the
+    /// ring, saying where the earlier ones can still be found. It has to appear at the first
+    /// eviction and not before - a notice from the start would be noise, and one that never came
+    /// would leave the reader to discover the hole by finding a list shorter than they expected.
+    /// </summary>
+    private static void TheRingKnowsWhenItHasLetARecordGo() {
+        LogRingBuffer buffer = new LogRingBuffer(8);
+        for (long i = 1; i <= 8; i++) {
+            buffer.Add(Record(i, "T", "fits " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        Check("a full ring that has lost nothing says so", !buffer.HasEvicted);
+
+        buffer.Add(Record(9, "T", "one too many", LogLevel.Log, LogChannel.Prod, 0));
+        Check("the first record pushed out is noticed", buffer.HasEvicted);
+
+        buffer.Clear();
+        Check("and a clear starts it over", !buffer.HasEvicted);
+
+        // A sink rebuilt larger from one that had already lost records - which is what a later
+        // Configure with a bigger OverlayRecordCapacity does - holds all that was left and has
+        // evicted nothing itself. The records the old one dropped are gone all the same.
+        MemorySink small = new MemorySink(8);
+        for (long i = 1; i <= 20; i++) {
+            small.Write(Record(i, "T", "n " + i, LogLevel.Log, LogChannel.Prod, 0));
+        }
+        MemorySink larger = new MemorySink(64, small);
+        Check("a larger sink carried from one that lost records still says so", larger.Buffer.HasEvicted);
+
+        MemorySink whole = new MemorySink(8);
+        whole.Write(Record(1, "T", "only one", LogLevel.Log, LogChannel.Prod, 0));
+        Check("and one carried from a sink that lost nothing does not",
+            !new MemorySink(64, whole).Buffer.HasEvicted);
+    }
+
+    /// <summary>
+    /// The overlay's notice tells the reader where earlier records went, and it used to work that
+    /// out from the configuration. The configuration keeps a file sink registered after its
+    /// writer has failed - a full disk, an unwritable path - so the notice pointed at a file that
+    /// was not being written. Asked of the sinks now, over a list built here so that what else
+    /// happens to be registered in the editor running the checks cannot answer for it.
+    /// </summary>
+    private static void OnlyAFileThatIsWritingCountsAsKeepingRecords() {
+        MethodInfo keeps = typeof(LogCore).GetMethod("AnyFileKeeps", BindingFlags.NonPublic | BindingFlags.Static,
+            null, new[] { typeof(ILogSink[]), typeof(LogChannel) }, null);
+        Check("LogCore still has the question this leans on", keeps != null);
+        if (keeps == null) {
+            return;
+        }
+
+        LogConfig prodOnly = LogConfig.Default();
+        prodOnly.FileDirectory = ScratchDirectory("keeps-prod");
+        prodOnly.FileIncludesDevChannel = false;
+        LogConfig everything = LogConfig.Default();
+        everything.FileDirectory = ScratchDirectory("keeps-all");
+        everything.FileIncludesDevChannel = true;
+
+        FileSink prod = new FileSink(in prodOnly);
+        FileSink all = new FileSink(in everything);
+        FileSink stopped = new FileSink(in everything);
+        stopped.Dispose();
+
+        try {
+            bool Ask(ILogSink[] sinks, LogChannel channel) =>
+                (bool)keeps.Invoke(null, new object[] { sinks, channel });
+
+            Check("with no file sink nothing is kept", !Ask(new ILogSink[0], LogChannel.Prod));
+            Check("a writing prod-only file keeps prod", Ask(new ILogSink[] { prod }, LogChannel.Prod));
+            Check("and not dev", !Ask(new ILogSink[] { prod }, LogChannel.Dev));
+            Check("a file that has stopped writing keeps nothing, whatever it was set to take",
+                !Ask(new ILogSink[] { stopped }, LogChannel.Dev) && !Ask(new ILogSink[] { stopped }, LogChannel.Prod));
+            Check("and any writing file that takes dev is enough for dev",
+                Ask(new ILogSink[] { prod, stopped, all }, LogChannel.Dev));
+            Check("sinks that are not files are not asked",
+                !Ask(new ILogSink[] { new MemorySink(8) }, LogChannel.Prod));
+        } finally {
+            prod.Dispose();
+            all.Dispose();
+        }
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {

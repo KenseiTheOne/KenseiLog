@@ -21,6 +21,7 @@ namespace KenseiLog {
     public sealed class LogOverlay : MonoBehaviour {
         private const float RowHeight = 22f;
         private const float BarHeight = 28f;
+        private const float NoticeHeight = 20f;
         // Measured from where the finger went down, not from one event to the next. A single
         // frame's movement is a flick detector: at a phone's scale six units in one event is
         // most of a thousand pixels a second, so a slow deliberate scroll never crossed it and
@@ -78,6 +79,7 @@ namespace KenseiLog {
         private bool _listBuilt;
         private bool _showTags;
         private bool _followTail = true;
+        private float _listHeight;
         private long _selected = -1;
         private long _detailSequence = -1;
         private string _detailBody;
@@ -104,6 +106,7 @@ namespace KenseiLog {
         private GUIStyle _button;
         private GUIStyle _detail;
         private GUIStyle _meta;
+        private GUIStyle _notice;
         private GUIStyle _count;
         private GUIStyle _counter;
         private Texture2D _panelTex;
@@ -607,17 +610,27 @@ namespace KenseiLog {
 
             DrawBar(width);
 
+            float top = BarHeight;
+            string notice = EvictionNotice();
+            if (notice != null) {
+                GUI.Box(new Rect(0f, top, width, NoticeHeight), GUIContent.none, _pane);
+                GUI.color = _metaColor;
+                GUI.Label(new Rect(6f, top, width - 12f, NoticeHeight), notice, _notice);
+                GUI.color = Color.white;
+                top += NoticeHeight;
+            }
+
             float detailHeight = _selected >= 0 ? Mathf.Min(height * 0.35f, 180f) : 0f;
             float tagWidth = _showTags ? Mathf.Min(200f, width * 0.5f) : 0f;
-            float bodyHeight = height - BarHeight - detailHeight;
+            float bodyHeight = height - top - detailHeight;
 
             // The pane takes its width out of the list instead of covering it. IMGUI gives a
             // press to the first control drawn under the pointer, so a pane drawn on top of the
             // list was visible but dead: the row button underneath took every tap first.
             if (tagWidth > 0f) {
-                DrawTagPane(new Rect(0f, BarHeight, tagWidth, bodyHeight));
+                DrawTagPane(new Rect(0f, top, tagWidth, bodyHeight));
             }
-            DrawList(new Rect(tagWidth, BarHeight, width - tagWidth, bodyHeight));
+            DrawList(new Rect(tagWidth, top, width - tagWidth, bodyHeight));
 
             if (detailHeight > 0f) {
                 DrawDetail(new Rect(0f, height - detailHeight, width, detailHeight));
@@ -692,6 +705,16 @@ namespace KenseiLog {
         }
 
         private void DrawList(Rect area) {
+            // A view that is following the newest line stays following when the list gets
+            // shorter under it. The notice at the top appearing is what found this: it takes its
+            // height out of the list between one poll and the next, and the old offset then reads
+            // as having scrolled away - so the view froze on a window that the ring then aged
+            // out from under it, while looking as though it was at the bottom.
+            if (_followTail && area.height < _listHeight) {
+                _scroll.y = float.MaxValue;
+            }
+            _listHeight = area.height;
+
             float content = _visible.Count * RowHeight;
             _scroll = GUI.BeginScrollView(area, _scroll, new Rect(0f, 0f, area.width - 16f, content));
 
@@ -863,6 +886,34 @@ namespace KenseiLog {
             _tagRowsDirty = false;
         }
 
+        /// <summary>
+        /// One line for the top of the viewer once the ring has let something go, or null while
+        /// it still holds everything.
+        /// <para>
+        /// Said once, there, rather than beside each tag or under an empty list: the tags show
+        /// what is held and nothing else, and the reason fewer are held than were logged belongs
+        /// to the whole viewer, not to any one of them.
+        /// </para>
+        /// <para>
+        /// Worded from what the file sinks are actually doing, asked of them each pass rather than
+        /// read off the configuration. A notice that sent the reader to a file for records that
+        /// were never written to it would be the same kind of lie as the tag that led to an empty
+        /// list - and the configuration says a file exists when its writer has failed, and says
+        /// nothing about the editor's own session file, which keeps the dev channel regardless.
+        /// </para>
+        /// </summary>
+        private string EvictionNotice() {
+            if (!_sink.Buffer.HasEvicted) {
+                return null;
+            }
+            if (!LogCore.AnyFileKeeps(LogChannel.Prod)) {
+                return "Earlier messages are no longer kept.";
+            }
+            return LogCore.AnyFileKeeps(LogChannel.Dev)
+                ? "Earlier messages are now only in the log file."
+                : "Earlier messages: Prod in the log file, Dev not kept.";
+        }
+
         private string EmptyHint() {
             EnsureTagRows();
             if (_tagCensus.Count == 0) {
@@ -877,10 +928,9 @@ namespace KenseiLog {
                     }
                 }
                 if (!held) {
-                    // Not "has not appeared": it may well have, and been pushed out since. The
-                    // pane no longer lists it, so say which of the two happened rather than
-                    // leaving the reader to guess at an empty list.
-                    return "  Nothing under '" + _filter.Tags[i] + "' is still in the buffer.";
+                    // Nothing about where it went: that is the notice at the top, said once for
+                    // the whole viewer rather than again for each thing that was pushed out.
+                    return "  Nothing under '" + _filter.Tags[i] + "'.";
                 }
             }
             return "  Nothing matches the current filter.";
@@ -927,6 +977,7 @@ namespace KenseiLog {
             };
 
             _meta = new GUIStyle(_row) { alignment = TextAnchor.MiddleRight, fontSize = 11 };
+            _notice = new GUIStyle(_meta) { alignment = TextAnchor.MiddleLeft };
 
             _counter = new GUIStyle(_row) {
                 fontSize = 12,

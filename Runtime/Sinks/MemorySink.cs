@@ -32,6 +32,12 @@ namespace KenseiLog {
             for (int level = 0; level < _levelCounts.Length; level++) {
                 _levelCounts[level] = carryingFrom.LevelCount((LogLevel)level);
             }
+            // Carried like the totals, and for the same reason: a larger ring holds everything
+            // the old one had left and has itself evicted nothing, so without this the viewer
+            // would stop saying earlier records are gone at exactly the moment they still are.
+            if (carryingFrom.Buffer.HasEvicted) {
+                Buffer.MarkEvicted();
+            }
         }
 
         public LogRingBuffer Buffer { get; }
