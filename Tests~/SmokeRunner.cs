@@ -78,6 +78,7 @@ public static class SmokeRunner {
         Scenario(TheRingKnowsWhenItHasLetARecordGo);
         Scenario(OnlyAFileThatIsWritingCountsAsKeepingRecords);
         Scenario(ARotatedFileKeepsItsSessionsIdentity);
+        Scenario(TheRunsFileLeavesDevToTheEditorsOwn);
         Scenario(SourcePathsResolveAcrossMachines);
         Scenario(CallSitesAreTrimmedForABuild);
         Scenario(TaglessOverloadsLandUnderUntagged);
@@ -2684,6 +2685,17 @@ public static class SmokeRunner {
         }
         int start = at + marker.Length;
         return header.Substring(start, header.IndexOf('"', start) - start);
+    }
+
+    /// <summary>
+    /// Dev records go into the file by default in a development build, where they have nowhere
+    /// else to go, and stay out of it in the editor, where the editor's own session file already
+    /// takes them - the run's file taking them too would write each one twice in play mode. This
+    /// half is the only one a check in the editor can see; the other is compiled into a player
+    /// alone, and CompileCheck builds it without running it.
+    /// </summary>
+    private static void TheRunsFileLeavesDevToTheEditorsOwn() {
+        Check("in the editor the run's file takes prod only by default", !LogConfig.Default().FileIncludesDevChannel);
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {

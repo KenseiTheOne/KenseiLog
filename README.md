@@ -171,7 +171,7 @@ What the editor itself logs goes to `logs/editor`, one file per editor session r
 
 After a recompile the window reads the whole session back: every file this editor session has filled, from the one it started with — and never further back, so an editor that has since closed does not leave its records in your window. Those files stay on disk for as long as the session runs, however many it fills; `RetainedFileCount` prunes only what earlier sessions left. After a **Clear** the read starts at the file that was being written when you cleared, so with **Clear on Play** a recompile reads back little more than the last run. The read is what a recompile pays for keeping everything: about half a second for every hundred thousand records logged since the last clear, measured headless with records of an ordinary length. Holding them costs about twenty megabytes per hundred thousand. It skips the read altogether when the reload is the one that enters play mode with Clear on Play set, since that seed would be thrown away a moment later. **Clear** stays cleared across a reload — the file keeps everything, but what you dismissed does not come back.
 
-Dev records stay out of the file by default. In a release build they do not exist at all, and in the editor they would bury the prod events worth keeping — set `FileIncludesDevChannel` if you want them.
+Dev records go into the file in a development build, which is the one place they exist and have nowhere else to go: without the file they would live in the overlay's buffer alone, gone once it turns over. A release build has none to write, and in the editor they already go to the editor's own session file above, so the run's file there takes prod only rather than writing every dev record twice. `FileIncludesDevChannel` sets it either way. Nothing is buried by it — the channel is a field of its own, and the window filters by it with one button.
 
 To read a file back, open **Window → Kensei → Logs** and press **Open file** in the toolbar. It loads into the same window with the same tabs, tags and filters as a live run, including files that are still being written.
 
@@ -233,7 +233,7 @@ private static void SetUpLogging() {
 | `FileSizeLimitKb` | `5120` | Rotate the current file once it passes this size (at least 64) |
 | `RetainedFileCount` | `3` | How many older files to keep besides the one being written (at least 1) |
 | `FileFlushIntervalSeconds` | `5` | How long buffered lines may wait; errors flush at once (at least 0.5) |
-| `FileIncludesDevChannel` | `false` | Also write dev records to the file |
+| `FileIncludesDevChannel` | `true` in a development build, `false` otherwise | Also write dev records to the file |
 | `ShowOverlay` | `false` | Draw the in-game log viewer |
 | `OverlayRecordCapacity` | `4096` | How many records the overlay keeps (at least 32) |
 | `OverlayScale` | `0` | Overlay UI scale, or 0 to derive one from screen DPI, falling back to screen height |

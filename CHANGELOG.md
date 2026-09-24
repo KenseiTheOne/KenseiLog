@@ -51,6 +51,15 @@ All notable changes to this package are documented here. The format follows
 
 ### Changed
 
+- Dev records go into the file by default in a development build. `FileIncludesDevChannel` was
+  off everywhere, which only ever threw anything away in a development build: a release build has
+  no dev records, and the editor writes them to its own session file. So the build handed to
+  testers to read dev logs kept them in the overlay's ring alone, gone once it turned over -
+  while on a phone the file is the only history that survives at all, logcat being one ring for
+  the whole system. The reason it was off, that dev records would bury the prod ones, does not
+  hold for a file whose channel is a field the window filters by. It stays off in the editor,
+  where taking them would write each one twice in play mode. With the default, the in-game
+  viewer's notice now reads *Earlier messages are now only in the log file.*
 - **Breaking.** The editor window keeps every record until it is cleared, as Unity's console
   does. It kept 8192 and let the oldest go, and a limit there is one more place a record goes
   missing with nothing to say so. `EditorSink.Capacity` is gone, and the preference it was

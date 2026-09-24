@@ -3,8 +3,8 @@ namespace KenseiLog {
     /// Runtime tunables. Apply with <see cref="LogCore.Configure"/> from a
     /// RuntimeInitializeOnLoadMethod of your own if the defaults do not fit.
     /// <para>
-    /// Editor-only settings such as how many records the window keeps live on the editor
-    /// side instead, so a shipped build carries no knobs it cannot use.
+    /// Editor-only settings such as whether the editor writes a session file of its own live
+    /// on the editor side instead, so a shipped build carries no knobs it cannot use.
     /// </para>
     /// </summary>
     public struct LogConfig {
@@ -54,8 +54,13 @@ namespace KenseiLog {
         public float FileFlushIntervalSeconds;
 
         /// <summary>
-        /// Also write dev records to the file. Off by default: in a release build there are no
-        /// dev records at all, and in the editor they would bury the prod events worth keeping.
+        /// Also write dev records to the file. On by default in a development build and off
+        /// everywhere else - which is the same thing as on wherever it changes anything. A
+        /// release build has no dev records to write, and the editor writes them to a session
+        /// file of its own, so taking them here too would put every one on disk twice in play
+        /// mode. A development build is the one place they exist and go nowhere else: without
+        /// this they lived in the overlay's ring alone and were gone once it turned over, in the
+        /// build handed to testers precisely so that somebody could read them.
         /// </summary>
         public bool FileIncludesDevChannel;
 
@@ -100,7 +105,11 @@ namespace KenseiLog {
                 FileSizeLimitKb = 5 * 1024,
                 RetainedFileCount = 3,
                 FileFlushIntervalSeconds = 5f,
+#if DEVELOPMENT_BUILD && !UNITY_EDITOR
+                FileIncludesDevChannel = true,
+#else
                 FileIncludesDevChannel = false,
+#endif
                 ShowOverlay = false,
                 OverlayRecordCapacity = 4096,
                 OverlayScale = 0f
