@@ -29,6 +29,7 @@ public static class SmokeRunner {
         Scenario(RolledRecordsAreReportedMissing);
         Scenario(RingBufferSettlesARecordThatArrivesLate);
         Scenario(RingBufferHoldsUpUnderThreads);
+        Scenario(TheUnboundedBufferLetsNothingGo);
         Scenario(TagFilterMatchesDescendantsButNotNeighbours);
         Scenario(SearchLooksAtMessageOnlyNotTag);
         Scenario(CollapseFoldsRepeatsAndTracksNewest);
@@ -61,11 +62,12 @@ public static class SmokeRunner {
         Scenario(AnEditorSessionFollowsItsOwnRotation);
         Scenario(AReloadThatReadsNothingBackStillKeepsItsFile);
         Scenario(AReloadThatReadsNothingBackKeepsOneRunOfNumbering);
-        Scenario(SeedingReachesBackOneFileButNotIntoAnotherSession);
+        Scenario(SeedingReachesBackThroughTheSessionButNotIntoAnother);
         Scenario(ASessionJoinedMidwayLearnsWhereItBeganAtTheNextRotation);
         Scenario(SeedingReachesBackWhenTheCurrentFileHoldsOnlyItsHeader);
-        Scenario(SeedingStopsAtATailAlreadyCutAtTheFront);
-        Scenario(OneBudgetCoversTheSeedRatherThanEachFileInIt);
+        Scenario(TheWholeSessionComesBackHoweverLongItRan);
+        Scenario(SeedingStartsAtTheFileTheWindowWasClearedIn);
+        Scenario(AnEditorSessionKeepsEveryFileItFills);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
@@ -127,6 +129,61 @@ public static class SmokeRunner {
         LogRecord[] scratch = new LogRecord[4];
         int copied = buffer.CopyNewerThan(4, scratch);
         Check("copy newer than returns tail", copied == 2 && scratch[0].Message == "m5" && scratch[1].Message == "m6");
+    }
+
+    /// <summary>
+    /// The editor window kept 8192 records and let the oldest go, where Unity's console keeps
+    /// everything until it is cleared. Its buffer has no end now: it grows a block at a time, and
+    /// every read has to find its way across the joins between blocks - which a buffer smaller
+    /// than one block would never have to do, so these go well past one.
+    /// </summary>
+    private static void TheUnboundedBufferLetsNothingGo() {
+        LogRingBuffer buffer = LogRingBuffer.Unbounded();
+        const int Total = 10000;
+        for (int i = 1; i <= Total; i++) {
+            buffer.Add(Record(i, i % 3 == 0 ? "A" : "B", "m" + i, LogLevel.Log, LogChannel.Dev, 0));
+        }
+
+        Check("an unbounded buffer holds everything it was given", buffer.Count == Total);
+        Check("and has let nothing go", !buffer.HasEvicted && buffer.OldestSequence == 1);
+        Check("and says it has no end", buffer.Capacity == int.MaxValue);
+        Check("a record either side of a join is found by its sequence",
+            buffer.TryGetBySequence(4096, out LogRecord before) && before.Message == "m4096" &&
+            buffer.TryGetBySequence(4097, out LogRecord after) && after.Message == "m4097");
+
+        LogRecord[] batch = new LogRecord[3000];
+        int copied = buffer.CopyNewerThan(4000, batch);
+        bool ordered = copied == 3000;
+        for (int i = 0; ordered && i < copied; i++) {
+            ordered = batch[i].Sequence == 4001 + i;
+        }
+        Check("a copy runs across a join in order", ordered);
+
+        List<LogRingBuffer.TagCount> census = new List<LogRingBuffer.TagCount>();
+        buffer.CopyTagCounts(census);
+        Check("the tags count every record held",
+            census.Count == 2 && census.Exists(t => t.Tag == "A" && t.Held == Total / 3) &&
+            census.Exists(t => t.Tag == "B" && t.Held == Total - Total / 3));
+
+        // Even numbers fill the first block exactly; the next record opens the second, and the
+        // one after it is late and has to move back across the join to be in order.
+        LogRingBuffer late = LogRingBuffer.Unbounded();
+        for (int i = 1; i <= 4096; i++) {
+            late.Add(Record(i * 2, "Tag", "m", LogLevel.Log, LogChannel.Dev, 0));
+        }
+        late.Add(Record(8193, "Tag", "m", LogLevel.Log, LogChannel.Dev, 0));
+        late.Add(Record(8191, "Tag", "late", LogLevel.Log, LogChannel.Dev, 0));
+        LogRecord[] tail = new LogRecord[4];
+        int settled = late.CopyNewerThan(8190, tail);
+        Check("a record that arrives late settles back across a join",
+            settled == 3 && tail[0].Sequence == 8191 && tail[1].Sequence == 8192 && tail[2].Sequence == 8193);
+
+        buffer.Clear();
+        buffer.CopyTagCounts(census);
+        Check("a clear empties it", buffer.Count == 0 && buffer.OldestSequence == 0 && census.Count == 0);
+        buffer.Add(Record(Total + 1, "A", "again", LogLevel.Log, LogChannel.Dev, 0));
+        Check("and it fills again from there",
+            buffer.Count == 1 && buffer.TryGetBySequence(Total + 1, out LogRecord again) && again.Message == "again");
     }
 
     private static void RolledRecordsAreReportedMissing() {
@@ -1109,22 +1166,27 @@ public static class SmokeRunner {
         File.WriteAllText(path, builder.ToString());
 
         List<LogRecord> records = new List<LogRecord>();
-        int read = LogSessionReader.ReadTail(path, 10, 1024L * 1024L, records);
-        Check("the tail is bounded by the count asked for", read == 10 && records.Count == 10);
-        Check("and it is the end of the file, not the start", records[9].Message == "record 50");
-        Check("the header is not taken for a record", records[0].Message == "record 41");
-        Check("the channel survives, which the console could not carry", records[9].Channel == LogChannel.Dev);
-        Check("and so does the tag", records[9].Tag == "Seed.Tag");
-        Check("sequences come back as they were written", records[9].Sequence == 50);
+        int read = LogSessionReader.ReadForSeeding(path, records);
+        Check("every record in the file comes back", read == 50 && records.Count == 50);
+        Check("the header is not taken for a record", records[0].Message == "record 1");
+        Check("and the last is the last written", records[49].Message == "record 50");
+        Check("the channel survives, which the console could not carry", records[49].Channel == LogChannel.Dev);
+        Check("and so does the tag", records[49].Tag == "Seed.Tag");
+        Check("sequences come back as they were written", records[49].Sequence == 50);
+        // A window holding a whole session holds tens of thousands of these, and a copy of the
+        // tag in each of them was a large share of what it cost.
+        Check("records of one tag share the one string for it, as records logged live do",
+            ReferenceEquals(records[0].Tag, records[49].Tag));
 
+        // What a writer that died mid-line leaves behind.
+        File.AppendAllText(path, "{\"t\":51.0,\"sq\":51,\"f\":0,\"lv\"");
         records.Clear();
-        int bounded = LogSessionReader.ReadTail(path, 1000, 512L, records);
-        Check("a byte budget takes only the end of the file", bounded > 0 && bounded < 50);
-        Check("and never a line torn in half by the budget", records.Count == 0 || records[0].Message.StartsWith("record", StringComparison.Ordinal));
+        Check("a torn last line is passed over rather than costing the file",
+            LogSessionReader.ReadForSeeding(path, records) == 50);
 
         records.Clear();
         Check("a file that is not there reads as nothing",
-            LogSessionReader.ReadTail(Path.Combine(directory, "log.9999.jsonl"), 10, 512L, records) == 0);
+            LogSessionReader.ReadForSeeding(Path.Combine(directory, "log.9999.jsonl"), records) == 0);
 
         // The counter restarts with every app domain, but the file outlives one: what is
         // written after a reload has to carry on above what is already in it.
@@ -1170,7 +1232,7 @@ public static class SmokeRunner {
         File.WriteAllText(path, builder.ToString());
 
         List<LogRecord> seeded = new List<LogRecord>();
-        int read = LogSessionReader.ReadTail(path, 10, 1024L * 1024L, seeded);
+        int read = LogSessionReader.ReadForSeeding(path, seeded);
         Check("the editor's own file hands the related object back",
             read == 2 && seeded[0].ContextInstanceId == target.GetInstanceID());
         Check("and it is still the object that was logged against",
@@ -1365,7 +1427,7 @@ public static class SmokeRunner {
             harness.Close();
 
             List<LogRecord> written = new List<LogRecord>();
-            LogSessionReader.ReadTail(file, 4096, 1L << 20, written);
+            LogSessionReader.ReadForSeeding(file, written);
             Check("both domains wrote into the one file", written.Count >= 40);
             Check("with the ids rising and never repeating", IsAscending(written));
         } finally {
@@ -1420,13 +1482,14 @@ public static class SmokeRunner {
     /// <summary>How many records a file holds, for a check that has to know what it asked for.</summary>
     private static int RecordsIn(string path) {
         List<LogRecord> records = new List<LogRecord>();
-        return LogSessionReader.ReadTail(path, 4096, 1L << 20, records);
+        return LogSessionReader.ReadForSeeding(path, records);
     }
 
     /// <summary>
     /// A rotation shortly before a reload leaves the file now current holding a handful of
-    /// records, and the session's history in the one behind it. Read on its own, the window came
-    /// back all but empty and looked as though the recompile had eaten the morning.
+    /// records, and the session's history in the ones behind it. Read on its own, the window came
+    /// back all but empty and looked as though the recompile had eaten the morning - and reaching
+    /// back one file only did the same a rotation later.
     /// <para>
     /// How far back to reach is the part that has to be right, and reading it off the record ids
     /// is not enough. The directory outlives the editor, so the file behind the current one is
@@ -1436,8 +1499,8 @@ public static class SmokeRunner {
     /// nothing else does.
     /// </para>
     /// </summary>
-    private static void SeedingReachesBackOneFileButNotIntoAnotherSession() {
-        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-chain", 4096);
+    private static void SeedingReachesBackThroughTheSessionButNotIntoAnother() {
+        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-chain");
         if (harness == null) {
             return;
         }
@@ -1452,21 +1515,27 @@ public static class SmokeRunner {
                 sink.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
             }
             string second = sink.CurrentFilePath;
-            sink.Write(Record(sequence++, "Editor", "the only record after the rotation", LogLevel.Log, LogChannel.Dev, 0));
+            while (sink.CurrentFilePath == second) {
+                sink.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
+            }
+            string third = sink.CurrentFilePath;
+            sink.Write(Record(sequence++, "Editor", "the only record after the rotations", LogLevel.Log, LogChannel.Dev, 0));
             sink.Dispose();
+            long written = sequence - 1;
 
-            Check("the file before one is the one before it", FileSink.FileBefore(second) == first);
+            Check("the file before one is the one before it",
+                FileSink.FileBefore(third) == second && FileSink.FileBefore(second) == first);
             Check("and the first file has nothing before it", FileSink.FileBefore(first) == null);
 
             harness.StartedWith(first);
-            List<LogRecord> reached = harness.Seed(second);
-            Check("seeding reaches back past the rotation", reached.Count > 1);
-            Check("and brings the run back in order",
-                reached.Count > 0 && reached[0].Sequence == 1 && IsAscending(reached));
+            List<LogRecord> reached = harness.Seed(third);
+            Check("seeding reaches back past every rotation to where the session began", reached.Count == written);
+            Check("and brings the run back in order, with nothing missing out of it",
+                reached.Count > 0 && reached[0].Sequence == 1 && IsUnbroken(reached));
 
-            harness.StartedWith(second);
-            Check("a session that began after the rotation keeps to the file it began with",
-                harness.Seed(second).Count == 1);
+            harness.StartedWith(third);
+            Check("a session that began after the rotations keeps to the file it began with",
+                harness.Seed(third).Count == 1);
         } finally {
             harness.Dispose();
         }
@@ -1474,7 +1543,7 @@ public static class SmokeRunner {
         // Yesterday's editor, left in the directory this one resolves to: every id in its file
         // below every id in ours, which is what used to stand for proof that the two were one
         // run. An editor that has been up an hour makes that true of any short file behind it.
-        EditorSessionHarness today = EditorSessionHarness.Borrow("seed-yesterday", 4096);
+        EditorSessionHarness today = EditorSessionHarness.Borrow("seed-yesterday");
         if (today == null) {
             return;
         }
@@ -1515,7 +1584,7 @@ public static class SmokeRunner {
     /// site, no stack trace on any of it - which is the outcome the file exists to prevent.
     /// </summary>
     private static void SeedingReachesBackWhenTheCurrentFileHoldsOnlyItsHeader() {
-        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-header-only", 4096);
+        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-header-only");
         if (harness == null) {
             return;
         }
@@ -1548,110 +1617,161 @@ public static class SmokeRunner {
     }
 
     /// <summary>
-    /// The seed may reach back one file only behind a file that came back entire, and entire has
-    /// two bounds rather than one. The budget is the obvious one, and closing it left the other
-    /// open: the read also keeps at most a buffer's worth of lines, overwriting the oldest once
-    /// it is full. A line the parser rejects - a torn write, a record from a newer schema - then
-    /// leaves the list one short of the buffer while the front of the file has already gone, so
-    /// what looks like room to spare is a gap, and the file behind it gets fitted in front of it.
-    /// An older stretch of the log in place of a newer one, with nothing in the window to say so.
+    /// A recompile brought back the last two megabytes of the session and no more, into a window
+    /// that kept 8192 records - so a long session came back shorter than it went in, with nothing
+    /// to say so. A limit, however it was worded, and the kind this package has learned is worst.
+    /// The seed reads the whole session now: every file it filled, from the one it began with.
     /// </summary>
-    private static void SeedingStopsAtATailAlreadyCutAtTheFront() {
-        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-cut-tail", 64);
+    private static void TheWholeSessionComesBackHoweverLongItRan() {
+        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-whole");
         if (harness == null) {
             return;
         }
 
         try {
-            LogConfig config = ScratchConfig(harness.Directory, 5120);
-
+            // Past both of the old bounds at once, over several rotations.
+            const int Written = 12000;
+            string filler = new string('x', 300);
+            LogConfig config = ScratchConfig(harness.Directory, 1024);
+            config.RetainedFileCount = 32;
             FileSink sink = new FileSink(in config);
-            string earlier = sink.CurrentFilePath;
-            for (long id = 1; id <= 100; id++) {
-                sink.Write(Record(id, "Editor", "earlier " + id, LogLevel.Log, LogChannel.Dev, 0));
+            string first = sink.CurrentFilePath;
+            for (long id = 1; id <= Written; id++) {
+                sink.Write(Record(id, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
             }
+            string last = sink.CurrentFilePath;
             sink.Dispose();
 
-            sink = new FileSink(in config);
-            string current = sink.CurrentFilePath;
-            for (long id = 101; id <= 200; id++) {
-                sink.Write(Record(id, "Editor", "current " + id, LogLevel.Log, LogChannel.Dev, 0));
+            long bytes = 0;
+            foreach (string file in Directory.GetFiles(harness.Directory, "log.*.jsonl")) {
+                bytes += new FileInfo(file).Length;
             }
-            sink.Dispose();
+            Check("the session filled several files", harness.FileCount >= 3);
+            Check("and more than the seed used to be allowed to read", bytes > 2L * 1024L * 1024L);
 
-            // One line the parser will refuse, which is what leaves room in a buffer that is
-            // otherwise full - a torn final write looks exactly like this.
-            System.IO.File.AppendAllText(current, "{ this line is not a record" + Environment.NewLine);
-
-            harness.StartedWith(earlier);
-            List<LogRecord> seeded = harness.Seed(current);
-
-            Check("a tail longer than the buffer comes back cut at the front",
-                seeded.Count > 0 && seeded.Count < 64 && seeded[0].Sequence > 101);
-            Check("and nothing older is fitted in front of the cut",
-                seeded.Count > 0 && seeded[0].Sequence > 100);
-            Check("so the window holds one unbroken stretch", IsAscendingByOne(seeded));
+            harness.StartedWith(first);
+            List<LogRecord> seeded = harness.Seed(last);
+            Check("every record the session wrote comes back", seeded.Count == Written);
+            Check("from its very first, in one unbroken run",
+                seeded.Count > 0 && seeded[0].Sequence == 1 && IsUnbroken(seeded));
+            Check("and the window holds all of it", harness.WindowCount == Written);
         } finally {
             harness.Dispose();
         }
-    }
-
-    /// <summary>Whether the records run consecutively, which is what having no hole looks like.</summary>
-    private static bool IsAscendingByOne(List<LogRecord> records) {
-        for (int i = 1; i < records.Count; i++) {
-            if (records[i].Sequence != records[i - 1].Sequence + 1) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /// <summary>
-    /// The seed is bounded by bytes because it runs on every recompile, and the bound used to be
-    /// spent again on every file it touched. A file past the bound on its own came back cut off
-    /// at the front, and the file behind it then filled the room left in the buffer with records
-    /// older than the ones that had just been cut - so the window held an older stretch in place
-    /// of a newer one, with a hole between the two and nothing in it to say so.
+    /// Clear on Play is on by default, so the window is cleared on every entry to play mode - and
+    /// a seed that read from the beginning of the session read the whole day back after each
+    /// recompile, only to drop nearly all of it. It starts at the file that was being written when
+    /// the window was cleared, since nothing it keeps can be in an earlier one.
     /// </summary>
-    private static void OneBudgetCoversTheSeedRatherThanEachFileInIt() {
-        EditorSessionHarness harness = EditorSessionHarness.Borrow("seed-budget", 8192);
+    private static void SeedingStartsAtTheFileTheWindowWasClearedIn() {
+        EditorSessionHarness harness = EditorSessionHarness.Open("seed-after-clear");
         if (harness == null) {
             return;
         }
 
         try {
-            // Records long enough that the budget runs out before the buffer does; at a few
-            // hundred bytes each the buffer fills first and the budget never has to choose.
-            string filler = new string('x', 900);
-            LogConfig config = ScratchConfig(harness.Directory, 1024 * 1024);
+            string began = harness.FirstFile;
+            harness.FillUntilRotation();
+            harness.FillUntilRotation();
+            string cleared = harness.Sink.CurrentFilePath;
+            harness.Write("before the clear");
+            harness.Clear();
+            harness.Write("after the clear");
+            harness.Close();
 
-            FileSink earlier = new FileSink(in config);
-            string before = earlier.CurrentFilePath;
-            long sequence = 1;
-            for (int i = 0; i < 1000; i++) {
-                earlier.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
-            }
-            earlier.Dispose();
+            Check("a clear writes down the file it happened in", harness.ClearedInFile == cleared);
+            Check("which is not where the session began",
+                began != null && FileSink.WrittenBefore(began, cleared));
 
-            FileSink current = new FileSink(in config);
-            string now = current.CurrentFilePath;
-            for (int i = 0; i < 4000; i++) {
-                current.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
-            }
-            current.Dispose();
-
-            Check("the file being written is past the whole of the seed's budget on its own",
-                new FileInfo(now).Length > 2L * 1024L * 1024L);
-
-            harness.StartedWith(before);
-            List<LogRecord> seeded = harness.Seed(now);
-            Check("the window comes back with room to spare", seeded.Count < 8192);
-            Check("and with one unbroken run of records in it", IsUnbroken(seeded));
-            Check("all of it from the file that was being written",
-                seeded.Count > 0 && seeded[0].Sequence > 1000);
+            List<LogRecord> seeded = harness.Seed(cleared);
+            Check("the seed reads from that file and not from the files before it",
+                seeded.Count == 2 && seeded[0].Message == "before the clear");
+            Check("and what the clear dismissed stays dismissed", harness.WindowCount == 1);
         } finally {
             harness.Dispose();
         }
+    }
+
+    /// <summary>
+    /// RetainedFileCount deleted the oldest files at every rotation, whoever had written them, so
+    /// a long editor session pruned its own beginning - and the window, rebuilt from those files
+    /// after a recompile, came back without it. The editor's sink keeps every file of its own
+    /// session and prunes only what earlier sessions left; a build's sink still keeps to the
+    /// count, which is what stands between a device and a full disk.
+    /// </summary>
+    private static void AnEditorSessionKeepsEveryFileItFills() {
+        LogConfig config = ScratchConfig(ScratchDirectory("keep-session"), 64);
+        config.RetainedFileCount = 1;
+
+        FileSink yesterday = new FileSink(in config);
+        string theirs = yesterday.CurrentFilePath;
+        yesterday.Write(Record(1, "Editor", "from an earlier session", LogLevel.Log, LogChannel.Dev, 0));
+        yesterday.Dispose();
+
+        FileSink today = new FileSink(in config, continueExistingFile: false, keepsSessionFiles: true);
+        string began = today.CurrentFilePath;
+        long sequence = RotateTimes(today, 4, 1);
+        string reached = today.CurrentFilePath;
+        today.Dispose();
+
+        Check("every file the session filled is still there",
+            File.Exists(began) && Directory.GetFiles(config.FileDirectory, "log.*.jsonl").Length == 5);
+        Check("while the earlier session's file went as the count says", !File.Exists(theirs));
+
+        // Carrying on, as the editor does after every recompile: this sink opened none of the
+        // files behind the one it continues, and has only their headers to know them by.
+        FileSink continued = new FileSink(in config, continueExistingFile: true, continueFilePath: reached,
+                                          keepsSessionFiles: true);
+        RotateTimes(continued, 2, sequence);
+        continued.Dispose();
+        Check("and a sink that carries on with the session keeps them as well",
+            File.Exists(began) && Directory.GetFiles(config.FileDirectory, "log.*.jsonl").Length == 7);
+
+        config.FileDirectory = ScratchDirectory("keep-session-build");
+        FileSink run = new FileSink(in config);
+        string runBegan = run.CurrentFilePath;
+        RotateTimes(run, 4, 1);
+        run.Dispose();
+        Check("a build's sink still prunes its own run to the count",
+            !File.Exists(runBegan) && Directory.GetFiles(config.FileDirectory, "log.*.jsonl").Length == 2);
+
+        // And through the editor's own wiring, across a reload, which is the only place the
+        // choice is made: a sink built here with the flag set says nothing about whether the
+        // editor still sets it.
+        EditorSessionHarness harness = EditorSessionHarness.Open("keep-session-editor");
+        if (harness == null) {
+            return;
+        }
+
+        try {
+            string first = harness.FirstFile;
+            int retained = LogCore.Config.RetainedFileCount;
+            for (int i = 0; i < retained + 2; i++) {
+                harness.FillUntilRotation();
+            }
+            harness.Reload();
+            harness.FillUntilRotation();
+            harness.Close();
+            Check("the editor's session keeps its first file past the retained count, reload and all",
+                first != null && File.Exists(first) && harness.FileCount == retained + 4);
+        } finally {
+            harness.Dispose();
+        }
+    }
+
+    /// <summary>Writes filler until the sink has moved on this many files; returns the next id.</summary>
+    private static long RotateTimes(FileSink sink, int rotations, long sequence) {
+        string filler = new string('x', 512);
+        for (int i = 0; i < rotations; i++) {
+            string opened = sink.CurrentFilePath;
+            while (sink.CurrentFilePath == opened) {
+                sink.Write(Record(sequence++, "Editor", filler, LogLevel.Log, LogChannel.Dev, 0));
+            }
+        }
+        return sequence;
     }
 
     private static bool IsAscending(List<LogRecord> records) {
@@ -1910,6 +2030,7 @@ public static class SmokeRunner {
         private readonly string _firstFileKey;
         private readonly string _startedKey;
         private readonly string _clearedKey;
+        private readonly string _clearedInFileKey;
 
         private readonly object _standingSink;
         private readonly object _standingWindow;
@@ -1917,13 +2038,13 @@ public static class SmokeRunner {
         private readonly string _standingSequence;
         private readonly string _standingFirstFile;
         private readonly string _standingCleared;
+        private readonly string _standingClearedInFile;
         private readonly bool _standingStarted;
         private readonly long _standingCounter;
         private readonly LogConfig _standingConfig;
-        private readonly int _capacity;
         private bool _movedTheSettings;
 
-        private EditorSessionHarness(string directory, int capacity) {
+        private EditorSessionHarness(string directory) {
             Type sink = typeof(EditorSink);
             _held = sink.GetField("_sessionFile", Hidden);
             _open = sink.GetMethod("OpenSessionFile", Hidden);
@@ -1939,24 +2060,25 @@ public static class SmokeRunner {
             FieldInfo firstFileKey = sink.GetField("SessionFirstFileKey", Hidden);
             FieldInfo startedKey = sink.GetField("SessionStartedKey", Hidden);
             FieldInfo clearedKey = sink.GetField("ClearedThroughKey", Hidden);
+            FieldInfo clearedInFileKey = sink.GetField("ClearedInFileKey", Hidden);
 
             Complete = _held != null && _close != null && _remembered != null && _seed != null &&
                        _open != null && _open.GetParameters().Length == 2 &&
                        _resume != null && _resume.GetParameters().Length == 2 &&
                        _window != null && _window.GetSetMethod(true) != null && _counter != null &&
                        pathKey != null && sequenceKey != null && firstFileKey != null &&
-                       startedKey != null && clearedKey != null;
+                       startedKey != null && clearedKey != null && clearedInFileKey != null;
             if (!Complete) {
                 return;
             }
 
             Directory = directory;
-            _capacity = capacity;
             _pathKey = (string)pathKey.GetValue(null);
             _sequenceKey = (string)sequenceKey.GetValue(null);
             _firstFileKey = (string)firstFileKey.GetValue(null);
             _startedKey = (string)startedKey.GetValue(null);
             _clearedKey = (string)clearedKey.GetValue(null);
+            _clearedInFileKey = (string)clearedInFileKey.GetValue(null);
 
             // Every one of these is a value shared with the editor running this. Left alone, a
             // check that fails here reaches for whatever path SessionState holds and opens the
@@ -1968,6 +2090,7 @@ public static class SmokeRunner {
             _standingSequence = SessionState.GetString(_sequenceKey, string.Empty);
             _standingFirstFile = SessionState.GetString(_firstFileKey, string.Empty);
             _standingCleared = SessionState.GetString(_clearedKey, string.Empty);
+            _standingClearedInFile = SessionState.GetString(_clearedInFileKey, string.Empty);
             _standingStarted = SessionState.GetBool(_startedKey, false);
             _standingCounter = LogCore.CurrentSequence;
             _standingConfig = LogCore.Config;
@@ -1976,6 +2099,10 @@ public static class SmokeRunner {
             SessionState.SetString(_sequenceKey, string.Empty);
             SessionState.SetString(_firstFileKey, string.Empty);
             SessionState.SetString(_clearedKey, string.Empty);
+            // Of all of these the one most able to pass for this harness's own: a file name from
+            // the developer's editor log, compared by its number alone, would put the floor of
+            // every seed here wherever their session happens to have got to.
+            SessionState.SetString(_clearedInFileKey, string.Empty);
             SessionState.SetBool(_startedKey, false);
             SetWindow(NewWindow());
             // Taken out of reach, not just remembered. Left in place, an OpenSessionFile that
@@ -2007,6 +2134,14 @@ public static class SmokeRunner {
 
         public int FileCount => System.IO.Directory.GetFiles(Directory, "log.*.jsonl").Length;
 
+        /// <summary>The file the window was last cleared in, as the sink wrote it down.</summary>
+        public string ClearedInFile => SessionState.GetString(_clearedInFileKey, string.Empty);
+
+        /// <summary>Clears the window the way its Clear button does.</summary>
+        public void Clear() {
+            ((EditorSink)_window.GetValue(null)).Clear();
+        }
+
         /// <summary>How many records the window holds - what this reload's seed put there.</summary>
         public int WindowCount => ((EditorSink)_window.GetValue(null)).Buffer.Count;
 
@@ -2023,7 +2158,7 @@ public static class SmokeRunner {
         public int WindowCountFromTheFile {
             get {
                 LogRingBuffer buffer = ((EditorSink)_window.GetValue(null)).Buffer;
-                LogRecord[] scratch = new LogRecord[buffer.Capacity];
+                LogRecord[] scratch = new LogRecord[buffer.Count];
                 int copied = buffer.CopyNewerThan(0, scratch);
                 int fromTheFile = 0;
                 for (int i = 0; i < copied; i++) {
@@ -2046,7 +2181,7 @@ public static class SmokeRunner {
 
         /// <summary>Takes over the session and opens a file of its own through the sink's code.</summary>
         public static EditorSessionHarness Open(string name) {
-            EditorSessionHarness harness = Borrow(name, 4096);
+            EditorSessionHarness harness = Borrow(name);
             if (harness == null) {
                 return null;
             }
@@ -2065,8 +2200,8 @@ public static class SmokeRunner {
         }
 
         /// <summary>Takes over the session without opening a file.</summary>
-        public static EditorSessionHarness Borrow(string name, int capacity) {
-            EditorSessionHarness harness = new EditorSessionHarness(ScratchDirectory(name), capacity);
+        public static EditorSessionHarness Borrow(string name) {
+            EditorSessionHarness harness = new EditorSessionHarness(ScratchDirectory(name));
             Check("the editor sink still has the parts these lean on", harness.Complete);
             return harness.Complete ? harness : null;
         }
@@ -2132,6 +2267,7 @@ public static class SmokeRunner {
             SessionState.SetString(_sequenceKey, _standingSequence);
             SessionState.SetString(_firstFileKey, _standingFirstFile);
             SessionState.SetString(_clearedKey, _standingCleared);
+            SessionState.SetString(_clearedInFileKey, _standingClearedInFile);
             SessionState.SetBool(_startedKey, _standingStarted);
             if (_movedTheSettings) {
                 LogCore.Configure(in _standingConfig);
@@ -2151,8 +2287,7 @@ public static class SmokeRunner {
         }
 
         private object NewWindow() {
-            return Activator.CreateInstance(typeof(EditorSink), BindingFlags.NonPublic | BindingFlags.Instance,
-                                            null, new object[] { _capacity }, null);
+            return Activator.CreateInstance(typeof(EditorSink), nonPublic: true);
         }
 
         private void SetWindow(object sink) {

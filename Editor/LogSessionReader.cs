@@ -44,6 +44,7 @@ namespace KenseiLog.Editor {
 
             List<LogRecord> records = new List<LogRecord>();
             LogSession loaded = new LogSession { FileName = Path.GetFileName(path) };
+            Dictionary<string, string> shared = new Dictionary<string, string>(StringComparer.Ordinal);
 
             try {
                 // FileShare.ReadWrite is the point: the file is very often the one the running
@@ -64,7 +65,7 @@ namespace KenseiLog.Editor {
                         }
                         // A torn final line is expected when the writer is still going; it is
                         // counted and skipped rather than failing the whole file.
-                        if (TryReadRecord(line, fromThisSession: false, out LogRecord record)) {
+                        if (TryReadRecord(line, fromThisSession: false, shared, out LogRecord record)) {
                             records.Add(record);
                         } else {
                             loaded.SkippedLines++;
@@ -104,114 +105,33 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Reads the last records of a file, for seeding rather than for viewing.
-        /// <para>
-        /// Bounded by bytes as well as by count, because this runs on every domain reload and a
-        /// file at the default size limit would otherwise cost seconds of every recompile. The
-        /// read starts inside the file, so the line it lands in is discarded - and the header,
-        /// which is the first line of all, is simply not there to find.
-        /// </para>
+        /// Reads every record of a file, for seeding rather than for viewing, and returns how
+        /// many it added. The header and a torn final line simply fail to parse and are passed
+        /// over; a file that cannot be opened adds nothing.
         /// <para>
         /// The one path that keeps a record's related object, since the file is the editor's
         /// own: an instance id means something only inside the session that issued it.
         /// </para>
         /// </summary>
-        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into) =>
-            ReadTail(path, maxRecords, maxBytes, into, out _);
-
-        /// <summary>
-        /// The same read, reporting what it cost.
-        /// <para>
-        /// <paramref name="bytesScanned"/> is how much of the budget went on this file, so a
-        /// seed spanning two files can spend one budget between them rather than one each.
-        /// A read that found nothing costs nothing, which is what leaves the whole budget to
-        /// the file behind a rotation.
-        /// </para>
-        /// </summary>
-        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into,
-                                   out long bytesScanned) =>
-            ReadTail(path, maxRecords, maxBytes, into, out bytesScanned, out _);
-
-        /// <summary>
-        /// The same read again, saying as well whether the file came back entire.
-        /// <para>
-        /// <paramref name="fromTheStart"/> is false when the tail was cut at the front, by
-        /// either of the two bounds: the budget, which makes the read begin part way into the
-        /// file, or the record count, which fills and then overwrites the ring. Both leave
-        /// records missing between what came back and anything older, so neither can be followed
-        /// by the file behind this one - that would put an older stretch of the log in front of a
-        /// gap with nothing in the window to say it was there.
-        /// </para>
-        /// <para>
-        /// The two have to be asked about together. The byte bound alone looks sufficient, and
-        /// is not: a line the parser rejects - a torn write, a header, a record from a schema
-        /// this build does not know - leaves the ring full of lines but the list one record short
-        /// of the buffer, which reads as room to spare while the front has already gone.
-        /// </para>
-        /// </summary>
-        public static int ReadTail(string path, int maxRecords, long maxBytes, List<LogRecord> into,
-                                   out long bytesScanned, out bool fromTheStart) {
-            bytesScanned = 0;
-            fromTheStart = false;
-
-            // Lines first, records second. Parsing is what costs - a JsonUtility call and an
-            // object per line - and a tail of two megabytes holds more lines than the buffer can
-            // keep, so parsing them all and then dropping the front would be paying for records
-            // nothing will ever see. Held in a ring: reading is forwards, keeping is the end.
-            string[] kept = new string[maxRecords];
-            int count = 0;
-            int next = 0;
-            bool droppedALine = false;
-
+        public static int ReadForSeeding(string path, List<LogRecord> into) {
+            int before = into.Count;
+            Dictionary<string, string> shared = new Dictionary<string, string>(StringComparer.Ordinal);
             try {
                 // ReadWrite for the same reason as above: this file usually has a writer.
-                bool startedMidFile;
-                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
-                    startedMidFile = stream.Length > maxBytes;
-                    if (startedMidFile) {
-                        stream.Seek(stream.Length - maxBytes, SeekOrigin.Begin);
-                    }
-                    bytesScanned = startedMidFile ? maxBytes : stream.Length;
-
-                    using (StreamReader reader = new StreamReader(stream)) {
-                        bool skipPartialLine = startedMidFile;
-                        string line;
-                        while ((line = reader.ReadLine()) != null) {
-                            if (skipPartialLine) {
-                                skipPartialLine = false;
-                                continue;
-                            }
-                            if (line.Length == 0) {
-                                continue;
-                            }
-                            kept[next] = line;
-                            next = (next + 1) % kept.Length;
-                            if (count < kept.Length) {
-                                count++;
-                            } else {
-                                droppedALine = true;
-                            }
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (StreamReader reader = new StreamReader(stream)) {
+                    string line;
+                    while ((line = reader.ReadLine()) != null) {
+                        if (line.Length > 0 && TryReadRecord(line, fromThisSession: true, shared, out LogRecord record)) {
+                            into.Add(record);
                         }
                     }
                 }
-
-                fromTheStart = !startedMidFile && !droppedALine;
             } catch (Exception) {
-                bytesScanned = 0;
-                fromTheStart = false;
-                return 0;
+                // What was read before the failure stands: a file that went away part way is
+                // still worth the records it gave.
             }
-
-            int added = 0;
-            int first = (next - count + kept.Length) % kept.Length;
-            for (int i = 0; i < count; i++) {
-                // The header and a torn line both simply fail to parse.
-                if (TryReadRecord(kept[(first + i) % kept.Length], fromThisSession: true, out LogRecord record)) {
-                    into.Add(record);
-                    added++;
-                }
-            }
-            return added;
+            return into.Count - before;
         }
 
         private static bool ReadHeader(string line, LogSession session) {
@@ -239,8 +159,17 @@ namespace KenseiLog.Editor {
         /// something inside the session that issued it and nowhere else: from another machine's
         /// build it would resolve here to whatever happens to hold that number, and Ping would
         /// jump to an unrelated object - worse than a button that does nothing.
+        /// <para>
+        /// The tag, the call site's path and the stack trace go through <paramref name="shared"/>,
+        /// so that a file's records hold one string for each distinct value. A record logged live
+        /// shares the string its call site compiled in; one parsed from a line brings a copy of
+        /// its own, and across a session of them that was tens of megabytes of the same few
+        /// hundred strings. Messages are left alone - they are mostly unique, and a table of them
+        /// would cost more than it saved.
+        /// </para>
         /// </summary>
-        private static bool TryReadRecord(string line, bool fromThisSession, out LogRecord record) {
+        private static bool TryReadRecord(string line, bool fromThisSession, Dictionary<string, string> shared,
+                                          out LogRecord record) {
             record = default;
             try {
                 RecordDto dto = JsonUtility.FromJson<RecordDto>(line);
@@ -249,21 +178,29 @@ namespace KenseiLog.Editor {
                 }
                 record = new LogRecord(
                     dto.sq,
-                    dto.tag,
+                    Share(dto.tag, shared),
                     dto.msg,
                     (LogLevel)dto.lv,
                     (LogChannel)dto.ch,
                     dto.t,
                     dto.f,
-                    string.IsNullOrEmpty(dto.file) ? null : dto.file,
+                    string.IsNullOrEmpty(dto.file) ? null : Share(dto.file, shared),
                     dto.ln,
-                    string.IsNullOrEmpty(dto.st) ? null : dto.st,
+                    string.IsNullOrEmpty(dto.st) ? null : Share(dto.st, shared),
                     fromThisSession ? dto.ctx : 0,
                     dto.cap);
                 return true;
             } catch (Exception) {
                 return false;
             }
+        }
+
+        private static string Share(string value, Dictionary<string, string> shared) {
+            if (shared.TryGetValue(value, out string existing)) {
+                return existing;
+            }
+            shared.Add(value, value);
+            return value;
         }
 
         [Serializable]

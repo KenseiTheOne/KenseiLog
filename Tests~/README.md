@@ -40,7 +40,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-321 assertions over everything that does not need a GUI: the ring buffer including gapped and
+338 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -86,8 +86,13 @@ Each regression check names the bug it guards, because the interesting ones were
   been up an hour holds
 - a rotation on the last record before a reload, whose empty read returned before the reach-back
   added for exactly that case
-- a seed budget spent again on every file it touched, which put an older stretch of the log in
-  the window in place of a newer one
+- a window that kept 8192 records, and a recompile that read back 2 MB of the session: a long
+  session came back shorter than it went in, with nothing to say so
+- a long editor session pruning its own first files at rotation, which are what the window is
+  rebuilt from after a recompile - and a sink carrying on with a file, which opened none of the
+  ones behind it, has to know them by their headers
+- a seed reading the whole day back after every recompile, when Clear on Play had already
+  dismissed all but the last run of it
 - the reserve that carries the numbering across a reload, which nothing here ran until the
   session checks went through the sink's own wiring rather than reopening the file themselves
 - a session joined midway, which is what the package resolving again in a running editor leaves
@@ -126,6 +131,12 @@ running editor. Each was reasoned about and shipped; none has been seen working.
   harness drives this, but through its own stand-in for a domain reload rather than a real one.
   *Leaves when:* a recompile immediately after a file passes the size limit has left the window
   holding the session rather than a handful of records, with no new file behind it.
+- **A long session comes back whole, at a cost somebody can live with.** 0.16.0. The harness
+  seeds twelve thousand records across several files through its stand-in, and the cost of a
+  bigger session was measured headless; neither is a real editor on a real project, where the
+  session is whatever the project logs and the heap is shared with everything else in it.
+  *Leaves when:* a session past several rotations has been recompiled in a real project and came
+  back holding everything since the last clear, and the recompile was not noticeably slower.
 
 - **The in-game list keeps following the newest line when the notice at the top appears.**
   The notice takes twenty points out of the list between one poll and the next, and the old

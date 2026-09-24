@@ -9,14 +9,14 @@ using UnityEngine;
 
 namespace KenseiLog.Editor {
     /// <summary>
-    /// Keeps recent records in memory for <see cref="LogWindow"/>.
+    /// Keeps every record of the editor session in memory for <see cref="LogWindow"/>, until
+    /// somebody clears it - as Unity's console does, with no limit to set.
     /// <para>
     /// Registration goes bottom-up: the runtime assembly only knows the
     /// <see cref="ILogSink"/> interface, and the editor assembly plugs itself in on load.
     /// </para>
     /// </summary>
     public sealed class EditorSink : ILogSink {
-        private static readonly string _capacityKey = ProjectPrefs.Key("Capacity");
         private static readonly string _clearOnPlayKey = ProjectPrefs.Key("ClearOnPlay");
         private static readonly string _sessionFileKey = ProjectPrefs.Key("EditorSessionFile");
 
@@ -65,6 +65,14 @@ namespace KenseiLog.Editor {
         /// </summary>
         private const string ClearedThroughKey = "KenseiLog.EditorClearedThrough";
 
+        /// <summary>
+        /// The file being written when the window was last cleared. Nothing a seed wants is in a
+        /// file before it, so a seed starts there rather than at the beginning of the session:
+        /// Clear on Play clears on every entry to play mode, and without this each recompile
+        /// afterwards read the whole day back only to throw nearly all of it away.
+        /// </summary>
+        private const string ClearedInFileKey = "KenseiLog.EditorClearedInFile";
+
         /// <summary>Kept apart from the runs, which own the directory above it.</summary>
         private const string EditorLogFolder = "editor";
 
@@ -74,31 +82,12 @@ namespace KenseiLog.Editor {
         /// </summary>
         private const string MarkerTag = "Editor";
 
-        /// <summary>
-        /// How much of the session file is read back when the domain reloads. Bounded because
-        /// this happens on every recompile: a file at the default size limit would put seconds
-        /// on each one, and the buffer cannot hold that many records anyway.
-        /// </summary>
-        private const long SeedByteBudget = 2L * 1024L * 1024L;
-
-        private const int DefaultCapacity = 8192;
-
-        /// <summary>
-        /// Bounds on the buffer. The floor is the point below which the window stops being a
-        /// log viewer; the ceiling is around a hundred megabytes of records, by which point
-        /// the answer is a log file rather than a bigger buffer.
-        /// </summary>
-        private const int MinimumCapacity = 64;
-
-        private const int MaximumCapacity = 1 << 20;
-
         private static FileSink _sessionFile;
 
-        private LogRingBuffer _buffer;
+        private readonly LogRingBuffer _buffer = LogRingBuffer.Unbounded();
         private int _version;
 
-        private EditorSink(int capacity) {
-            _buffer = new LogRingBuffer(capacity);
+        private EditorSink() {
         }
 
         public static EditorSink Instance { get; private set; }
@@ -173,26 +162,6 @@ namespace KenseiLog.Editor {
             }
         }
 
-        /// <summary>
-        /// How many records the window keeps. Clamped, and clamped before it is stored: an
-        /// out-of-range value used to be written to EditorPrefs and only then handed to the
-        /// buffer, which threw - leaving a capacity of zero saved, so the sink threw again on
-        /// construction on every domain reload and the window stayed dead until someone
-        /// cleared the preference by hand.
-        /// </summary>
-        public int Capacity {
-            get => _buffer.Capacity;
-            set {
-                int capacity = Mathf.Clamp(value, MinimumCapacity, MaximumCapacity);
-                if (capacity == _buffer.Capacity) {
-                    return;
-                }
-                EditorPrefs.SetInt(_capacityKey, capacity);
-                _buffer = new LogRingBuffer(capacity);
-                Interlocked.Increment(ref _version);
-            }
-        }
-
         public void Write(in LogRecord record) {
             _buffer.Add(in record);
             Interlocked.Increment(ref _version);
@@ -205,6 +174,23 @@ namespace KenseiLog.Editor {
             // Everything issued so far is dismissed. The counter is past every record written
             // up to now, which is exactly the watermark wanted, and it costs one number.
             SessionState.SetString(ClearedThroughKey, LogCore.NextSequence().ToString(CultureInfo.InvariantCulture));
+            // Read off a sink that may be rotating on another thread, so it may be a file behind
+            // by the time it is stored. That errs the right way: one file more read back, never
+            // one fewer, since nothing written after the watermark can be in an earlier file.
+            SessionState.SetString(ClearedInFileKey, _sessionFile != null ? _sessionFile.CurrentFilePath : string.Empty);
+        }
+
+        /// <summary>
+        /// The earliest file a seed reads: where this session began, or where it was last
+        /// cleared if that is later. Null in a session this sink joined midway, which reads the
+        /// file in hand alone - see <see cref="SessionFirstFileKey"/>.
+        /// </summary>
+        private static string SeedFloor {
+            get {
+                string first = SessionFirstFilePath;
+                string cleared = SessionState.GetString(ClearedInFileKey, string.Empty);
+                return first != null && cleared.Length > 0 && FileSink.WrittenBefore(first, cleared) ? cleared : first;
+            }
         }
 
         private static long ClearedThrough {
@@ -229,10 +215,7 @@ namespace KenseiLog.Editor {
                 return;
             }
 
-            // Clamped on the way in as well as on the way out, so a preference already holding
-            // a bad value from an earlier version repairs itself instead of throwing here.
-            int capacity = Mathf.Clamp(EditorPrefs.GetInt(_capacityKey, DefaultCapacity), MinimumCapacity, MaximumCapacity);
-            Instance = new EditorSink(capacity);
+            Instance = new EditorSink();
 
             // A domain reload is not a new session, so what this editor logged before it is
             // read back out of the session file - where the tag, the channel and the call site
@@ -298,8 +281,8 @@ namespace KenseiLog.Editor {
         /// <para>
         /// Entering play mode with Clear on Play set is a reload whose seed is thrown away a
         /// callback later, and that is the reload people do dozens of times a day. Reading a
-        /// couple of megabytes of JSON to discard it is the most expensive thing this package
-        /// would do all day.
+        /// session's worth of JSON to discard it is the most expensive thing this package would
+        /// do all day.
         /// </para>
         /// </summary>
         private static bool ShouldSeed() {
@@ -326,7 +309,10 @@ namespace KenseiLog.Editor {
                 // dev record written from an editor tool has nowhere else to survive.
                 config.FileIncludesDevChannel = true;
 
-                _sessionFile = new FileSink(in config, continuePath != null, continuePath);
+                // Every file of the session stays where it is, however many it fills: they are
+                // what the window is rebuilt from after a recompile, and one pruned from under a
+                // long session is history the window would come back without.
+                _sessionFile = new FileSink(in config, continuePath != null, continuePath, keepsSessionFiles: true);
                 if (!_sessionFile.IsWriting) {
                     // No file, so nothing for the next domain to continue: leaving the flag set
                     // would have it append this session into the last one's file.
@@ -389,8 +375,13 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Fills the buffer from the file this editor session has been writing, and from the
-        /// one behind it when a rotation has only just happened.
+        /// Fills the buffer with the whole of this editor session, read back out of its files:
+        /// every one from <see cref="SeedFloor"/> through the file being written, oldest first.
+        /// <para>
+        /// The whole of it, because the window keeps the whole of it - a recompile that brought
+        /// back only the end would be a limit by another name, and the kind this package has
+        /// learned is worst: nothing says it happened, the window is simply shorter than it was.
+        /// </para>
         /// <para>
         /// The records come back whole - tag, channel, frame, call site, stack trace - which is
         /// the difference between this and reading the console, where none of that exists. Their
@@ -398,27 +389,11 @@ namespace KenseiLog.Editor {
         /// highest: the file carries on being written after the reload, and records repeating
         /// numbers already in it would leave it unsorted and every lookup into it wrong.
         /// </para>
-        /// <para>
-        /// One budget covers the whole seed, and the file being written is served out of it
-        /// first. A budget per file lets the one behind a rotation fill the room left in the
-        /// buffer with records older than the ones the budget has just cut off the front of
-        /// this one - a window holding an older stretch of the log in place of a newer one,
-        /// with a hole between them and nothing in it to say so.
-        /// </para>
         /// </summary>
         private static bool SeedFromSessionFile(string path, List<LogRecord> into) {
-            LogSessionReader.ReadTail(path, Instance.Buffer.Capacity, SeedByteBudget, into,
-                                      out long spent, out bool entire);
-            // Whether or not this file gave anything back. A rotation on the last record before
-            // the reload leaves it holding a header alone, and that is the case the file behind
-            // it exists to cover: reading nothing is the reason to reach back, not to stop.
-            //
-            // But only behind a file that came back whole. A tail cut at the front already has
-            // records missing between it and anything older, and the file behind it would be
-            // fitted in front of that gap - an older stretch of the log in place of a newer one,
-            // with nothing in the window to say so.
-            if (entire) {
-                PrependPredecessor(path, SeedByteBudget - spent, into);
+            List<string> files = SessionFiles(path);
+            for (int i = 0; i < files.Count; i++) {
+                LogSessionReader.ReadForSeeding(files[i], into);
             }
 
             if (into.Count == 0) {
@@ -443,13 +418,8 @@ namespace KenseiLog.Editor {
         }
 
         /// <summary>
-        /// Reads the file before this one as well, while there is room left in the buffer and
-        /// budget left over.
-        /// <para>
-        /// A rotation shortly before the reload leaves the file now current holding a handful of
-        /// records, and the session's history in the one behind it. Read on its own, the window
-        /// would come back all but empty and look as though a recompile had eaten the morning.
-        /// </para>
+        /// The files a seed reads, oldest first: this one, and every one behind it down to
+        /// <see cref="SeedFloor"/>.
         /// <para>
         /// Never below the file this editor session started with. What is under that file was
         /// left by a session that is over - yesterday's editor, a run of the game - and it
@@ -459,25 +429,24 @@ namespace KenseiLog.Editor {
         /// editor that has been up an hour holds, and clears any bar its own history clears.
         /// Where the session began is what answers it, and that is a file rather than a number.
         /// </para>
+        /// <para>
+        /// Reaching back is also what a rotation just before the reload needs: the file now
+        /// current holds a header and a handful of records, and the session is behind it.
+        /// </para>
         /// </summary>
-        private static void PrependPredecessor(string path, long byteBudget, List<LogRecord> into) {
-            int room = Instance.Buffer.Capacity - into.Count;
-            if (room <= 0 || byteBudget <= 0) {
-                return;
+        private static List<string> SessionFiles(string path) {
+            List<string> files = new List<string> { path };
+            string floor = SeedFloor;
+            if (floor == null) {
+                return files;
             }
 
-            string first = SessionFirstFilePath;
             string earlier = FileSink.FileBefore(path);
-            if (first == null || earlier == null || FileSink.WrittenBefore(earlier, first)) {
-                return;
+            while (earlier != null && !FileSink.WrittenBefore(earlier, floor)) {
+                files.Insert(0, earlier);
+                earlier = FileSink.FileBefore(earlier);
             }
-
-            List<LogRecord> before = new List<LogRecord>();
-            if (LogSessionReader.ReadTail(earlier, room, byteBudget, before) == 0) {
-                return;
-            }
-
-            into.InsertRange(0, before);
+            return files;
         }
 
         /// <summary>
@@ -569,8 +538,7 @@ namespace KenseiLog.Editor {
             List<ConsoleEntryBridge.ConsoleEntry> entries = new List<ConsoleEntryBridge.ConsoleEntry>();
             ConsoleEntryBridge.ReadAll(entries);
 
-            int first = Mathf.Max(0, entries.Count - Instance.Buffer.Capacity);
-            for (int i = first; i < entries.Count; i++) {
+            for (int i = 0; i < entries.Count; i++) {
                 ConsoleEntryBridge.ConsoleEntry entry = entries[i];
                 SplitMessage(entry.Message, out string message, out string stackTrace);
 

@@ -44,6 +44,10 @@ namespace KenseiLog {
         // that only while the editor stayed up.
         private string _sessionId;
         private string _sessionStarted;
+        private readonly bool _keepsSession;
+        // The lowest index holding records of the session in hand. Pruning never reaches it
+        // when the whole session is kept.
+        private int _sessionFloor;
         private readonly string _app;
         private readonly string _unity;
         private readonly string _platform;
@@ -70,8 +74,17 @@ namespace KenseiLog {
         /// file it names has gone - pruned, or cleared by hand - the newest in the directory is
         /// taken, which is only the right answer while this sink is the one writing there.
         /// </para>
+        /// <para>
+        /// <paramref name="keepsSessionFiles"/> leaves every file of the session in hand where it
+        /// is, however many it fills: RetainedFileCount then prunes only what earlier sessions
+        /// left. The editor's choice, since its window is rebuilt from those files after every
+        /// recompile and a file pruned from under a long session is history the window loses. A
+        /// build does not want it - there the count is what keeps the logs off a full disk.
+        /// </para>
         /// </summary>
-        public FileSink(in LogConfig config, bool continueExistingFile, string continueFilePath = null) {
+        public FileSink(in LogConfig config, bool continueExistingFile, string continueFilePath = null,
+                        bool keepsSessionFiles = false) {
+            _keepsSession = keepsSessionFiles;
             // Read on the main thread at construction. These reach into the engine, and Write
             // runs on whichever thread happened to log.
             _app = Application.productName + " " + Application.version;
@@ -262,6 +275,7 @@ namespace KenseiLog {
                     Directory.CreateDirectory(LogDirectory);
                     MigrateLegacyFile();
                     next = HighestIndex() + 1;
+                    _sessionFloor = next;
                 } catch (Exception exception) {
                     // Without a directory there is nowhere to put a file, and without a listing
                     // there is no safe name to give one - picking blind would truncate a file
@@ -315,6 +329,9 @@ namespace KenseiLog {
                 // into as many as it had recompiles before it next rotated.
                 if (!TryReadSession(target)) {
                     BeginSession();
+                    _sessionFloor = IndexOf(target);
+                } else if (_keepsSession) {
+                    _sessionFloor = FirstIndexOfSession(target);
                 }
                 CurrentFilePath = target;
                 OpenWriter(startSession: false);
@@ -335,6 +352,17 @@ namespace KenseiLog {
         /// not to have written one - in which case carrying on with it starts a session of its own.
         /// </summary>
         private bool TryReadSession(string path) {
+            if (!TryReadHeader(path, out string id, out string started)) {
+                return false;
+            }
+            _sessionId = id;
+            _sessionStarted = started;
+            return true;
+        }
+
+        private static bool TryReadHeader(string path, out string id, out string started) {
+            id = null;
+            started = null;
             string header;
             try {
                 // ReadWrite because this is the file about to be appended to, and on the editor's
@@ -347,14 +375,40 @@ namespace KenseiLog {
                 return false;
             }
 
-            string id = HeaderValue(header, LogJson.SessionKey);
-            string started = HeaderValue(header, "started");
-            if (id == null || started == null) {
-                return false;
+            id = HeaderValue(header, LogJson.SessionKey);
+            started = HeaderValue(header, "started");
+            return id != null && started != null;
+        }
+
+        /// <summary>
+        /// The lowest index among the files, running down from this one, whose header names the
+        /// session in hand. Asked when carrying on with a file, since a sink that carries on did
+        /// not open the files behind it and has only their headers to go by. It stops at the first
+        /// file that names another session, or none: a file between two of ours that is not ours
+        /// is a directory this sink does not understand, and keeping less is the safe answer.
+        /// </summary>
+        private int FirstIndexOfSession(string current) {
+            int floor = IndexOf(current);
+            string[] existing;
+            try {
+                existing = Directory.GetFiles(LogDirectory, FilePattern);
+            } catch (Exception) {
+                return floor;
             }
-            _sessionId = id;
-            _sessionStarted = started;
-            return true;
+
+            Array.Sort(existing, CompareByIndexDescending);
+            for (int i = 0; i < existing.Length; i++) {
+                int index = IndexOfFile(existing[i]);
+                if (index <= 0 || index >= floor) {
+                    continue;
+                }
+                if (!TryReadHeader(existing[i], out string id, out _) ||
+                    !string.Equals(id, _sessionId, StringComparison.Ordinal)) {
+                    break;
+                }
+                floor = index;
+            }
+            return floor;
         }
 
         /// <summary>
@@ -558,10 +612,14 @@ namespace KenseiLog {
             // into the same directory is outside what any of this can promise.
             Array.Sort(existing, CompareByIndexDescending);
             for (int i = keep; i < existing.Length; i++) {
-                if (IndexOfFile(existing[i]) < 0) {
+                int index = IndexOfFile(existing[i]);
+                if (index < 0) {
                     // Not a name this sink wrote. A file somebody kept by hand - log.crash.jsonl -
                     // matches the pattern without matching the scheme, and deleting it would be
                     // deleting the one log they meant to keep.
+                    continue;
+                }
+                if (_keepsSession && index >= _sessionFloor) {
                     continue;
                 }
                 try {

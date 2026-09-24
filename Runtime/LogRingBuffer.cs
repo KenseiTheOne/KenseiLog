@@ -3,7 +3,8 @@ using System.Collections.Generic;
 
 namespace KenseiLog {
     /// <summary>
-    /// Fixed-capacity circular store of log records, safe to use from any thread.
+    /// Store of log records, safe to use from any thread: a fixed-capacity ring, or with
+    /// <see cref="Unbounded"/> one that keeps everything until it is cleared.
     /// <para>
     /// Reads are addressed by <see cref="LogRecord.Sequence"/> rather than by position:
     /// positions shift as the ring overwrites itself, so a consumer that remembered an
@@ -11,8 +12,17 @@ namespace KenseiLog {
     /// </para>
     /// </summary>
     public sealed class LogRingBuffer {
+        // An unbounded buffer grows a block at a time rather than one array by doubling. It
+        // holds a session, which is tens of megabytes of records, and doubling copies all of it
+        // while the logging threads wait on the lock - and holds both copies while it does.
+        private const int BlockShift = 12;
+        private const int BlockSize = 1 << BlockShift;
+        private const int BlockMask = BlockSize - 1;
+
         private readonly object _lock = new object();
+        // Exactly one of these two is set: the ring, or the blocks of a buffer with no end.
         private readonly LogRecord[] _records;
+        private readonly List<LogRecord[]> _blocks;
         // How many records of each tag the buffer is holding right now. Kept here because this
         // is the only place that sees both ends: a record arrives on the logging thread and the
         // one it displaced leaves in the same breath, and nothing that polls afterwards can know
@@ -32,7 +42,23 @@ namespace KenseiLog {
             _records = new LogRecord[capacity];
         }
 
-        public int Capacity => _records.Length;
+        private LogRingBuffer() {
+            _blocks = new List<LogRecord[]>();
+        }
+
+        /// <summary>
+        /// A buffer that never lets a record go: it grows for as long as records arrive, and
+        /// only <see cref="Clear"/> empties it. What the editor window keeps, as Unity's console
+        /// does - a limit there is one more place a record goes missing without anybody asking.
+        /// </summary>
+        public static LogRingBuffer Unbounded() =>
+            new LogRingBuffer();
+
+        /// <summary>
+        /// How many records it holds before the oldest start to go; int.MaxValue for one made
+        /// by <see cref="Unbounded"/>, which never lets one go.
+        /// </summary>
+        public int Capacity => _records != null ? _records.Length : int.MaxValue;
 
         /// <summary>
         /// Whether a record has been pushed out since the buffer was made or last cleared - so
@@ -74,15 +100,21 @@ namespace KenseiLog {
         public long OldestSequence {
             get {
                 lock (_lock) {
-                    return _count == 0 ? 0L : _records[_head].Sequence;
+                    return _count == 0 ? 0L : Slot(0).Sequence;
                 }
             }
         }
 
         public void Add(in LogRecord record) {
             lock (_lock) {
-                if (_count < _records.Length) {
-                    _records[(_head + _count) % _records.Length] = record;
+                if (_blocks != null) {
+                    if (_count == _blocks.Count << BlockShift) {
+                        _blocks.Add(new LogRecord[BlockSize]);
+                    }
+                    Slot(_count) = record;
+                    _count++;
+                } else if (_count < _records.Length) {
+                    Slot(_count) = record;
                     _count++;
                 } else {
                     // Read before it is written over, and counted out before the new one is
@@ -147,22 +179,27 @@ namespace KenseiLog {
         /// Caller holds the lock.
         /// </summary>
         private void SettleLast() {
-            int length = _records.Length;
             for (int i = _count - 1; i > 0; i--) {
-                int current = (_head + i) % length;
-                int previous = (_head + i - 1) % length;
-                if (_records[previous].Sequence <= _records[current].Sequence) {
+                ref LogRecord current = ref Slot(i);
+                ref LogRecord previous = ref Slot(i - 1);
+                if (previous.Sequence <= current.Sequence) {
                     return;
                 }
-                LogRecord swap = _records[previous];
-                _records[previous] = _records[current];
-                _records[current] = swap;
+                LogRecord swap = previous;
+                previous = current;
+                current = swap;
             }
         }
 
         public void Clear() {
             lock (_lock) {
-                Array.Clear(_records, 0, _records.Length);
+                if (_blocks != null) {
+                    // Dropped rather than wiped: a Clear is how somebody gives the memory of a
+                    // long session back, and emptied blocks would keep every byte of it.
+                    _blocks.Clear();
+                } else {
+                    Array.Clear(_records, 0, _records.Length);
+                }
                 _tags.Clear();
                 _evicted = false;
                 _head = 0;
@@ -232,6 +269,14 @@ namespace KenseiLog {
         }
 
         private LogRecord At(int logicalIndex) =>
-            _records[(_head + logicalIndex) % _records.Length];
+            Slot(logicalIndex);
+
+        /// <summary>Where the record at this logical index lives. Caller holds the lock.</summary>
+        private ref LogRecord Slot(int logicalIndex) {
+            if (_blocks != null) {
+                return ref _blocks[logicalIndex >> BlockShift][logicalIndex & BlockMask];
+            }
+            return ref _records[(_head + logicalIndex) % _records.Length];
+        }
     }
 }

@@ -15,6 +15,15 @@ All notable changes to this package are documented here. The format follows
   package keeps having. `LogOverlay.Collapsed` turns it on from a debug menu of your own, beside
   `IsOpen` and `TagPaneVisible`.
 
+- `LogRingBuffer.Unbounded()`, a buffer with no end: it grows a block of 4096 records at a time
+  for as long as records arrive, and only `Clear` empties it - and gives the memory back. Blocks
+  rather than one array grown by doubling, because it holds a session: doubling copies tens of
+  megabytes while the logging threads wait on its lock. Its `Capacity` answers `int.MaxValue`.
+- `FileSink` takes `keepsSessionFiles`, which leaves every file of the session in hand where it
+  is however many it fills; `RetainedFileCount` then prunes only what earlier sessions left. A
+  sink that carries on with a file knows the files behind it by the session named in their
+  headers - which is why the fix below, one identity per session, had to come first.
+
 - One line appears at the top of the in-game viewer once records have started leaving its
   ring, and only then: *Earlier messages are now only in the log file.* Tags show what is held and
   nothing else - there is no note beside a tag, or under an empty list, about what went; the one
@@ -39,6 +48,30 @@ All notable changes to this package are documented here. The format follows
 
 ### Changed
 
+- **Breaking.** The editor window keeps every record until it is cleared, as Unity's console
+  does. It kept 8192 and let the oldest go, and a limit there is one more place a record goes
+  missing with nothing to say so. `EditorSink.Capacity` is gone, and the preference it was
+  remembered in with it: there is nothing left to set.
+- A recompile brings the whole editor session back. It read the last 2 MB of the session file,
+  and the file behind it out of the same budget, so a long session came back shorter than it
+  went in - a limit, however it was worded. It reads every file the session has filled now, from
+  the one it began with, and still never further back: an editor that has closed does not leave
+  its records in your window. After a **Clear** it starts at the file that was being written when
+  you cleared. Clear on Play clears on every entry to play mode, and without that each recompile
+  afterwards would read the whole day back to throw nearly all of it away. What a recompile pays
+  grows with what has been logged since the last clear: about half a second for every hundred
+  thousand records, measured headless with records of an ordinary length, most of it
+  `JsonUtility`. Holding them takes about twenty megabytes per hundred thousand. Records read
+  back share one string for each distinct tag, call site and stack trace: parsed a line at a
+  time, each brought copies of its own, and that was half of what they cost.
+- The editor's session file keeps every file its session fills. `RetainedFileCount` pruned the
+  oldest at each rotation whoever had written them, so a long session deleted its own beginning -
+  which after a recompile is exactly what the window is rebuilt from. Only what earlier sessions
+  left is pruned now. A build's file still keeps to the count, which is what stands between a
+  device and a full disk.
+- **Breaking.** `LogSessionReader.ReadTail` and its overloads are replaced by `ReadForSeeding`,
+  which reads the whole file. The tail, its byte budget and whether it came back entire existed
+  for the bound that has gone.
 - **Breaking.** `KenseiLog.Editor.TabView` is `KenseiLog.LogIndex`, in the runtime assembly. The
   fold was written for the editor window and the in-game viewer needed the same one; two
   implementations of one fold is one more than this package wants to keep right. The file moved
