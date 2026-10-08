@@ -75,6 +75,7 @@ public static class SmokeRunner {
         Scenario(AnEditorSessionKeepsEveryFileItFills);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
         Scenario(TheEntryLineIsWrittenOnTheSideOfTheReloadTheWindowShows);
+        Scenario(AMirroredLineComesBackAsTheRecordItMirrored);
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
@@ -711,10 +712,10 @@ public static class SmokeRunner {
 
         UnityEngine.Debug.LogWarning(message, target);
 
-        bool resolved = ConsoleEntryBridge.TryResolve(message, out int instanceId, out _, out _);
+        bool resolved = ConsoleEntryBridge.TryResolve(message, out long instanceId, out _, out _);
         Check("bridge resolved the entry", resolved);
         Check("bridge returned the object that was logged against",
-            resolved && instanceId == target.GetInstanceID());
+            resolved && instanceId == ContextId.Of(target));
 
         Check("an unknown message resolves to nothing",
             !ConsoleEntryBridge.TryResolve("no such message " + System.Guid.NewGuid().ToString("N"), out _, out _, out _));
@@ -1280,7 +1281,7 @@ public static class SmokeRunner {
         target.name = "KenseiLogContextProbe";
 
         LogRecord against = new LogRecord(1, "Ctx", "logged against an object", LogLevel.Warning, LogChannel.Prod,
-            0.0, 0, null, 0, null, target.GetInstanceID());
+            0.0, 0, null, 0, null, ContextId.Of(target));
         LogRecord alone = Record(2, "Ctx", "logged against nothing", LogLevel.Log, LogChannel.Prod, 0);
 
         StringBuilder plain = new StringBuilder();
@@ -1303,15 +1304,38 @@ public static class SmokeRunner {
         List<LogRecord> seeded = new List<LogRecord>();
         int read = LogSessionReader.ReadForSeeding(path, seeded);
         Check("the editor's own file hands the related object back",
-            read == 2 && seeded[0].ContextInstanceId == target.GetInstanceID());
+            read == 2 && seeded[0].ContextInstanceId == ContextId.Of(target));
         Check("and it is still the object that was logged against",
-            read == 2 && EditorUtility.InstanceIDToObject(seeded[0].ContextInstanceId) == target);
+            read == 2 && ContextObjects.Resolve(seeded[0].ContextInstanceId) == target);
         Check("a record that had none comes back with none", read == 2 && seeded[1].ContextInstanceId == 0);
 
         bool opened = LogSessionReader.TryRead(path, out LogSession session, out string error);
         Check("the same file opens by hand" + (opened ? string.Empty : ": " + error), opened);
         Check("and a file opened by hand carries no object to ping",
             opened && session.Buffer.TryGetBySequence(1, out LogRecord back) && back.ContextInstanceId == 0);
+
+        // From Unity 6.4 an id is a 64-bit EntityId - around 5.7e17 on 6.5 - and cut down to 32
+        // bits it resolves to nothing. So one past the int range has to come back whole, from the
+        // writer's own line and from one only JsonUtility reads: the unknown key keeps the fast
+        // parser off it.
+        const long wide = 568105589213756076L;
+        LogRecord far = new LogRecord(3, "Ctx", "logged against a 64-bit id", LogLevel.Log, LogChannel.Prod,
+            0.0, 0, null, 0, null, wide);
+        StringBuilder farLine = new StringBuilder();
+        LogJson.AppendRecord(farLine, in far);
+        string widePath = Path.Combine(directory, "log.0002.jsonl");
+        File.WriteAllText(widePath, farLine + "\n" + farLine.ToString().Insert(1, "\"zz\":1,") + "\n");
+
+        List<LogRecord> wideSeeded = new List<LogRecord>();
+        int wideRead = LogSessionReader.ReadForSeeding(widePath, wideSeeded);
+        Check("a 64-bit id comes back whole", wideRead == 2 && wideSeeded[0].ContextInstanceId == wide);
+        // The seed falls back to JsonUtility on a line the fast parser refuses, so the check above
+        // passes either way: ask the fast parser itself, or refusing ids past the int range again
+        // would send every record with a context on 6.4+ down the slow path unseen.
+        LineReaders readers = LineReaders.Find();
+        Check("and the fast parser takes it rather than leaving it to JsonUtility",
+            readers != null && readers.Written(farLine.ToString(), out LogRecord fastFar) && fastFar.ContextInstanceId == wide);
+        Check("and comes back whole through JsonUtility", wideRead == 2 && wideSeeded[1].ContextInstanceId == wide);
 
         UnityEngine.Object.DestroyImmediate(target);
     }
@@ -1388,7 +1412,8 @@ public static class SmokeRunner {
                 random.Next(3) == 0 ? null : Recurring(40),
                 random.Next(int.MinValue, int.MaxValue),
                 random.Next(3) == 0 ? null : Recurring(200),
-                random.Next(int.MinValue, int.MaxValue),
+                // The whole long: from 6.4 a context id is an EntityId past the int range.
+                ((long)random.Next(int.MinValue, int.MaxValue) << 32) | (uint)random.Next(int.MinValue, int.MaxValue),
                 random.Next(2) == 0));
         }
 
@@ -2167,6 +2192,70 @@ public static class SmokeRunner {
             SessionPlan.EnteringPlayModeReloads(true, false));
         Check("with them on and domain reload skipped, it does not",
             !SessionPlan.EnteringPlayModeReloads(true, true));
+    }
+
+    /// <summary>
+    /// With MirrorToUnityConsole on and a console that a recompile does not clear, every line
+    /// the console sink had mirrored came back into the window after the reload a second time,
+    /// under the Unity tag and reading <c>Tag: message</c>. The seed matched the console against
+    /// the file's captured records only, and a mirrored line belongs to one of the package's
+    /// own, written to the console with its tag in front. The console lines here are what the
+    /// sink really writes, caught on their way out, so the check also fails if the format the
+    /// sink writes and the one the seed matches ever part.
+    /// </summary>
+    private static void AMirroredLineComesBackAsTheRecordItMirrored() {
+        LogRecord one = Record(1, "SeedProbe", "SEEDPROBE one", LogLevel.Log, LogChannel.Prod, 0);
+        LogRecord multi = Record(4, "SeedProbe", "SEEDPROBE multi\nsecond line", LogLevel.Warning, LogChannel.Prod, 0);
+        List<LogRecord> fromFile = new List<LogRecord> {
+            one,
+            Record(2, "SeedProbe", "SEEDPROBE one", LogLevel.Log, LogChannel.Prod, 0),
+            Record(3, LogCore.ForeignTag, "SEEDPROBE foreign", LogLevel.Log, LogChannel.Prod, 0, captured: true),
+            multi,
+        };
+
+        string mirroredOne = MirroredBy(new UnityConsoleSink(), one, "SEEDPROBE one");
+        string mirroredMulti = MirroredBy(new UnityConsoleSink(), multi, "SEEDPROBE multi");
+        Check("the console sink mirrored both probe records", mirroredOne != null && mirroredMulti != null);
+        if (mirroredOne == null || mirroredMulti == null) {
+            return;
+        }
+
+        List<string> console = new List<string> {
+            mirroredOne,               // 0  the first record's mirror
+            mirroredOne,               // 1  the second's
+            mirroredOne,               // 2  a third, which the file has no record for
+            "SEEDPROBE foreign",       // 3  a captured foreign line
+            mirroredMulti,             // 4  only its first line is matched
+            "SEEDPROBE other",         // 5  foreign, never in the file
+            "SEEDPROBE one",           // 6  foreign, reads like the message without the tag
+        };
+        List<int> left = SessionPlan.Unaccounted(fromFile, console);
+
+        Check("a mirrored line is taken for the record it mirrored, once per record",
+            !left.Contains(0) && !left.Contains(1));
+        Check("a mirrored line with no record left over is one the file missed", left.Contains(2));
+        Check("a captured record still accounts for its own line", !left.Contains(3));
+        Check("a multi-line record accounts for the first line of its mirror", !left.Contains(4));
+        Check("a line the file never saw is added", left.Contains(5));
+        Check("a line reading only the message, without the tag, is not taken for the mirror", left.Contains(6));
+        Check("nothing else is added", left.Count == 3);
+    }
+
+    /// <summary>What <paramref name="sink"/> writes to the console for a record, as the console gets it.</summary>
+    private static string MirroredBy(UnityConsoleSink sink, LogRecord record, string marker) {
+        string seen = null;
+        UnityEngine.Application.LogCallback probe = (condition, stack, type) => {
+            if (seen == null && condition != null && condition.Contains(marker)) {
+                seen = condition;
+            }
+        };
+        UnityEngine.Application.logMessageReceivedThreaded += probe;
+        try {
+            sink.Write(record);
+        } finally {
+            UnityEngine.Application.logMessageReceivedThreaded -= probe;
+        }
+        return seen;
     }
 
     /// <summary>

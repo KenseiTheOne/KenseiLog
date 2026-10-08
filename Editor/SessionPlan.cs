@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace KenseiLog.Editor {
     /// <summary>What a reload settled on for the editor's session file.</summary>
@@ -16,8 +17,8 @@ namespace KenseiLog.Editor {
     }
 
     /// <summary>
-    /// What installing the editor sink should do about the session file, worked out from the
-    /// state it is handed and nothing else.
+    /// What installing the editor sink should do about the session file, and with what the
+    /// console still holds, worked out from the state it is handed and nothing else.
     /// <para>
     /// Apart because these are the decisions that have gone wrong three times: a process that
     /// had no business opening a file of its own, a path that was no longer the file being
@@ -76,5 +77,57 @@ namespace KenseiLog.Editor {
         /// </summary>
         public static bool EnteringPlayModeReloads(bool enterPlayModeOptionsEnabled, bool domainReloadSkipped) =>
             !enterPlayModeOptionsEnabled || !domainReloadSkipped;
+
+        /// <summary>
+        /// Which of the console's entries the session file does not already account for, by
+        /// index into <paramref name="consoleMessages"/> - the message of each entry with its
+        /// stack trace taken off. Matched by first line and by count: a line read back three
+        /// times accounts for three entries, and a fourth is one the file genuinely missed.
+        /// <para>
+        /// A record of the file accounts for the line it put in the console. A captured one came
+        /// out of the console to begin with, so that is its own message. One of the package's
+        /// own is in the console only if <see cref="UnityConsoleSink"/> mirrored it, and then as
+        /// <see cref="UnityConsoleSink.ConsoleLine"/> writes it, tag in front. Leaving those out
+        /// brought every mirrored line back after a reload as a second record under the Unity
+        /// tag.
+        /// </para>
+        /// <para>
+        /// Not conditional on mirroring being on: this runs before the project has configured
+        /// anything, and the file does not say whether a record was mirrored when it was
+        /// written. The cost of assuming it was is a foreign line that reads exactly
+        /// <c>Tag: message</c> of a record from the same session being taken for the mirror.
+        /// </para>
+        /// </summary>
+        public static List<int> Unaccounted(IReadOnlyList<LogRecord> fromFile, IReadOnlyList<string> consoleMessages) {
+            Dictionary<string, int> accounted = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < fromFile.Count; i++) {
+                LogRecord record = fromFile[i];
+                string line = record.Captured
+                    ? record.Message
+                    : UnityConsoleSink.ConsoleLine(record.Tag, record.Message);
+                string key = FirstLine(line);
+                accounted.TryGetValue(key, out int seen);
+                accounted[key] = seen + 1;
+            }
+
+            List<int> unaccounted = new List<int>();
+            for (int i = 0; i < consoleMessages.Count; i++) {
+                string key = FirstLine(consoleMessages[i]);
+                if (accounted.TryGetValue(key, out int left) && left > 0) {
+                    accounted[key] = left - 1;
+                } else {
+                    unaccounted.Add(i);
+                }
+            }
+            return unaccounted;
+        }
+
+        private static string FirstLine(string message) {
+            if (string.IsNullOrEmpty(message)) {
+                return string.Empty;
+            }
+            int newline = message.IndexOf('\n');
+            return newline < 0 ? message : message.Substring(0, newline);
+        }
     }
 }

@@ -10,7 +10,7 @@ namespace KenseiLog.Editor {
     /// <para>
     /// <c>Application.logMessageReceived</c> hands over the message, the trace and the level,
     /// so a warning the engine raised against an asset - a USS file, a prefab - arrives with
-    /// nothing to navigate to. Unity's own console opens those because it holds an instance id
+    /// nothing to navigate to. Unity's own console opens those because it holds an object id
     /// alongside each entry. That store is <c>UnityEditor.LogEntries</c>, and it is internal.
     /// </para>
     /// <para>
@@ -62,7 +62,7 @@ namespace KenseiLog.Editor {
         /// What Unity knows about the console entry carrying this message: the object it was
         /// logged against, and a source location when the entry has one.
         /// </summary>
-        public static bool TryResolve(string message, out int instanceId, out string file, out int line) {
+        public static bool TryResolve(string message, out long instanceId, out string file, out int line) {
             instanceId = 0;
             file = null;
             line = 0;
@@ -130,7 +130,7 @@ namespace KenseiLog.Editor {
                     into.Add(new ConsoleEntry(
                         message,
                         LevelFromMode(mode),
-                        (int)_instanceIdField.GetValue(args[1]),
+                        ReadId(args[1]),
                         _fileField?.GetValue(args[1]) as string,
                         _lineField != null ? (int)_lineField.GetValue(args[1]) : 0,
                         mode));
@@ -178,7 +178,7 @@ namespace KenseiLog.Editor {
         public readonly struct ConsoleEntry {
             public readonly string Message;
             public readonly LogLevel Level;
-            public readonly int InstanceId;
+            public readonly long InstanceId;
             public readonly string File;
             public readonly int Line;
 
@@ -189,7 +189,7 @@ namespace KenseiLog.Editor {
             /// </summary>
             public readonly int Mode;
 
-            public ConsoleEntry(string message, LogLevel level, int instanceId, string file, int line, int mode) {
+            public ConsoleEntry(string message, LogLevel level, long instanceId, string file, int line, int mode) {
                 Message = message;
                 Level = level;
                 InstanceId = instanceId;
@@ -247,7 +247,7 @@ namespace KenseiLog.Editor {
                         continue;
                     }
 
-                    int instanceId = (int)_instanceIdField.GetValue(args[1]);
+                    long instanceId = ReadId(args[1]);
                     string file = _fileField?.GetValue(args[1]) as string;
                     int line = _lineField != null ? (int)_lineField.GetValue(args[1]) : 0;
                     if (instanceId == 0 && string.IsNullOrEmpty(file)) {
@@ -305,7 +305,9 @@ namespace KenseiLog.Editor {
                 _endGettingEntries = entries.GetMethod("EndGettingEntries", statics);
                 _getEntryInternal = entries.GetMethod("GetEntryInternal", statics);
                 _messageField = _entryType.GetField("message", instance);
-                _instanceIdField = _entryType.GetField("instanceID", instance);
+                // An int named instanceID up to 6.3; an EntityId named entityId on 6.5.
+                _instanceIdField = _entryType.GetField("instanceID", instance) ??
+                                   _entryType.GetField("entityId", instance);
 
                 // Optional. Without it the index falls back to the time-based floor above.
                 _getCount = entries.GetMethod("GetCount", statics, null, Type.EmptyTypes, null);
@@ -322,11 +324,14 @@ namespace KenseiLog.Editor {
                              _getEntryInternal != null && _messageField != null && _instanceIdField != null &&
                              _startGettingEntries.ReturnType == typeof(int) &&
                              _getEntryInternal.ReturnType == typeof(bool) &&
-                             _instanceIdField.FieldType == typeof(int);
+                             ContextObjects.CanRead(_instanceIdField.FieldType);
             } catch (Exception) {
                 _available = false;
             }
         }
+
+        private static long ReadId(object entry) =>
+            ContextObjects.TryRead(_instanceIdField.GetValue(entry), out long id) ? id : 0;
 
         private static string FirstLine(string message) {
             int newline = message.IndexOf('\n');
@@ -334,11 +339,11 @@ namespace KenseiLog.Editor {
         }
 
         private readonly struct Entry {
-            public readonly int InstanceId;
+            public readonly long InstanceId;
             public readonly string File;
             public readonly int Line;
 
-            public Entry(int instanceId, string file, int line) {
+            public Entry(long instanceId, string file, int line) {
                 InstanceId = instanceId;
                 File = file;
                 Line = line;

@@ -19,7 +19,7 @@ public static class DemoSceneBuilder {
         GameObject host = new GameObject("Log Demo");
         host.AddComponent<LogDemo>();
 
-        Camera camera = Object.FindObjectOfType<Camera>();
+        Camera camera = Object.FindAnyObjectByType<Camera>();
         if (camera != null) {
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = new Color(0.16f, 0.17f, 0.20f);

@@ -1,4 +1,10 @@
+using System.Runtime.CompilerServices;
 using UnityEngine;
+
+// For ConsoleLine below: the editor reads the console back after a domain reload and has to
+// know which of its lines this sink wrote. Internal rather than public so the format stays
+// free to change without it being API.
+[assembly: InternalsVisibleTo("KenseiLog.Editor")]
 
 namespace KenseiLog {
     /// <summary>
@@ -18,7 +24,7 @@ namespace KenseiLog {
                 return;
             }
 
-            string line = record.Tag + ": " + record.Message;
+            string line = ConsoleLine(record.Tag, record.Message);
 
             // Our own Debug.Log call comes straight back through the foreign-log handler.
             // The flag breaks that loop without hiding genuine engine messages.
@@ -39,5 +45,13 @@ namespace KenseiLog {
                 LogCore.SuppressForeignCapture = false;
             }
         }
+
+        /// <summary>
+        /// The line this sink writes to the console for a record. The one place the format
+        /// lives: after a domain reload the editor matches the console's lines against the
+        /// session file, and a mirrored line it fails to recognise as this comes back into the
+        /// window a second time, under the Unity tag.
+        /// </summary>
+        internal static string ConsoleLine(string tag, string message) => tag + ": " + message;
     }
 }

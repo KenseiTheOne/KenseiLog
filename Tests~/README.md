@@ -33,6 +33,7 @@ Any empty Unity project (2022.3 or newer) will do.
    | `CompileCheck.cs` | `Assets/Editor/` | reaches the build pipeline |
    | `HoverRepro.cs` | `Assets/Editor/` | only when chasing a stutter; see below |
 | `PlayEntryCheck.cs` | `Assets/Editor/` | reaches editor-only types |
+| `ReloadSeedCheck.cs` | `Assets/Editor/` | reaches editor-only types |
 | `PlayEntryBoot.cs` | `Assets/` | a `RuntimeInitializeOnLoadMethod` for play mode to find, must not live under `Editor` |
 
 ## The checks
@@ -42,7 +43,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-356 assertions over everything that does not need a GUI: the ring buffer including gapped and
+367 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -110,6 +111,10 @@ Each regression check names the bug it guards, because the interesting ones were
   goes to JsonUtility and would be slow and silently wrong at once
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
+- a context id past 32 bits, which an `EntityId` from Unity 6.4 is, coming back whole from the
+  file through both the fast parser and JsonUtility (0.17.0)
+- a line mirrored into the console coming back after a reload as a second, foreign record
+  (0.17.0)
 
 ## Entering play mode
 
@@ -132,6 +137,24 @@ order. The check looks for the line `PlayEntryBoot` logs before the first scene 
 project's Enter Play Mode Options and Clear on Play to what it needs and leaves them so, which is
 another reason it belongs to a sandbox. On 0.16.1 both modes failed with *what the run logged
 before its first scene is not in the window*.
+
+## Coming back from a reload
+
+```
+Unity.exe -projectPath <project> -batchmode -nographics \
+          -executeMethod ReloadSeedCheck.Run -logFile <log>
+```
+
+No `-quit`: it logs through the package with MirrorToUnityConsole on, plus one plain Debug.Log,
+turns the console's Clear on Recompile off, reloads the domain for real and reads the window.
+Prints `RELOADSEED RESULT: PASS` or `FAIL` and exits non-zero on failure. It guards **mirrored
+lines coming back after a reload as a second, foreign record**: each logged line must be in the
+window once, none under the Unity tag as `Tag: message`, the foreign line once. If the console no
+longer holds the mirrored lines after the reload it fails rather than passing with nothing
+checked. Clear on Recompile is an EditorPrefs flag shared by every project on the machine: it is
+put back at the end, and a killed run has it put back by the next domain load in the sandbox. On
+the 0.16.2 matching it failed with *3 mirrored lines came back a second time under the Unity
+tag*; it passes on 6000.3.13f1, 6000.5.3f1 and 6000.6.5f1, where batchmode keeps the console and does reload.
 
 ## What nothing here checks
 
@@ -176,6 +199,16 @@ running editor. Each was reasoned about and shipped; none has been seen working.
   moment in the frame, which the harness cannot arrange.
   *Leaves when:* the viewer, open at the newest line, has been watched staying there as a burst
   first pushes records out of the ring.
+- **KenseiLog compiles and finds context objects on 2022.3 and 6000.4.** 0.17.0. The EntityId
+  change was compiled and run on 6000.3 and 6000.5 only. 2022.3 takes the plain int branch, which
+  is the code that shipped before; 6000.4 takes the 64-bit branch on the strength of the
+  documentation (`EntityId.ToULong`/`FromULong`, `Object.GetEntityId`), and what Unity calls the
+  id field of its internal `LogEntry` there is unknown - a name or type the bridge does not
+  expect turns it off quietly. Should it still be an int there, the bridge widens it with its
+  sign while `ContextId.Of` goes through `EntityId.ToULong`: if 6.4 pads a negative id with
+  zeroes instead, the two disagree for runtime-made objects and "open" finds nothing for them.
+  *Leaves when:* SmokeRunner has passed on 2022.3 LTS and on a 6000.4 editor, the console bridge
+  checks included.
 
 ### Known gaps, where a check would not catch it
 
@@ -215,6 +248,22 @@ Real, understood, not worth what fixing them costs today. Each says what would c
   `%TEMP%/kenseilog-smoke.<pid>` at both ends and touches no other, so one that is killed part
   way through is never collected by anything.
   *Leaves when:* the accumulation is ever noticed on a real machine.
+- **A foreign line that reads exactly like a mirrored one is taken for it.** After a reload the
+  seed counts each of the package's own records as the line the console sink would have mirrored,
+  `Tag: message`, whether or not mirroring was on: it runs before the project configures anything,
+  and the file does not record it. A genuine Debug.Log whose first line is exactly that, for a
+  record of the same session, is matched off and does not come back into the window (the console
+  still has it).
+  *Leaves when:* the session file records whether each record was mirrored, or such a line is
+  reported missing.
+- **A mirrored line from before the window's last clear still comes back after a reload.** The
+  seed reads the session from the file the window was last cleared in, so a record in an earlier
+  file is not there to match its mirror against, and the console, cleared or not by the user,
+  still holds it: it returns under the Unity tag. The same for a session the sink joined midway,
+  which reads the file in hand alone. It needs a rotation and then a clear in the window but not
+  in the Console. Not new in 0.17.0 - before it, captured lines from those files came back too -
+  and closing it means reading the files the floor exists to skip.
+  *Leaves when:* it is reported, or the seed reads earlier files for another reason.
 
 ## The branches a build takes
 

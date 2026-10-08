@@ -4,6 +4,35 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-10-08
+
+### Fixed
+
+- KenseiLog compiles on Unity 6.5 and 6.6, where `Object.GetInstanceID` and the int instance-id editor APIs
+  (`EditorUtility.InstanceIDToObject`, `AssetDatabase.OpenAsset(int)`) are errors - the Runtime
+  assembly failed first, so every project using the package stopped building. The obsolete warnings
+  on 6.3 are gone too, without suppressing any. Found independently by SelStrom, who sent the same
+  fix for 6000.6 in #1.
+- The console bridge reads `LogEntry.entityId` on 6.5, where Unity renamed the internal
+  `instanceID` field and made it an `EntityId`. With the compile errors alone fixed it would have
+  switched itself off there quietly, taking with it the window's seeding from the console after a
+  reload and "open" for captured logs.
+- With MirrorToUnityConsole on and the console's Clear on Recompile off, every line mirrored into
+  the Console came back into the window after the domain reload a second time, under the Unity tag
+  as "Tag: message" (first line only). The same held for the reload that enters play mode with
+  Clear on Play off in both the console and KenseiLog. A mirrored line is now matched to the record
+  it came from, for the files the window is rebuilt from.
+
+### Changed
+
+- `LogRecord.ContextInstanceId` is a `long`: from Unity 6.4 an object id is an `EntityId`, 64 bits
+  wide by 6.5, and cut down to 32 bits it resolves to nothing. The `ctx` field of the file carries
+  it whole; files written by earlier versions read as before. `ContextId.Of(obj)` gives the id a
+  record keeps, and `ContextObjects.Resolve(id)` / `Open(id)` in the editor turn it back into the
+  object.
+- `ConsoleEntryBridge.TryResolve` gives the id as `out long`, and `ConsoleEntry.InstanceId` is a
+  `long`, for the same reason. Code that passes `out int` stops compiling.
+
 ## [0.16.3] - 2026-10-08
 
 ### Fixed

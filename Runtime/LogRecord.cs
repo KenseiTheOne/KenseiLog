@@ -28,10 +28,12 @@ namespace KenseiLog {
         public readonly int Frame;
 
         /// <summary>
-        /// Instance id of the related UnityEngine.Object, or 0. Stored as an id rather than a
-        /// reference so a buffered record never keeps a destroyed object alive.
+        /// Id of the related UnityEngine.Object, or 0, as <see cref="ContextId.Of"/> gives it: the
+        /// 32-bit instance id up to Unity 6.3, the EntityId from 6.4 on, 64 bits wide by 6.5.
+        /// Stored as an id rather than a reference so a buffered record never keeps a destroyed
+        /// object alive.
         /// </summary>
-        public readonly int ContextInstanceId;
+        public readonly long ContextInstanceId;
 
         public readonly LogLevel Level;
         public readonly LogChannel Channel;
@@ -54,7 +56,7 @@ namespace KenseiLog {
             string file,
             int line,
             string stackTrace,
-            int contextInstanceId,
+            long contextInstanceId,
             bool captured = false) {
             Captured = captured;
             Sequence = sequence;

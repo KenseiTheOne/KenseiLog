@@ -478,6 +478,11 @@ namespace KenseiLog.Editor {
         /// the file genuinely missed. That is correct whether or not compiler messages reach the
         /// pipeline, which is the point of doing it this way.
         /// </para>
+        /// <para>
+        /// The file's own records count too, as the line the console sink mirrored them as - see
+        /// <see cref="SessionPlan.Unaccounted"/>, where the matching lives so that it can be
+        /// checked without a console.
+        /// </para>
         /// </summary>
         private static void SeedRemainingConsoleEntries(List<LogRecord> fromFile) {
             if (!ConsoleEntryBridge.Available) {
@@ -490,25 +495,20 @@ namespace KenseiLog.Editor {
                 return;
             }
 
-            Dictionary<string, int> accounted = new Dictionary<string, int>(StringComparer.Ordinal);
-            for (int i = 0; i < fromFile.Count; i++) {
-                if (!fromFile[i].Captured) {
-                    continue;
-                }
-                string key = FirstLine(fromFile[i].Message);
-                accounted.TryGetValue(key, out int seen);
-                accounted[key] = seen + 1;
+            // Split once: the matching wants the message without its stack trace, and so does
+            // the record written for an entry the file does not account for.
+            string[] messages = new string[entries.Count];
+            string[] stackTraces = new string[entries.Count];
+            for (int i = 0; i < entries.Count; i++) {
+                SplitMessage(entries[i].Message, out messages[i], out stackTraces[i]);
             }
 
-            for (int i = 0; i < entries.Count; i++) {
+            List<int> unaccounted = SessionPlan.Unaccounted(fromFile, messages);
+            for (int u = 0; u < unaccounted.Count; u++) {
+                int i = unaccounted[u];
                 ConsoleEntryBridge.ConsoleEntry entry = entries[i];
-                SplitMessage(entry.Message, out string message, out string stackTrace);
-
-                string key = FirstLine(message);
-                if (accounted.TryGetValue(key, out int left) && left > 0) {
-                    accounted[key] = left - 1;
-                    continue;
-                }
+                string message = messages[i];
+                string stackTrace = stackTraces[i];
 
                 Instance.Write(new LogRecord(
                     LogCore.NextSequence(),
@@ -524,14 +524,6 @@ namespace KenseiLog.Editor {
                     entry.InstanceId,
                     captured: true));
             }
-        }
-
-        private static string FirstLine(string message) {
-            if (string.IsNullOrEmpty(message)) {
-                return string.Empty;
-            }
-            int newline = message.IndexOf('\n');
-            return newline < 0 ? message : message.Substring(0, newline);
         }
 
         /// <summary>
