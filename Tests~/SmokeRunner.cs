@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using KenseiLog;
 using KenseiLog.Editor;
+using Unity.Jobs;
 using UnityEditor;
 
 /// <summary>
@@ -41,6 +42,8 @@ public static class SmokeRunner {
         Scenario(ANullTagBecomesUntagged);
         Scenario(DevRecordsStillReachASinkThatWantsThem);
         Scenario(ForeignLogsAreMarkedAsCaptured);
+        Scenario(AForeignLogFromAnInlineJobStillReachesTheSinks);
+        Scenario(AFacadeLogFromAnInlineJobStillReachesTheSinks);
         Scenario(ConsoleSinkSkipsCapturedRecords);
         Scenario(RingBufferHandlesGappedSequences);
         Scenario(JsonSurvivesRoundTrip);
@@ -291,6 +294,68 @@ public static class SmokeRunner {
         Check("foreign log carries the Unity tag", copied == 2 && scratch[0].Tag == LogCore.ForeignTag);
         Check("foreign log is flagged captured", copied == 2 && scratch[0].Captured);
         Check("facade log is not flagged captured", copied == 2 && !scratch[1].Captured);
+    }
+
+    /// <summary>
+    /// Regression: JobHandle.Complete and Run execute a job on the main thread, where the thread
+    /// id matches but Unity still rejects Time.frameCount. The throw went back through the log
+    /// callback into the job - in a Burst job, a burst_abort per log, every frame, from Unity
+    /// Transport's receive job - and the record never reached a sink.
+    /// </summary>
+    private static void AForeignLogFromAnInlineJobStillReachesTheSinks() {
+        EditorSink.Instance.Clear();
+        Log.Info("SmokeRunner", "smoke frame before the job");
+        new ForeignLogJob().Run();
+        new ForeignLogJob().Schedule().Complete();
+
+        LogRecord[] scratch = new LogRecord[16];
+        int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
+        int fromJob = 0;
+        bool inheritedFrame = copied > 0;
+        for (int i = 1; i < copied; i++) {
+            if (scratch[i].Message == ForeignLogJob.Message) {
+                fromJob++;
+                inheritedFrame &= scratch[i].Frame == scratch[0].Frame && scratch[i].Captured;
+            }
+        }
+
+        Check("a foreign log from an inline job reaches the sink", fromJob == 2);
+        Check("and carries the frame of the last main-thread record", fromJob == 2 && inheritedFrame);
+    }
+
+    private static void AFacadeLogFromAnInlineJobStillReachesTheSinks() {
+        EditorSink.Instance.Clear();
+        Log.Info("SmokeRunner", "smoke frame before the job");
+        FacadeLogJob.Threw = false;
+        new FacadeLogJob().Run();
+
+        LogRecord[] scratch = new LogRecord[16];
+        int copied = EditorSink.Instance.Buffer.CopyNewerThan(0, scratch);
+
+        Check("a facade log from an inline job does not throw", !FacadeLogJob.Threw);
+        Check("and reaches the sink with the inherited frame",
+            copied == 2 && scratch[1].Message == FacadeLogJob.Message && scratch[1].Frame == scratch[0].Frame);
+    }
+
+    private struct ForeignLogJob : IJob {
+        public const string Message = "smoke foreign from a job";
+
+        public void Execute() {
+            UnityEngine.Debug.Log(Message);
+        }
+    }
+
+    private struct FacadeLogJob : IJob {
+        public const string Message = "smoke facade from a job";
+        public static bool Threw;
+
+        public void Execute() {
+            try {
+                Log.Info("SmokeRunner", Message);
+            } catch (Exception) {
+                Threw = true;
+            }
+        }
     }
 
     /// <summary>

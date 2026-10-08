@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Unity.Jobs.LowLevel.Unsafe;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -566,20 +567,29 @@ namespace KenseiLog {
 
         private static int ResolveContextId(Object context) {
             // Both the == overload and GetInstanceID reach into native code, so they are only
-            // valid on the main thread. A plain reference check keeps the off-thread path safe.
-            if ((object)context == null || Thread.CurrentThread.ManagedThreadId != _mainThreadId) {
+            // valid where Unity API is. A plain reference check keeps the other paths safe.
+            if ((object)context == null || !MayCallUnityApi()) {
                 return 0;
             }
             return context.GetInstanceID();
         }
 
         private static int CurrentFrame() {
-            // Time.frameCount throws off the main thread, so background records inherit the
-            // frame of the most recent main-thread log. Close enough to order them by.
-            if (Thread.CurrentThread.ManagedThreadId == _mainThreadId) {
+            // Records from other threads and from jobs inherit the frame of the most recent
+            // main-thread log. Close enough to order them by.
+            if (MayCallUnityApi()) {
                 _lastKnownFrame = Time.frameCount;
             }
             return _lastKnownFrame;
+        }
+
+        /// <summary>
+        /// The thread id alone is not enough: JobHandle.Complete and Run execute a job on the main
+        /// thread, and Unity rejects its main-thread API there all the same. A Burst job's log
+        /// reaches the foreign-log handler that way, and a throw back into it aborts the job.
+        /// </summary>
+        private static bool MayCallUnityApi() {
+            return Thread.CurrentThread.ManagedThreadId == _mainThreadId && !JobsUtility.IsExecutingJob;
         }
     }
 }

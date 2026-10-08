@@ -42,7 +42,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-352 assertions over everything that does not need a GUI: the ring buffer including gapped and
+356 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -81,6 +81,9 @@ Each regression check names the bug it guards, because the interesting ones were
 - a process that is not the editor - an asset import worker, an out-of-process profiler - opening a
   session file beside the editor's in the directory they all resolve to
 - a session file path recorded once at open, which a rotation then moved on without it
+- a log written from a job that `JobHandle.Complete` or `Run` executes on the main thread: the
+  thread id matched, `Time.frameCount` threw, and the record never reached a sink - from a Burst
+  job, an abort of the job that logged it, every frame
 - carrying on with the session file made conditional on reading it back, which entering play mode
   with Clear on Play set never does
 - seeding reaching below the file this editor session started with, on the strength of ids that

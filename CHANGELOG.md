@@ -4,6 +4,19 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.3] - 2026-10-08
+
+### Fixed
+
+- A log written from inside a job no longer throws back into it. `JobHandle.Complete` and `Run`
+  execute a job on the main thread, where the thread id matches but Unity rejects its main-thread
+  API all the same, so reading `Time.frameCount` for the record threw. Captured through the
+  foreign-log handler from a Burst job - Unity Transport's receive job warns from inside one - that
+  throw aborted the job before it had cleared its queue, so the same warning came back the next
+  frame and aborted it again, with Unity's temp allocator leaking each time. A record from a job
+  now takes the frame of the latest main-thread record, as records from other threads already
+  did. Covered by two new `SmokeRunner` scenarios, which failed on 0.16.2 and pass now.
+
 ## [0.16.2] - 2026-10-08
 
 ### Fixed
