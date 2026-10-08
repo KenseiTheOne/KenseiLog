@@ -73,6 +73,14 @@ namespace KenseiLog.Editor {
         /// </summary>
         private const string ClearedInFileKey = "KenseiLog.EditorClearedInFile";
 
+        /// <summary>
+        /// Set from the moment play mode is asked for until it has been entered. The reload in
+        /// between - there is one by default - rebuilds the window empty, so it is the reload
+        /// that has to write the line marking the entry, and this is how it knows it is that
+        /// reload: a recompile during play mode reloads with play mode on as well, and must not.
+        /// </summary>
+        private const string EnteringPlayModeKey = "KenseiLog.EditorEnteringPlayMode";
+
         /// <summary>Kept apart from the runs, which own the directory above it.</summary>
         private const string EditorLogFolder = "editor";
 
@@ -81,6 +89,8 @@ namespace KenseiLog.Editor {
         /// would be folded away, or filtered out, along with the noise somebody was hiding.
         /// </summary>
         private const string MarkerTag = "Editor";
+
+        private const string PlayModeMarker = "Entered play mode";
 
         private static FileSink _sessionFile;
 
@@ -234,11 +244,14 @@ namespace KenseiLog.Editor {
 
             OpenSessionFile(SessionFileDirectory, decision.ContinuePath);
 
-            // After the sink is open, so the marker reaches the file as well as the window. Not
-            // when entering play mode: that has a marker of its own a moment later, and this one
-            // would be wiped by Clear on Play in between.
+            // After the sink is open, so the marker reaches the file as well as the window.
             if (!EditorApplication.isPlayingOrWillChangePlaymode) {
                 Mark(continuing ? "Scripts reloaded" : "Editor started");
+            } else if (SessionState.GetBool(EnteringPlayModeKey, false)) {
+                // The reload that enters play mode. The clear has already run, in the domain
+                // Play was pressed in; the line goes here so that it lands in the window this
+                // domain shows, ahead of anything the run logs from its first frame.
+                Mark(PlayModeMarker);
             }
         }
 
@@ -279,10 +292,10 @@ namespace KenseiLog.Editor {
         /// <summary>
         /// Whether reading a session's worth of records back is worth doing at all.
         /// <para>
-        /// Entering play mode with Clear on Play set is a reload whose seed is thrown away a
-        /// callback later, and that is the reload people do dozens of times a day. Reading a
-        /// session's worth of JSON to discard it is the most expensive thing this package would
-        /// do all day.
+        /// Entering play mode with Clear on Play set is a reload that follows a clear - the
+        /// window was emptied in the domain Play was pressed in - and that is the reload people
+        /// do dozens of times a day. Reading a session's worth of JSON to find nothing after the
+        /// clear is the most expensive thing this package would do all day.
         /// </para>
         /// </summary>
         private static bool ShouldSeed() {
@@ -626,15 +639,36 @@ namespace KenseiLog.Editor {
         }
 
         private static void OnPlayModeChanged(PlayModeStateChange change) {
-            if (change == PlayModeStateChange.EnteredPlayMode) {
-                if (ClearOnPlay) {
-                    Instance.Clear();
-                }
-                // After the clear, so it survives it and is the first line of the run - and so
-                // its sequence is above the watermark a clear leaves behind.
-                Mark("Entered play mode");
-            } else if (change == PlayModeStateChange.EnteredEditMode) {
-                Mark("Exited play mode");
+            switch (change) {
+                case PlayModeStateChange.ExitingEditMode:
+                    // Here, before the run begins, and not on EnteredPlayMode: that arrives after
+                    // every RuntimeInitializeOnLoadMethod and the first scene's Awake and OnEnable
+                    // have logged, and a clear there took exactly what somebody presses Play to
+                    // see - a startup error first among it.
+                    if (ClearOnPlay) {
+                        Instance.Clear();
+                    }
+                    SessionState.SetBool(EnteringPlayModeKey, true);
+                    // After the clear, so it survives it and is the first line of the run - and so
+                    // its sequence is above the watermark a clear leaves behind. When a reload
+                    // follows, it rebuilds the window without this domain's records, and Install
+                    // writes the line there instead.
+                    bool reloads = SessionPlan.EnteringPlayModeReloads(
+                        EditorSettings.enterPlayModeOptionsEnabled,
+                        (EditorSettings.enterPlayModeOptions & EnterPlayModeOptions.DisableDomainReload) != 0);
+                    if (!reloads) {
+                        Mark(PlayModeMarker);
+                    }
+                    break;
+                case PlayModeStateChange.EnteredPlayMode:
+                    SessionState.EraseBool(EnteringPlayModeKey);
+                    break;
+                case PlayModeStateChange.EnteredEditMode:
+                    // Also here, for an entry that never arrived: one that was called off would
+                    // otherwise leave the next recompile in play mode taking itself for an entry.
+                    SessionState.EraseBool(EnteringPlayModeKey);
+                    Mark("Exited play mode");
+                    break;
             }
         }
 

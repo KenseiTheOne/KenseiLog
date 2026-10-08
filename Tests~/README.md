@@ -32,6 +32,8 @@ Any empty Unity project (2022.3 or newer) will do.
    | `ReadmeSnippets.cs` | `Assets/Editor/` | nothing runs it; it only has to compile |
    | `CompileCheck.cs` | `Assets/Editor/` | reaches the build pipeline |
    | `HoverRepro.cs` | `Assets/Editor/` | only when chasing a stutter; see below |
+| `PlayEntryCheck.cs` | `Assets/Editor/` | reaches editor-only types |
+| `PlayEntryBoot.cs` | `Assets/` | a `RuntimeInitializeOnLoadMethod` for play mode to find, must not live under `Editor` |
 
 ## The checks
 
@@ -40,7 +42,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-348 assertions over everything that does not need a GUI: the ring buffer including gapped and
+352 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -105,6 +107,28 @@ Each regression check names the bug it guards, because the interesting ones were
   goes to JsonUtility and would be slow and silently wrong at once
 - a half surrogate pair, which the encoder turned into U+FFFD
 - a file written by a newer schema, and a file holding a header and nothing else
+
+## Entering play mode
+
+```
+Unity.exe -projectPath <project> -batchmode -nographics \
+          -executeMethod PlayEntryCheck.RunWithDomainReload -logFile <log>
+Unity.exe -projectPath <project> -batchmode -nographics \
+          -executeMethod PlayEntryCheck.RunWithoutDomainReload -logFile <log>
+```
+
+No `-quit`: each enters play mode for real, reads the window once it has, and leaves through
+`Exit` - on its own after a minute if the entry never comes. Prints `PLAYENTRY RESULT: PASS` or
+`FAIL` with what was wrong, and exits non-zero on failure.
+
+It guards **Clear on Play running after the run had begun**, which emptied the window of what
+the run logged from its first frame. `SmokeRunner` cannot see that: the clear, the domain reload
+and `RuntimeInitializeOnLoadMethod` are put in order by the editor, and the fault lived in the
+order. The check looks for the line `PlayEntryBoot` logs before the first scene loads, exactly one
+*Entered play mode* ahead of it, and nothing from before Play was pressed. It switches the
+project's Enter Play Mode Options and Clear on Play to what it needs and leaves them so, which is
+another reason it belongs to a sandbox. On 0.16.1 both modes failed with *what the run logged
+before its first scene is not in the window*.
 
 ## What nothing here checks
 

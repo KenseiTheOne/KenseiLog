@@ -4,6 +4,20 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2] - 2026-10-08
+
+### Fixed
+
+- **Clear on Play** no longer takes the start of the run with it. It cleared on `EnteredPlayMode`,
+  which Unity sends after the run has begun: every `RuntimeInitializeOnLoadMethod` and the first
+  scene's `Awake` and `OnEnable` had logged by then, so the window opened each run without exactly
+  the lines somebody presses Play to see - a startup error first among them. They were in the file
+  and, mirrored, in the Console, and nowhere in the window. It clears when Play is pressed now,
+  before the run begins, and *Entered play mode* is again the first line of the run, with domain
+  reload on or off: written before the reload when there is none, and by the reload when there is,
+  since the window it rebuilds holds nothing from the domain Play was pressed in. Seen in a real
+  editor both ways by the new `Tests~/PlayEntryCheck.cs`, which failed on 0.16.1 and passes now.
+
 ## [0.16.1] - 2026-09-24
 
 ### Fixed

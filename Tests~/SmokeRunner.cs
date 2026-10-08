@@ -71,6 +71,7 @@ public static class SmokeRunner {
         Scenario(SeedingStartsAtTheFileTheWindowWasClearedIn);
         Scenario(AnEditorSessionKeepsEveryFileItFills);
         Scenario(SessionPlanLeavesTheFileToTheEditorProcess);
+        Scenario(TheEntryLineIsWrittenOnTheSideOfTheReloadTheWindowShows);
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
@@ -2083,6 +2084,24 @@ public static class SmokeRunner {
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// Clear on Play now runs before the run begins, and the line marking the entry has to land
+    /// in the window the run is shown in: written before a reload, it goes to a window about to be
+    /// rebuilt without it. The forecast decides which side writes it. The entry itself - the
+    /// clear against what the run logs from its first frame - is <c>PlayEntryCheck</c>'s, since
+    /// only a real one puts them in order.
+    /// </summary>
+    private static void TheEntryLineIsWrittenOnTheSideOfTheReloadTheWindowShows() {
+        Check("with Enter Play Mode Options off, entering reloads",
+            SessionPlan.EnteringPlayModeReloads(false, false));
+        Check("with them off, a skip ticked underneath counts for nothing",
+            SessionPlan.EnteringPlayModeReloads(false, true));
+        Check("with them on and domain reload not skipped, entering reloads",
+            SessionPlan.EnteringPlayModeReloads(true, false));
+        Check("with them on and domain reload skipped, it does not",
+            !SessionPlan.EnteringPlayModeReloads(true, true));
     }
 
     /// <summary>

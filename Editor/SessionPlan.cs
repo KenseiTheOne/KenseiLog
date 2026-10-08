@@ -61,5 +61,20 @@ namespace KenseiLog.Editor {
 
             return new SessionDecision(worthSeeding && seedFrom(rememberedPath), rememberedPath);
         }
+
+        /// <summary>
+        /// Whether entering play mode reloads the domain, which decides which side of the reload
+        /// writes the line marking the entry: one written before it goes to a window that is
+        /// about to be rebuilt without it. No reload only when Enter Play Mode Options are on and
+        /// domain reload is among what they skip.
+        /// <para>
+        /// A forecast, and wrong in one direction only: with domain reload skipped, a script the
+        /// editor has not compiled yet still reloads on the way in. The line is then written on
+        /// both sides - twice in the file, once in the window - which is the cheaper way to be
+        /// wrong than a window with no line at all.
+        /// </para>
+        /// </summary>
+        public static bool EnteringPlayModeReloads(bool enterPlayModeOptionsEnabled, bool domainReloadSkipped) =>
+            !enterPlayModeOptionsEnabled || !domainReloadSkipped;
     }
 }
