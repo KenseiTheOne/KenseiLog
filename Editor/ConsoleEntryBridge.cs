@@ -62,7 +62,7 @@ namespace KenseiLog.Editor {
         /// What Unity knows about the console entry carrying this message: the object it was
         /// logged against, and a source location when the entry has one.
         /// </summary>
-        public static bool TryResolve(string message, out int instanceId, out string file, out int line) {
+        public static bool TryResolve(string message, out long instanceId, out string file, out int line) {
             instanceId = 0;
             file = null;
             line = 0;
@@ -130,7 +130,7 @@ namespace KenseiLog.Editor {
                     into.Add(new ConsoleEntry(
                         message,
                         LevelFromMode(mode),
-                        (int)_instanceIdField.GetValue(args[1]),
+                        ReadInstanceId(args[1]),
                         _fileField?.GetValue(args[1]) as string,
                         _lineField != null ? (int)_lineField.GetValue(args[1]) : 0,
                         mode));
@@ -178,7 +178,7 @@ namespace KenseiLog.Editor {
         public readonly struct ConsoleEntry {
             public readonly string Message;
             public readonly LogLevel Level;
-            public readonly int InstanceId;
+            public readonly long InstanceId;
             public readonly string File;
             public readonly int Line;
 
@@ -189,7 +189,7 @@ namespace KenseiLog.Editor {
             /// </summary>
             public readonly int Mode;
 
-            public ConsoleEntry(string message, LogLevel level, int instanceId, string file, int line, int mode) {
+            public ConsoleEntry(string message, LogLevel level, long instanceId, string file, int line, int mode) {
                 Message = message;
                 Level = level;
                 InstanceId = instanceId;
@@ -247,7 +247,7 @@ namespace KenseiLog.Editor {
                         continue;
                     }
 
-                    int instanceId = (int)_instanceIdField.GetValue(args[1]);
+                    long instanceId = ReadInstanceId(args[1]);
                     string file = _fileField?.GetValue(args[1]) as string;
                     int line = _lineField != null ? (int)_lineField.GetValue(args[1]) : 0;
                     if (instanceId == 0 && string.IsNullOrEmpty(file)) {
@@ -305,7 +305,11 @@ namespace KenseiLog.Editor {
                 _endGettingEntries = entries.GetMethod("EndGettingEntries", statics);
                 _getEntryInternal = entries.GetMethod("GetEntryInternal", statics);
                 _messageField = _entryType.GetField("message", instance);
+#if UNITY_6000_4_OR_NEWER
+                _instanceIdField = _entryType.GetField("entityId", instance);
+#else
                 _instanceIdField = _entryType.GetField("instanceID", instance);
+#endif
 
                 // Optional. Without it the index falls back to the time-based floor above.
                 _getCount = entries.GetMethod("GetCount", statics, null, Type.EmptyTypes, null);
@@ -322,10 +326,22 @@ namespace KenseiLog.Editor {
                              _getEntryInternal != null && _messageField != null && _instanceIdField != null &&
                              _startGettingEntries.ReturnType == typeof(int) &&
                              _getEntryInternal.ReturnType == typeof(bool) &&
+#if UNITY_6000_4_OR_NEWER
+                             _instanceIdField.FieldType == typeof(UnityEngine.EntityId);
+#else
                              _instanceIdField.FieldType == typeof(int);
+#endif
             } catch (Exception) {
                 _available = false;
             }
+        }
+
+        private static long ReadInstanceId(object entry) {
+#if UNITY_6000_4_OR_NEWER
+            return (long)UnityEngine.EntityId.ToULong((UnityEngine.EntityId)_instanceIdField.GetValue(entry));
+#else
+            return (int)_instanceIdField.GetValue(entry);
+#endif
         }
 
         private static string FirstLine(string message) {
@@ -334,11 +350,11 @@ namespace KenseiLog.Editor {
         }
 
         private readonly struct Entry {
-            public readonly int InstanceId;
+            public readonly long InstanceId;
             public readonly string File;
             public readonly int Line;
 
-            public Entry(int instanceId, string file, int line) {
+            public Entry(long instanceId, string file, int line) {
                 InstanceId = instanceId;
                 File = file;
                 Line = line;

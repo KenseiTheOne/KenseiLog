@@ -565,13 +565,17 @@ namespace KenseiLog {
             }
         }
 
-        private static int ResolveContextId(Object context) {
-            // Both the == overload and GetInstanceID reach into native code, so they are only
+        private static long ResolveContextId(Object context) {
+            // Both the == overload and the id lookup reach into native code, so they are only
             // valid where Unity API is. A plain reference check keeps the other paths safe.
             if ((object)context == null || !MayCallUnityApi()) {
                 return 0;
             }
+#if UNITY_6000_4_OR_NEWER
+            return (long)EntityId.ToULong(context.GetEntityId());
+#else
             return context.GetInstanceID();
+#endif
         }
 
         private static int CurrentFrame() {

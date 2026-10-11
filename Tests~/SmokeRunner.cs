@@ -56,6 +56,7 @@ public static class SmokeRunner {
         Scenario(AFileWithOnlyAHeaderStillOpens);
         Scenario(ASessionFileComesBackWholeForSeeding);
         Scenario(TheRelatedObjectComesBackForTheEditorsOwnFileOnly);
+        Scenario(AnIdPastTheIntRangeComesBackWhole);
         Scenario(AWrittenLineReadsBackAsItWasWritten);
         Scenario(ALineFromElsewhereIsReadAsItAlwaysWas);
         Scenario(MemorySinkStoresAndVersions);
@@ -711,10 +712,10 @@ public static class SmokeRunner {
 
         UnityEngine.Debug.LogWarning(message, target);
 
-        bool resolved = ConsoleEntryBridge.TryResolve(message, out int instanceId, out _, out _);
+        bool resolved = ConsoleEntryBridge.TryResolve(message, out long instanceId, out _, out _);
         Check("bridge resolved the entry", resolved);
         Check("bridge returned the object that was logged against",
-            resolved && instanceId == target.GetInstanceID());
+            resolved && instanceId == IdOf(target));
 
         Check("an unknown message resolves to nothing",
             !ConsoleEntryBridge.TryResolve("no such message " + System.Guid.NewGuid().ToString("N"), out _, out _, out _));
@@ -1280,7 +1281,7 @@ public static class SmokeRunner {
         target.name = "KenseiLogContextProbe";
 
         LogRecord against = new LogRecord(1, "Ctx", "logged against an object", LogLevel.Warning, LogChannel.Prod,
-            0.0, 0, null, 0, null, target.GetInstanceID());
+            0.0, 0, null, 0, null, IdOf(target));
         LogRecord alone = Record(2, "Ctx", "logged against nothing", LogLevel.Log, LogChannel.Prod, 0);
 
         StringBuilder plain = new StringBuilder();
@@ -1303,9 +1304,9 @@ public static class SmokeRunner {
         List<LogRecord> seeded = new List<LogRecord>();
         int read = LogSessionReader.ReadForSeeding(path, seeded);
         Check("the editor's own file hands the related object back",
-            read == 2 && seeded[0].ContextInstanceId == target.GetInstanceID());
+            read == 2 && seeded[0].ContextInstanceId == IdOf(target));
         Check("and it is still the object that was logged against",
-            read == 2 && EditorUtility.InstanceIDToObject(seeded[0].ContextInstanceId) == target);
+            read == 2 && ObjectOf(seeded[0].ContextInstanceId) == target);
         Check("a record that had none comes back with none", read == 2 && seeded[1].ContextInstanceId == 0);
 
         bool opened = LogSessionReader.TryRead(path, out LogSession session, out string error);
@@ -1314,6 +1315,33 @@ public static class SmokeRunner {
             opened && session.Buffer.TryGetBySequence(1, out LogRecord back) && back.ContextInstanceId == 0);
 
         UnityEngine.Object.DestroyImmediate(target);
+    }
+
+    /// <summary>
+    /// On Unity 6.4+ the related object is an 8-byte EntityId. The reader held the field to the
+    /// int range like the writer's other numbers and passed a line that did not fit to JsonUtility,
+    /// which wrapped it into an int: after a reload the record pointed at another object or none.
+    /// </summary>
+    private static void AnIdPastTheIntRangeComesBackWhole() {
+        const long wide = 0x1_0000_0001L;
+        LogRecord against = new LogRecord(1, "Ctx", "logged against a wide id", LogLevel.Warning, LogChannel.Prod,
+            0.0, 0, null, 0, null, wide);
+
+        string directory = ScratchDirectory("wide-context");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "log.0001.jsonl");
+
+        StringBuilder builder = new StringBuilder();
+        LogJson.AppendSessionHeader(builder, "sid", "App 1.0", "6000.6", "OSXEditor", "Mac", "2026-10-11T00:00:00Z");
+        builder.Append('\n');
+        LogJson.AppendRecord(builder, in against);
+        builder.Append('\n');
+        File.WriteAllText(path, builder.ToString());
+
+        List<LogRecord> seeded = new List<LogRecord>();
+        int read = LogSessionReader.ReadForSeeding(path, seeded);
+        Check("a record with an id past the int range is read back", read == 1);
+        Check("and its id comes back whole", read == 1 && seeded[0].ContextInstanceId == wide);
     }
 
     /// <summary>
@@ -3071,6 +3099,22 @@ public static class SmokeRunner {
     /// </summary>
     private static void TheRunsFileLeavesDevToTheEditorsOwn() {
         Check("in the editor the run's file takes prod only by default", !LogConfig.Default().FileIncludesDevChannel);
+    }
+
+    private static long IdOf(UnityEngine.Object obj) {
+#if UNITY_6000_4_OR_NEWER
+        return (long)UnityEngine.EntityId.ToULong(obj.GetEntityId());
+#else
+        return obj.GetInstanceID();
+#endif
+    }
+
+    private static UnityEngine.Object ObjectOf(long id) {
+#if UNITY_6000_4_OR_NEWER
+        return EditorUtility.EntityIdToObject(UnityEngine.EntityId.FromULong((ulong)id));
+#else
+        return EditorUtility.InstanceIDToObject((int)id);
+#endif
     }
 
     private static LogRecord Record(long sequence, string tag, string message, LogLevel level, LogChannel channel, int frame, bool captured = false) {

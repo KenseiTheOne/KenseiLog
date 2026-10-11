@@ -1383,11 +1383,11 @@ namespace KenseiLog.Editor {
             // double-click will actually do.
             _sourceButton.SetEnabled(TryGetSourceLocation(in record, out _, out _) || ResolveContextId(in record) != 0);
 
-            int contextId = ResolveContextId(in record);
+            long contextId = ResolveContextId(in record);
 
             // Resolved here rather than on the click, so a button that cannot do anything looks
             // like one instead of reporting the bad news afterwards.
-            bool canPing = contextId != 0 && EditorUtility.InstanceIDToObject(contextId) != null;
+            bool canPing = contextId != 0 && ObjectFromContextId(contextId) != null;
             _pingButton.SetEnabled(canPing);
             _pingButton.tooltip = contextId == 0
                 ? "No related object was recorded, or it did not survive a domain reload."
@@ -1418,12 +1418,12 @@ namespace KenseiLog.Editor {
             // No source to go to. Unity's console opens the asset the engine logged against -
             // the StyleSheet named in a USS warning - so follow it there instead of stopping
             // at "this record has no file".
-            int contextId = ResolveContextId(in record);
+            long contextId = ResolveContextId(in record);
             if (contextId != 0) {
-                if (AssetDatabase.OpenAsset(contextId)) {
+                UnityEngine.Object target = ObjectFromContextId(contextId);
+                if (target != null && AssetDatabase.OpenAsset(target)) {
                     return;
                 }
-                UnityEngine.Object target = EditorUtility.InstanceIDToObject(contextId);
                 if (target != null) {
                     EditorGUIUtility.PingObject(target);
                     return;
@@ -1460,7 +1460,7 @@ namespace KenseiLog.Editor {
         /// absurd once per log line.
         /// </para>
         /// </summary>
-        private int ResolveContextId(in LogRecord record) {
+        private long ResolveContextId(in LogRecord record) {
             if (record.ContextInstanceId != 0) {
                 return record.ContextInstanceId;
             }
@@ -1476,7 +1476,7 @@ namespace KenseiLog.Editor {
             }
 
             ConsoleContext resolved = default;
-            if (ConsoleEntryBridge.TryResolve(record.Message, out int instanceId, out string file, out int line)) {
+            if (ConsoleEntryBridge.TryResolve(record.Message, out long instanceId, out string file, out int line)) {
                 resolved = new ConsoleContext(instanceId, file, line);
             }
             _consoleContexts[record.Sequence] = resolved;
@@ -1484,26 +1484,34 @@ namespace KenseiLog.Editor {
         }
 
         private readonly struct ConsoleContext {
-            public readonly int InstanceId;
+            public readonly long InstanceId;
             public readonly string File;
             public readonly int Line;
 
-            public ConsoleContext(int instanceId, string file, int line) {
+            public ConsoleContext(long instanceId, string file, int line) {
                 InstanceId = instanceId;
                 File = file;
                 Line = line;
             }
         }
 
+        private static UnityEngine.Object ObjectFromContextId(long contextId) {
+#if UNITY_6000_4_OR_NEWER
+            return EditorUtility.EntityIdToObject(EntityId.FromULong((ulong)contextId));
+#else
+            return EditorUtility.InstanceIDToObject((int)contextId);
+#endif
+        }
+
         private void PingSelectedContext() {
             if (!TryGetSelectedRecord(out LogRecord record)) {
                 return;
             }
-            int contextId = ResolveContextId(in record);
+            long contextId = ResolveContextId(in record);
             if (contextId == 0) {
                 return;
             }
-            UnityEngine.Object target = EditorUtility.InstanceIDToObject(contextId);
+            UnityEngine.Object target = ObjectFromContextId(contextId);
             if (target == null) {
                 // A notification, not text appended to the header: the header is structured
                 // metadata, and appending there stacked up one copy of this per click.

@@ -447,7 +447,7 @@ namespace KenseiLog.Editor {
                 // The writer's int fields, as ints: JsonUtility wraps a value past the range
                 // rather than refusing it, and a line holding one is not the writer's anyway.
                 if (at != length || (seen & Always) != Always ||
-                    !FitsInt(frame) || !FitsInt(level) || !FitsInt(channel) || !FitsInt(lineNumber) || !FitsInt(context)) {
+                    !FitsInt(frame) || !FitsInt(level) || !FitsInt(channel) || !FitsInt(lineNumber)) {
                     return false;
                 }
 
@@ -462,7 +462,7 @@ namespace KenseiLog.Editor {
                     string.IsNullOrEmpty(file) ? null : file,
                     (int)lineNumber,
                     string.IsNullOrEmpty(stackTrace) ? null : stackTrace,
-                    fromThisSession ? (int)context : 0,
+                    fromThisSession ? context : 0,
                     captured);
                 return true;
             }
@@ -842,7 +842,7 @@ namespace KenseiLog.Editor {
             public string msg;
             public string file;
             public int ln;
-            public int ctx;
+            public long ctx;
             public string st;
         }
 

@@ -4,6 +4,26 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The package compiles on Unity 6000.6. `Object.GetInstanceID()`, `EditorUtility.InstanceIDToObject`
+  and the implicit `EntityId <-> int` conversions are `[Obsolete(error)]` there (CS0619), and the
+  console entry Unity hands the bridge carries an `entityId` of type `EntityId` instead of an
+  `instanceID` int. On `UNITY_6000_4_OR_NEWER` the related object is now kept as the raw 8 bytes of
+  its `EntityId` (`EntityId.ToULong` / `FromULong`, `EditorUtility.EntityIdToObject`); older editors
+  keep the instance id.
+- The session file reader no longer narrows `ctx` to an int. It held the field to the int range like
+  the writer's other numbers and handed a line that did not fit to JsonUtility, which wrapped it into
+  an int, so on 6000.6 a record read back after a reload pointed at another object or none. A new
+  `SmokeRunner` scenario fails without the fix.
+
+### Changed
+
+- `LogRecord.ContextInstanceId` is a `long` (was `int`), and so is the `instanceId` that
+  `ConsoleEntryBridge.TryResolve` reports. Code that stores the id in an `int` needs the wider type.
+
 ## [0.16.3] - 2026-10-08
 
 ### Fixed

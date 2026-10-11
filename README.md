@@ -328,7 +328,7 @@ int copied = recent.Buffer.CopyNewerThan(watermark, scratch);   // oldest first,
 | `File` | `string` | Call site, or null for a captured record. Absolute in the editor, project-relative in a build |
 | `Line` | `int` | Line at the call site, or 0 |
 | `StackTrace` | `string` | Present on errors when `CaptureStackTraceOnError` is on, and on captured records that came with one |
-| `ContextInstanceId` | `int` | Instance id of the related object, or 0. An id rather than a reference, so a buffered record never keeps a destroyed object alive. Written to the file, but read back only from the editor's own session file — the id means nothing outside the session that issued it |
+| `ContextInstanceId` | `long` | Id of the related object, or 0: the instance id, or on Unity 6.4+ the raw 8 bytes of its `EntityId`. An id rather than a reference, so a buffered record never keeps a destroyed object alive. Written to the file, but read back only from the editor's own session file — the id means nothing outside the session that issued it |
 | `Captured` | `bool` | True when the record came from Unity's log stream rather than through `Log`. A sink that writes back into that stream must skip these, or every message lands twice |
 
 ## Try it
