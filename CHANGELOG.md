@@ -4,6 +4,53 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-10-13
+
+### Added
+
+- A profiler marker, `KenseiLog.BakeBubble`, around the bake.
+
+### Changed
+
+- The collapsed bubble is one prebaked texture drawn with one call, where it was a box, a button,
+  six quads for the marks and three lines of text - fourteen draw calls a frame for a picture that
+  changes a few times a second at most. The counts and marks are baked into the texture in
+  `Update` when they change: a count at most four times a second, a change of colour - the first
+  warning, the first error - at once, and a count that moves without changing what it reads as
+  (`1500` to `1501`, both `1.5k`) not at all. Measured in one session in a macOS development
+  IL2CPP player, the collapsed bubble's IMGUI time is 0.0020 ms a frame against 0.0118 ms in
+  0.18.0 and 0.0290 ms in 0.17.1; it is one draw call above no overlay instead of fourteen, about
+  0.001 ms of render-thread time against 0.015 ms in 0.18.0 and 0.017 ms in 0.17.1, and no garbage
+  a frame, quiet or with a warning logged every frame (0.18.0: 180 and 306 bytes; 0.17.1: 638 and
+  768). A bake took about 0.04 ms on average at scale 4 in a Gamma project and about 0.1 ms in a
+  Linear one, which converts every pixel, at most 0.14 ms; the first one at a new scale, which
+  rasterises the marks, took about 4 ms at scale 4 in a headless editor. The phone the 2.5 ms a
+  frame was measured on with 0.17 has not been measured with this release.
+- The bubble's digits are the package's own, drawn as strokes and baked with the marks, rather
+  than text in the platform's font: the shapes change a little, they are the same on every
+  platform, and the bubble's width no longer depends on the platform's font: its slot is measured
+  from these digits, which makes it a little wider than 0.18's on Windows (166 points against
+  145). Its colours, marks, plate and layout are as before in a Gamma project.
+- The bubble no longer changes shade under a hovering mouse, and darkens while it is pressed. A press
+  on it holds the pointer until the release, so a drag that starts on it does not reach the
+  game's own GUI on the way; a press anywhere else is left alone, as before. A press is let go
+  when the app goes to the background, or, in the editor, when the pointer leaves the Game view. Another mouse button
+  pressed and released in the middle of a drag is not a new press: the drag goes on, and the left
+  release that ends it opens nothing. If the bubble never saw a release, it does not stay stuck:
+  a left press on it starts over, and a press anywhere else lets it go and goes to the game.
+- The counts on the bubble are read in the overlay's `Update`, so a record logged later in a frame
+  shows on the next one.
+
+### Fixed
+
+- In a Linear project the collapsed bubble was washed out to grey: its background, plate and marks
+  already in 0.18, and with the bake its digits too, the dark ones on a plate coming out mid grey. The bake now converts its colours for a Linear
+  project, and the bubble looks there as it does in a Gamma one but for the dark digits on a
+  plate, which come out black rather than near black. The open viewer is unchanged.
+- Closing the viewer drew the bubble for one frame where it was and as it counted when the viewer
+  opened, before the next `Update` caught up - at the old size after a rotation. It is brought up
+  to date as the viewer closes.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added

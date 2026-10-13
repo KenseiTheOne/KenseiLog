@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KenseiLog {
@@ -23,7 +24,8 @@ namespace KenseiLog {
     /// while <see cref="Visible"/> is false, and in <see cref="OverlayBubbleMode.OnProblem"/>
     /// until the first warning or error. The view runs without a Layout pass - nothing here uses
     /// GUILayout - and the screen metrics are read in Update when they change rather than per
-    /// event. Toggling this component's own <c>enabled</c> does not hide anything; use
+    /// event. Collapsed, it draws one texture the bubble is baked into in Update, and nothing
+    /// else. Toggling this component's own <c>enabled</c> does not hide anything; use
     /// <see cref="Visible"/>. GUI.depth is not honoured.
     /// </para>
     /// </summary>
@@ -52,10 +54,23 @@ namespace KenseiLog {
         // Deliberately smaller than ChipGap, so each mark groups with its own number rather than
         // with the chip beside it.
         private const float IconGap = 3f;
-        // The marks are rasterised at this and then resampled to whatever the matrix scale makes
-        // of a fourteen point icon - smaller than the mask on a desktop, larger on a phone.
-        // Sixteen samples a texel and a mip chain, so the edge is already smooth either way.
-        private const int IconTexSize = 32;
+
+        // The bubble is baked into one texture and drawn with one call. A count that changes is
+        // baked again at most this often; a change of colour, or of size, at once. Four times a
+        // second is as fast as anyone reads a number that is changing anyway.
+        private const float BakeInterval = 0.25f;
+        // Any constant will do: it keeps the bubble's control id apart from the game's own.
+        private const int BubbleHint = 0x4B4C4F47;
+
+        // The package's own digits, drawn as strokes rather than taken from a font: the glyphs are
+        // baked into the bubble's texture, and a font cannot be read back into pixels on every
+        // platform - nor is a font's bitmap at this size anything the bubble could not draw itself.
+        // Centre lines in points, y down; every stroke is a capsule GlyphRadius thick each side.
+        private const float GlyphHeight = 7.8f;
+        private const float GlyphRadius = 0.85f;
+        private const float GlyphTracking = 1f;
+        private const float DigitWidth = 4.2f;
+        private const string GlyphChars = "0123456789.kMB+";
 
         private static readonly Color _metaColor = new Color(0.58f, 0.58f, 0.63f);
         private static readonly Color _iconOffColor = new Color(0.58f, 0.58f, 0.63f, 0.5f);
@@ -71,6 +86,13 @@ namespace KenseiLog {
         private static readonly string[] _countShapes = { "999", "9.9k", "999k", "999M", "1B+" };
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
         private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
+        private static readonly Color _panelColor = new Color(0.09f, 0.09f, 0.11f, 0.94f);
+        private static readonly Color _barColor = new Color(0.18f, 0.18f, 0.22f, 0.98f);
+        private static readonly Glyph[] _glyphs = BuildGlyphs();
+        // Measured over every shape Compact can produce, so the layout never moves as counts grow.
+        private static readonly float _digitSlotWidth = WidestCount();
+        private static readonly ProfilerMarker _bakeMarker = new ProfilerMarker("KenseiLog.BakeBubble");
+        private static readonly byte[] _gammaToLinear = GammaToLinearTable();
 
         // How often the safe area is asked for when the screen size has not changed. It moves
         // on its own when a phone rotates between two orientations of the same size, or a
@@ -132,11 +154,44 @@ namespace KenseiLog {
         private long _detailSequence = -1;
         private string _detailBody;
         private readonly string[] _bubbleCounts = new string[3];
+        // What each count was last shown as, as a number standing for the string Compact would
+        // make of it - so that a count which moved without changing what it reads as is not
+        // formatted, and the bubble not baked, for nothing.
+        private readonly long[] _bubbleKeys = { -1L, -1L, -1L };
         // The level whose chip is inverted, or -1 when nothing is worth lighting up for.
         private int _bubbleAccent = -1;
         private bool _bubbleDirty = true;
-        private float _digitSlot;
-        private float _bubbleWidth;
+        private readonly float _digitSlot = _digitSlotWidth;
+        private readonly float _bubbleWidth = BubblePad * 2f + ChipGap * 2f + (IconSize + IconGap + _digitSlotWidth) * 3f;
+
+        // The collapsed bubble, baked. _bubblePx is where it goes on the screen, in pixels, worked
+        // out in Update and when it is dragged rather than per event.
+        private Texture2D _bubbleTex;
+        private Color32[] _bubblePixels;
+        // The bubble without its digits, for the accent and set of empty counts in _baseKey.
+        private Color32[] _bubbleBase;
+        private int _baseKey = int.MinValue;
+        private int _bubbleTexWidth;
+        private int _bubbleTexHeight;
+        private Rect _bubblePx;
+        private bool _bubbleTexDirty = true;
+        private int _bakedAccent = int.MinValue;
+        private float _lastBake = float.NegativeInfinity;
+        private bool _bubbleLive;
+        private bool _viewOn;
+        // Coverage masks for the marks and the digits, rasterised for one scale and kept.
+        private float _maskScale = -1f;
+        private readonly Mask[] _iconMasks = new Mask[3];
+        private readonly Mask[] _glyphMasks = new Mask[GlyphChars.Length];
+        private Vector2 _pressPixel;
+        // The control id that holds hotControl for the bubble, or 0.
+        private int _bubbleControl;
+        // The mouse button whose press holds the bubble; only its release ends the press.
+        private int _bubbleButton;
+        // Test hook: how many times the bubble was baked.
+        internal int BubbleBakes;
+        // Checks only: bakes as for this colour space instead of the project's.
+        internal bool? LinearForChecks;
         private readonly string[] _levelLabels = new string[3];
         private bool _levelLabelsDirty = true;
         private bool _tagRowsDirty;
@@ -155,15 +210,12 @@ namespace KenseiLog {
         private GUIStyle _detail;
         private GUIStyle _meta;
         private GUIStyle _notice;
-        private GUIStyle _count;
         private GUIStyle _counter;
         private Texture2D _panelTex;
         private Texture2D _paneTex;
         private Texture2D _rowTex;
         private Texture2D _barTex;
         private Texture2D _chipTex;
-        private Texture2D _warningIconTex;
-        private Texture2D _errorIconTex;
 
         private LogOverlay() {
             _index = new LogIndex(_filter);
@@ -231,6 +283,7 @@ namespace KenseiLog {
             // after this frame's Update would otherwise draw once before its first look at them.
             RefreshScreenMetrics();
             ApplyViewState();
+            PrepareBubble();
         }
 
         /// <summary>
@@ -372,6 +425,9 @@ namespace KenseiLog {
             }
             _open = value;
             _viewDirty = true;
+            // A press the bubble was holding ends with it: opened from code mid-press, the panel
+            // would otherwise draw under a hotControl nothing is going to let go of.
+            ReleaseBubblePointer();
             if (value) {
                 if (!_listBuilt) {
                     RebuildVisible();
@@ -379,6 +435,10 @@ namespace KenseiLog {
             } else {
                 _visible.Clear();
                 _listBuilt = false;
+                // Closed from the panel's own Close, the Repaint of this same frame is the
+                // bubble's, before any Update: brought up to date here, it is not drawn for that
+                // frame from where it was and what it counted when the panel opened.
+                PrepareBubble();
             }
         }
 
@@ -396,6 +456,29 @@ namespace KenseiLog {
             }
             if (_viewDirty) {
                 ApplyViewState();
+            }
+
+            PrepareBubble();
+        }
+
+        /// <summary>
+        /// Keeps the baked bubble and its place on the screen up to date while it is the thing on
+        /// the screen, and does nothing otherwise: hidden, asleep or open, there is no bubble to
+        /// bake. Coming back, it is baked at once if anything changed while it was away.
+        /// </summary>
+        private void PrepareBubble() {
+            if (_open || !_viewOn || _sink == null) {
+                _bubbleLive = false;
+                return;
+            }
+            UpdateBubble(Time.unscaledTime, !_bubbleLive);
+            _bubbleLive = true;
+        }
+
+        private void OnApplicationPause(bool paused) {
+            // A finger on the bubble when the app goes to the background never sends its MouseUp.
+            if (paused) {
+                ReleaseBubblePointer();
             }
         }
 
@@ -416,6 +499,11 @@ namespace KenseiLog {
             bool want = shown && (_open || _bubbleMode == OverlayBubbleMode.Always || HasProblem());
             if (_view != null && _view.enabled != want) {
                 _view.enabled = want;
+            }
+            _viewOn = want && _view != null;
+            if (!_viewOn) {
+                // A disabled view gets no MouseUp, and a hotControl left set blocks the game's own GUI.
+                ReleaseBubblePointer();
             }
         }
 
@@ -468,8 +556,7 @@ namespace KenseiLog {
             DestroyTexture(ref _rowTex);
             DestroyTexture(ref _barTex);
             DestroyTexture(ref _chipTex);
-            DestroyTexture(ref _warningIconTex);
-            DestroyTexture(ref _errorIconTex);
+            DestroyTexture(ref _bubbleTex);
         }
 
         // =====================================================================
@@ -636,8 +723,14 @@ namespace KenseiLog {
             // smaller view until play resumed. Editor only - a player never repaints unpaused.
             if (UnityEditor.EditorApplication.isPaused && Event.current.type == EventType.Repaint) {
                 RefreshScreenMetrics();
+                PrepareBubble();
             }
 #endif
+
+            if (!_open) {
+                DrawCollapsed();
+                return;
+            }
 
             EnsureStyles();
 
@@ -659,11 +752,7 @@ namespace KenseiLog {
 
             TrackDrag();
 
-            if (_open) {
-                DrawPanel(width, height);
-            } else {
-                DrawBubble(width, height);
-            }
+            DrawPanel(width, height);
 
             GUI.matrix = previous;
         }
@@ -683,55 +772,197 @@ namespace KenseiLog {
             }
         }
 
-        private void DrawBubble(float width, float height) {
-            // Rebuilt when a record arrives rather than per pass: this is the state the overlay
-            // is in for almost all of a session, and the view draws it every frame.
+        /// <summary>
+        /// The collapsed bubble: one prebaked texture in screen pixels, and the pointer.
+        /// <para>
+        /// No style, no matrix, no label and no button. The bubble is what the overlay draws for
+        /// almost the whole of a session, and drawn from IMGUI parts it was fourteen draw calls a
+        /// frame - a box, a button, six quads for the marks and three lines of text through the
+        /// text engine - for a picture that changes a few times a second at most. The picture is
+        /// baked in Update when it changes (<see cref="BakeBubble"/>), and this draws it.
+        /// </para>
+        /// <para>
+        /// The control id is asked for first and on every event, so it is the same id from one
+        /// event to the next whatever else happens on the frame.
+        /// </para>
+        /// </summary>
+        private void DrawCollapsed() {
+            int id = GUIUtility.GetControlID(BubbleHint, FocusType.Passive);
+            Event current = Event.current;
+            EventType type = current.type;
+            switch (type) {
+                case EventType.Repaint:
+                    if (_bubbleTex == null) {
+                        return;
+                    }
+                    if (GUIUtility.hotControl == id) {
+                        // The only feedback a press gets now that there is no button to light up.
+                        Color was = GUI.color;
+                        GUI.color = new Color(was.r * 0.85f, was.g * 0.85f, was.b * 0.85f, was.a);
+                        GUI.DrawTexture(_bubblePx, _bubbleTex);
+                        GUI.color = was;
+                    } else {
+                        GUI.DrawTexture(_bubblePx, _bubbleTex);
+                    }
+                    return;
+                case EventType.MouseDown:
+                case EventType.MouseDrag:
+                case EventType.MouseUp:
+                    if (BubblePointer(type, current.button, current.mousePosition, _bubblePx, _scale, id)) {
+                        current.Use();
+                    }
+                    return;
+                case EventType.MouseLeaveWindow:
+                    ReleaseBubblePointer();
+                    return;
+                default:
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// One pointer event on the collapsed bubble, and whether it was the bubble's to use up: it
+        /// was when the bubble held the pointer before it or took it with it. A press anywhere
+        /// else belongs to the game, whose own GUI is drawn after this and never sees an event
+        /// that was used.
+        /// </summary>
+        internal bool BubblePointer(EventType type, int button, Vector2 position, Rect pixelRect, float scale, int id) {
+            bool held = GUIUtility.hotControl == id;
+            HandleBubblePointer(type, button, position, pixelRect, scale, id);
+            // A press is the bubble's only if it holds the pointer after it: one that missed let a
+            // lost press go and belongs to the game.
+            return (held && type != EventType.MouseDown) || GUIUtility.hotControl == id;
+        }
+
+        /// <summary>What a pointer event did to the bubble.</summary>
+        internal enum BubbleAction {
+            None,
+            Moved,
+            Opened
+        }
+
+        /// <summary>
+        /// One pointer event on the collapsed bubble, in screen pixels, without Event.current - so
+        /// that the checks can drive it.
+        /// <para>
+        /// A press on the bubble takes hotControl, so the drag and the release come back here
+        /// wherever the finger goes; a press anywhere else is left alone. The meaning of the
+        /// gesture is still <see cref="BubbleGesture"/>'s: a tap opens the viewer, a drag past the
+        /// threshold moves the bubble and opens nothing, and a press that is let go off the bubble
+        /// opens nothing either. The threshold is the rows' six points, in pixels at this scale.
+        /// </para>
+        /// <para>
+        /// While the bubble holds the pointer, a second button going down on it is not a new press:
+        /// it would forget the drag in progress, and the left release after it would open the
+        /// viewer. A left press on it while held still starts over, as the press whose release was
+        /// lost, and a press of any button off it lets that press go and is left to the game. Only
+        /// the release of the button that pressed ends the press.
+        /// </para>
+        /// </summary>
+        internal BubbleAction HandleBubblePointer(EventType type, int button, Vector2 position, Rect pixelRect, float scale, int id) {
+            switch (type) {
+                case EventType.MouseDown: {
+                    bool hit = pixelRect.Contains(position);
+                    if (id != 0 && GUIUtility.hotControl == id) {
+                        if (!hit) {
+                            // The release of the press that is held was lost; this press is the game's.
+                            ReleaseBubblePointer();
+                            return BubbleAction.None;
+                        }
+                        if (button != 0) {
+                            return BubbleAction.None;
+                        }
+                    }
+                    _bubbleGesture.Press(hit, _bubble);
+                    if (hit) {
+                        _pressPixel = position;
+                        _bubbleButton = button;
+                        GUIUtility.hotControl = id;
+                        _bubbleControl = id;
+                    }
+                    return BubbleAction.None;
+                }
+                case EventType.MouseDrag: {
+                    if (GUIUtility.hotControl != id || id == 0) {
+                        return BubbleAction.None;
+                    }
+                    Vector2 travel = position - _pressPixel;
+                    bool past = travel.sqrMagnitude > DragThresholdSquared * scale * scale;
+                    if (!_bubbleGesture.TryDrag(past, travel / scale, out Vector2 moved)) {
+                        return BubbleAction.None;
+                    }
+                    _bubble = moved;
+                    PlaceBubble(scale);
+                    return BubbleAction.Moved;
+                }
+                case EventType.MouseUp: {
+                    if (GUIUtility.hotControl != id || id == 0 || button != _bubbleButton) {
+                        return BubbleAction.None;
+                    }
+                    GUIUtility.hotControl = 0;
+                    _bubbleControl = 0;
+                    bool opens = _bubbleGesture.Opens(pixelRect.Contains(position));
+                    _bubbleGesture.Release();
+                    if (!opens) {
+                        return BubbleAction.None;
+                    }
+                    // After the release rather than inside it, so the frame is drawn from one state.
+                    SetOpen(true);
+                    return BubbleAction.Opened;
+                }
+                default:
+                    return BubbleAction.None;
+            }
+        }
+
+        /// <summary>Ends a press on the bubble that will not see its MouseUp.</summary>
+        private void ReleaseBubblePointer() {
+            _bubbleGesture.Release();
+            if (_bubbleControl != 0 && GUIUtility.hotControl == _bubbleControl) {
+                GUIUtility.hotControl = 0;
+            }
+            _bubbleControl = 0;
+        }
+
+        /// <summary>
+        /// Keeps the bubble inside the safe area and works out where that is in pixels. Whole
+        /// pixels, and the texture's own size, so each texel lands on one pixel and the strokes
+        /// stay as sharp as they were baked.
+        /// </summary>
+        private void PlaceBubble(float scale) {
+            Rect safe = _safe;
+            _bubble.x = Mathf.Clamp(_bubble.x, 0f, Mathf.Max(0f, safe.width / scale - _bubbleWidth));
+            _bubble.y = Mathf.Clamp(_bubble.y, 0f, Mathf.Max(0f, safe.height / scale - BubbleHeight));
+            float width = _bubbleTexWidth > 0 ? _bubbleTexWidth : Mathf.Ceil(_bubbleWidth * scale);
+            float height = _bubbleTexHeight > 0 ? _bubbleTexHeight : Mathf.Ceil(BubbleHeight * scale);
+            _bubblePx = new Rect(
+                Mathf.Round(safe.xMin + _bubble.x * scale),
+                Mathf.Round(_screenHeight - safe.yMax + _bubble.y * scale),
+                width, height);
+        }
+
+        /// <summary>
+        /// Brings the counts up to date and bakes the bubble when it has to be: at once when there
+        /// is no texture yet, its size changed, the accent moved - the colour is the signal - or
+        /// <paramref name="urgent"/> asks and something is waiting; otherwise a changed count waits
+        /// until <see cref="BakeInterval"/> has passed since the last bake. Takes the time as an
+        /// argument so that the checks can hand it one.
+        /// </summary>
+        internal void UpdateBubble(float now, bool urgent) {
             if (_bubbleDirty) {
                 RebuildBubble();
             }
 
-            _bubble.x = Mathf.Clamp(_bubble.x, 0f, Mathf.Max(0f, width - _bubbleWidth));
-            _bubble.y = Mathf.Clamp(_bubble.y, 0f, Mathf.Max(0f, height - BubbleHeight));
-
-            Rect rect = new Rect(_bubble.x, _bubble.y, _bubbleWidth, BubbleHeight);
-            Event current = Event.current;
-            // Read before GUI.Button, which consumes the MouseUp it answers: a reset keyed on
-            // the type afterwards never ran, and one drag left the bubble unopenable for good.
-            EventType type = current.type;
-
-            if (type == EventType.MouseDown) {
-                _bubbleGesture.Press(rect.Contains(current.mousePosition), _bubble);
+            float scale = _scale;
+            int width = Mathf.CeilToInt(_bubbleWidth * scale);
+            int height = Mathf.CeilToInt(BubbleHeight * scale);
+            bool bakeNow = _bubbleTex == null || width != _bubbleTexWidth || height != _bubbleTexHeight ||
+                        _bubbleAccent != _bakedAccent || (urgent && _bubbleTexDirty);
+            if (bakeNow || (_bubbleTexDirty && (now - _lastBake >= BakeInterval || now < _lastBake))) {
+                BakeBubble();
+                _lastBake = now;
             }
-
-            // _didDrag carries the same threshold the rows use. Without it any movement at all
-            // began a drag, and a finger never lands without a pixel or two of travel.
-            if (type == EventType.MouseDrag &&
-                _bubbleGesture.TryDrag(_didDrag, current.mousePosition - _pressPosition, out Vector2 dragged)) {
-                _bubble = dragged;
-                current.Use();
-                return;
-            }
-
-            GUI.Box(rect, GUIContent.none, _panel);
-
-            // The whole bubble is one control, drawn before the chips so that they sit on top of
-            // it, and its answer acted on after they are drawn rather than inside the call:
-            // SetOpen swaps the overlay to its open state, and doing that half way through
-            // drawing the collapsed one would leave a frame drawn from two different states.
-            bool tapped = _bubbleGesture.Opens(GUI.Button(rect, GUIContent.none, _button));
-
-            float x = rect.x + BubblePad;
-            for (int i = 0; i < _levelOrder.Length; i++) {
-                DrawChip(x, rect.y, (int)_levelOrder[i]);
-                x += IconSize + IconGap + _digitSlot + ChipGap;
-            }
-
-            if (tapped) {
-                SetOpen(true);
-            }
-            if (type == EventType.MouseUp) {
-                _bubbleGesture.Release();
-            }
+            PlaceBubble(scale);
         }
 
         /// <summary>
@@ -763,71 +994,274 @@ namespace KenseiLog {
             return "1B+";
         }
 
+        /// <summary>
+        /// A number that is the same for two counts exactly when <see cref="Compact"/> makes the
+        /// same string of them, worked out without making one. The bubble asks it every time a
+        /// record arrives, and formatting a string to find it unchanged was garbage on every frame
+        /// a game logs.
+        /// </summary>
+        private static long CompactKey(long count) {
+            if (count < 1000L) {
+                return count;
+            }
+            if (count < 10000L) {
+                return 1000000L + count / 100L;
+            }
+            if (count < 1000000L) {
+                return 2000000L + count / 1000L;
+            }
+            if (count < 1000000000L) {
+                return 3000000L + count / 1000000L;
+            }
+            return 4000000L;
+        }
+
+        /// <summary>
+        /// Reads the counts into the bubble's strings. A string is made only when what it reads as
+        /// changes, and only then is the bubble marked for baking: a count going from 1500 to 1501
+        /// still reads 1.5k, and baking it again would change no pixel.
+        /// </summary>
         private void RebuildBubble() {
-            _bubbleAccent = -1;
+            int accent = -1;
             for (int level = 2; level >= 0; level--) {
                 long count = _sink.LevelCount((LogLevel)level);
-                _bubbleCounts[level] = count == 0L ? null : Compact(count);
+                long key = count == 0L ? -1L : CompactKey(count);
+                if (key != _bubbleKeys[level]) {
+                    _bubbleKeys[level] = key;
+                    _bubbleCounts[level] = count == 0L ? null : Compact(count);
+                    _bubbleTexDirty = true;
+                }
 
                 // Only a warning or an error is worth lighting up for. A badge that brightens
                 // because the game logged at all is the panel nobody asked for.
-                if (_bubbleAccent < 0 && count > 0 && level > (int)LogLevel.Log) {
-                    _bubbleAccent = level;
+                if (accent < 0 && count > 0 && level > (int)LogLevel.Log) {
+                    accent = level;
                 }
             }
+            _bubbleAccent = accent;
             _bubbleDirty = false;
         }
 
         /// <summary>
-        /// One level's mark and count. A level with nothing to report keeps its place and loses
-        /// its digits, so the layout never moves; the worst level present is drawn inverted - its
-        /// own colour as a plate with the mark and digits knocked out of it - which is the part
-        /// the corner of the eye picks up without reading anything.
+        /// Paints the bubble into its texture: the background it has always shown, then for each
+        /// level its mark and count. A level with nothing to report keeps its place and loses its
+        /// digits, so the layout never moves; the worst level present is drawn inverted - its own
+        /// colour as a plate with the mark and digits knocked out of it - which is the part the
+        /// corner of the eye picks up without reading anything.
+        /// <para>
+        /// The marks and digits come from coverage masks rasterised once per scale, so a bake is
+        /// a fill and a few small blends, in Update, a few times a second at most. The texture is
+        /// made again only when its size changes.
+        /// </para>
         /// </summary>
-        private void DrawChip(float x, float y, int level) {
-            bool accent = _bubbleAccent == level;
+        internal void BakeBubble() {
+            using (_bakeMarker.Auto()) {
+                float scale = _scale;
+                EnsureMasks(scale);
+
+                int width = Mathf.CeilToInt(_bubbleWidth * scale);
+                int height = Mathf.CeilToInt(BubbleHeight * scale);
+                if (_bubbleTex == null || width != _bubbleTexWidth || height != _bubbleTexHeight) {
+                    DestroyTexture(ref _bubbleTex);
+                    _bubbleTex = new Texture2D(width, height, TextureFormat.RGBA32, false, false) {
+                        name = "KenseiLog Bubble",
+                        hideFlags = HideFlags.HideAndDontSave,
+                        wrapMode = TextureWrapMode.Clamp,
+                        filterMode = FilterMode.Bilinear
+                    };
+                    _bubbleTexWidth = width;
+                    _bubbleTexHeight = height;
+                    _bubblePixels = new Color32[width * height];
+                    _bubbleBase = new Color32[width * height];
+                    _baseKey = int.MinValue;
+                }
+
+                // Everything but the digits changes only with the accent or a count coming or going
+                // from zero, so it is painted once for each of those and copied in after that.
+                int baseKey = (_bubbleAccent + 1) * 8 + (_bubbleCounts[0] == null ? 1 : 0) +
+                              (_bubbleCounts[1] == null ? 2 : 0) + (_bubbleCounts[2] == null ? 4 : 0);
+                Color32[] pixels = _bubblePixels;
+                if (baseKey != _baseKey) {
+                    // What the screen showed until 0.19: the button's face over the panel's box.
+                    Color32 background = Over(_barColor, _panelColor);
+                    for (int i = 0; i < pixels.Length; i++) {
+                        pixels[i] = background;
+                    }
+                    float at = BubblePad;
+                    for (int i = 0; i < _levelOrder.Length; i++) {
+                        BakeChipBase(at, (int)_levelOrder[i], scale);
+                        at += IconSize + IconGap + _digitSlot + ChipGap;
+                    }
+                    Array.Copy(pixels, _bubbleBase, pixels.Length);
+                    _baseKey = baseKey;
+                } else {
+                    Array.Copy(_bubbleBase, pixels, pixels.Length);
+                }
+
+                float x = BubblePad;
+                for (int i = 0; i < _levelOrder.Length; i++) {
+                    BakeChipDigits(x, (int)_levelOrder[i], scale);
+                    x += IconSize + IconGap + _digitSlot + ChipGap;
+                }
+
+                // IMGUI draws this texture as if it held linear values, and in a Linear project the
+                // frame is encoded to sRGB on the way out: gamma colours written as they are came
+                // out washed to grey, digits and plate both. TextCore converts its colours itself,
+                // which is why the 0.18 digits did not show it. Baked here in gamma, as blended,
+                // and converted at the end, so a Gamma project gets the same bytes as before.
+                if (LinearForChecks ?? QualitySettings.activeColorSpace == ColorSpace.Linear) {
+                    byte[] table = _gammaToLinear;
+                    for (int i = 0; i < pixels.Length; i++) {
+                        Color32 c = pixels[i];
+                        pixels[i] = new Color32(table[c.r], table[c.g], table[c.b], c.a);
+                    }
+                }
+
+                _bubbleTex.SetPixels32(pixels);
+                _bubbleTex.Apply(false);
+                _bubbleTexDirty = false;
+                _bakedAccent = _bubbleAccent;
+                BubbleBakes++;
+            }
+        }
+
+        private Color ChipInk(int level) {
+            if (_bubbleAccent == level) {
+                return _invertedInk;
+            }
+            return _bubbleCounts[level] == null ? _iconOffColor : LevelColor((LogLevel)level);
+        }
+
+        /// <summary>A chip's plate, when it has one, and its mark.</summary>
+        private void BakeChipBase(float x, int level, float scale) {
+            if (_bubbleAccent == level) {
+                // On whole pixels, so the plate has the hard edges it had when IMGUI drew it as a
+                // box, rather than a column of half colour wherever a scale leaves it fractional.
+                float chipWidth = IconSize + IconGap + _digitSlot;
+                FillRect(Mathf.Round((x - 4f) * scale), Mathf.Round(4f * scale),
+                    Mathf.Round((x + chipWidth + 4f) * scale), Mathf.Round((BubbleHeight - 4f) * scale),
+                    LevelColor((LogLevel)level));
+            }
+            BlendMask(_iconMasks[level], Mathf.RoundToInt(x * scale),
+                Mathf.RoundToInt((BubbleHeight - IconSize) * 0.5f * scale), ChipInk(level));
+        }
+
+        private void BakeChipDigits(float x, int level, float scale) {
             string count = _bubbleCounts[level];
-            float chipWidth = IconSize + IconGap + _digitSlot;
-
-            if (accent) {
-                GUI.color = LevelColor((LogLevel)level);
-                GUI.DrawTexture(new Rect(x - 4f, y + 4f, chipWidth + 8f, BubbleHeight - 8f), _chipTex);
+            if (count == null) {
+                return;
             }
-
-            GUI.color = accent ? _invertedInk : count == null ? _iconOffColor : LevelColor((LogLevel)level);
-            DrawIcon(x, y + (BubbleHeight - IconSize) * 0.5f, level);
-
-            if (count != null) {
-                GUI.Label(new Rect(x + IconSize + IconGap, y, _digitSlot, BubbleHeight), count, _count);
+            Color ink = ChipInk(level);
+            // Each glyph starts on a whole pixel, rounded down so that the last one never reaches
+            // past the slot; the masks carry a pixel of margin, hence the one taken off.
+            float pen = x + IconSize + IconGap;
+            int top = Mathf.RoundToInt((BubbleHeight * 0.5f - GlyphHeight * 0.5f - GlyphRadius) * scale) - 1;
+            for (int i = 0; i < count.Length; i++) {
+                int glyph = GlyphChars.IndexOf(count[i]);
+                if (glyph < 0) {
+                    continue;
+                }
+                if (_glyphMasks[glyph].Coverage == null) {
+                    _glyphMasks[glyph] = GlyphMask(glyph, scale);
+                }
+                BlendMask(_glyphMasks[glyph], Mathf.FloorToInt(pen * scale) - 1, top, ink);
+                pen += _glyphs[glyph].Advance;
             }
-            GUI.color = Color.white;
         }
 
         /// <summary>
-        /// The three marks, told apart by silhouette before colour: a round badge holding an
-        /// exclamation for an error, a solid triangle for a warning, horizontal lines for a log.
-        /// Round against pointed against level is a distinction that survives a colour-blind
-        /// reader, a screen in sunlight, and a screenshot pasted into a report in greyscale -
-        /// which is the state the two coloured chips arrive in most often.
+        /// A solid rectangle, in pixels y down, with its edges covered by the fraction of each
+        /// pixel they cross; the plate passes whole pixels, so it has none.
         /// </summary>
-        private void DrawIcon(float x, float y, int level) {
-            if (level == (int)LogLevel.Error) {
-                GUI.DrawTexture(new Rect(x, y, IconSize, IconSize), _errorIconTex);
-                return;
+        private void FillRect(float left, float top, float right, float bottom, Color color) {
+            int x0 = Mathf.Max(0, Mathf.FloorToInt(left));
+            int x1 = Mathf.Min(_bubbleTexWidth, Mathf.CeilToInt(right));
+            int y0 = Mathf.Max(0, Mathf.FloorToInt(top));
+            int y1 = Mathf.Min(_bubbleTexHeight, Mathf.CeilToInt(bottom));
+            for (int y = y0; y < y1; y++) {
+                float cy = Mathf.Min(y + 1f, bottom) - Mathf.Max(y, top);
+                for (int x = x0; x < x1; x++) {
+                    float cx = Mathf.Min(x + 1f, right) - Mathf.Max(x, left);
+                    Blend(x, y, color, Mathf.Clamp01(cx) * Mathf.Clamp01(cy));
+                }
             }
-            if (level == (int)LogLevel.Warning) {
-                GUI.DrawTexture(new Rect(x, y, IconSize, IconSize), _warningIconTex);
-                return;
-            }
+        }
 
-            // Drawn as quads rather than rasterised like the other two: a two point line baked
-            // into a mask resamples into a grey smear at this size, while a stretched quad keeps
-            // its edge at every scale.
-            float bar = IconSize * 0.17f;
-            float step = IconSize * 0.3f;
-            float top = y + (IconSize - (bar + step * 2f)) * 0.5f;
-            for (int i = 0; i < _logBarWidths.Length; i++) {
-                GUI.DrawTexture(new Rect(x, top + step * i, IconSize * _logBarWidths[i], bar), _chipTex);
+        private void BlendMask(Mask mask, int left, int top, Color ink) {
+            if (mask.Coverage == null) {
+                return;
+            }
+            for (int y = 0; y < mask.Height; y++) {
+                int py = top + y;
+                if (py < 0 || py >= _bubbleTexHeight) {
+                    continue;
+                }
+                for (int x = 0; x < mask.Width; x++) {
+                    float coverage = mask.Coverage[y * mask.Width + x];
+                    int px = left + x;
+                    if (coverage > 0f && px >= 0 && px < _bubbleTexWidth) {
+                        Blend(px, py, ink, coverage);
+                    }
+                }
+            }
+        }
+
+        /// <summary>Lays a colour over one pixel, y counted down from the top as on the screen.</summary>
+        private void Blend(int x, int y, Color color, float coverage) {
+            int index = (_bubbleTexHeight - 1 - y) * _bubbleTexWidth + x;
+            Color32 under = _bubblePixels[index];
+            float a = coverage * color.a;
+            if (a <= 0f) {
+                return;
+            }
+            under.r = (byte)(under.r + (color.r * 255f - under.r) * a + 0.5f);
+            under.g = (byte)(under.g + (color.g * 255f - under.g) * a + 0.5f);
+            under.b = (byte)(under.b + (color.b * 255f - under.b) * a + 0.5f);
+            _bubblePixels[index] = under;
+        }
+
+        private static byte[] GammaToLinearTable() {
+            byte[] table = new byte[256];
+            // The sRGB curve, worked out here rather than through Mathf.GammaToLinearSpace: this
+            // runs whenever the type is first touched, and Visible may do that from any thread.
+            for (int i = 0; i < 256; i++) {
+                double c = i / 255.0;
+                double linear = c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+                table[i] = (byte)(linear * 255.0 + 0.5);
+            }
+            return table;
+        }
+
+        private static Color32 Over(Color top, Color bottom) {
+            float alpha = top.a + bottom.a * (1f - top.a);
+            if (alpha <= 0f) {
+                return new Color32(0, 0, 0, 0);
+            }
+            float under = bottom.a * (1f - top.a);
+            return new Color(
+                (top.r * top.a + bottom.r * under) / alpha,
+                (top.g * top.a + bottom.g * under) / alpha,
+                (top.b * top.a + bottom.b * under) / alpha,
+                alpha);
+        }
+
+        /// <summary>
+        /// Rasterises the three marks for this scale and forgets the glyphs of the last one, once
+        /// per scale: a phone's scale does not change, and a desktop's changes with the window.
+        /// </summary>
+        private void EnsureMasks(float scale) {
+            if (_maskScale == scale) {
+                return;
+            }
+            _maskScale = scale;
+            _baseKey = int.MinValue;
+            int icon = Mathf.Max(1, Mathf.RoundToInt(IconSize * scale));
+            _iconMasks[(int)LogLevel.Log] = SupersampledMask(icon, InLogBars);
+            _iconMasks[(int)LogLevel.Warning] = SupersampledMask(icon, InTriangle);
+            _iconMasks[(int)LogLevel.Error] = SupersampledMask(icon, InErrorBadge);
+            // The glyphs are rasterised when a count first needs them: most runs never show an M.
+            for (int i = 0; i < GlyphChars.Length; i++) {
+                _glyphMasks[i] = default;
             }
         }
 
@@ -1172,9 +1606,9 @@ namespace KenseiLog {
                 return;
             }
 
-            _panelTex = SolidTexture(new Color(0.09f, 0.09f, 0.11f, 0.94f));
+            _panelTex = SolidTexture(_panelColor);
             _paneTex = SolidTexture(new Color(0.12f, 0.12f, 0.15f, 1f));
-            _barTex = SolidTexture(new Color(0.18f, 0.18f, 0.22f, 0.98f));
+            _barTex = SolidTexture(_barColor);
             _rowTex = SolidTexture(new Color(0f, 0f, 0f, 0f));
             _chipTex = SolidTexture(Color.white);
 
@@ -1211,63 +1645,53 @@ namespace KenseiLog {
                 alignment = TextAnchor.MiddleRight,
                 padding = new RectOffset(0, 0, 0, 0)
             };
-
-            _count = new GUIStyle(_row) {
-                fontSize = 13,
-                fontStyle = FontStyle.Bold,
-                // _row pads four points at each side, which would inflate every width measured
-                // from this style and push the digits away from the mark they belong to.
-                padding = new RectOffset(0, 0, 0, 0)
-            };
-
-            _warningIconTex = MaskTexture(InTriangle);
-            _errorIconTex = MaskTexture(InErrorBadge);
-
-            // Measured over every shape Compact can produce rather than guessed: the widest of
-            // them is not the same string on every platform, because the font is not either.
-            _digitSlot = 0f;
-            for (int i = 0; i < _countShapes.Length; i++) {
-                _digitSlot = Mathf.Max(_digitSlot, _count.CalcSize(new GUIContent(_countShapes[i])).x);
-            }
-            _bubbleWidth = BubblePad * 2f + ChipGap * 2f + (IconSize + IconGap + _digitSlot) * 3f;
         }
 
         /// <summary>
-        /// Rasterises a shape into a mask: white throughout, with coverage in the alpha.
+        /// Rasterises a shape into a coverage mask of size by size pixels, sixteen samples a pixel.
         /// <para>
         /// Built here rather than shipped, because the package ships no assets - turning the flag
         /// on is the whole installation - and drawn rather than typed, because a character like a
         /// warning sign is not in every font a player build falls back to, and a glyph that is
         /// missing on the device is a box on the screen that nothing in the editor would show.
+        /// Rasterised at the size it is shown at, so nothing resamples it afterwards.
         /// </para>
         /// </summary>
-        private static Texture2D MaskTexture(Func<float, float, bool> inside) {
-            Texture2D texture = new Texture2D(IconTexSize, IconTexSize, TextureFormat.RGBA32, true) {
-                hideFlags = HideFlags.HideAndDontSave,
-                wrapMode = TextureWrapMode.Clamp
-            };
-
-            Color[] pixels = new Color[IconTexSize * IconTexSize];
-            for (int y = 0; y < IconTexSize; y++) {
-                for (int x = 0; x < IconTexSize; x++) {
+        private static Mask SupersampledMask(int size, Func<float, float, bool> inside) {
+            float[] coverage = new float[size * size];
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
                     int hits = 0;
                     for (int sy = 0; sy < 4; sy++) {
                         for (int sx = 0; sx < 4; sx++) {
-                            float u = (x + (sx + 0.5f) * 0.25f) / IconTexSize;
-                            float v = (y + (sy + 0.5f) * 0.25f) / IconTexSize;
+                            float u = (x + (sx + 0.5f) * 0.25f) / size;
+                            float v = (y + (sy + 0.5f) * 0.25f) / size;
                             if (inside(u, v)) {
                                 hits++;
                             }
                         }
                     }
-                    // Texture rows run bottom-up; the shapes below are described top-down.
-                    pixels[(IconTexSize - 1 - y) * IconTexSize + x] = new Color(1f, 1f, 1f, hits / 16f);
+                    coverage[y * size + x] = hits / 16f;
                 }
             }
+            return new Mask(size, size, coverage);
+        }
 
-            texture.SetPixels(pixels);
-            texture.Apply();
-            return texture;
+        /// <summary>
+        /// Three lines of text, uneven so they do not read as a hamburger menu. The same bars the
+        /// mark was drawn as in quads before 0.19.
+        /// </summary>
+        private static bool InLogBars(float u, float v) {
+            const float bar = 0.17f;
+            const float step = 0.3f;
+            const float top = (1f - (bar + step * 2f)) * 0.5f;
+            for (int i = 0; i < _logBarWidths.Length; i++) {
+                float from = top + step * i;
+                if (v >= from && v < from + bar && u < _logBarWidths[i]) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static bool InTriangle(float u, float v) {
@@ -1311,6 +1735,105 @@ namespace KenseiLog {
 
             float dv = cv - 0.29f;
             return cu * cu + dv * dv <= 0.145f * 0.145f;
+        }
+
+        /// <summary>
+        /// One glyph rasterised at this scale: each pixel covered by how far its centre is inside
+        /// the nearest stroke, which smooths the edge by half a pixel at any size without
+        /// supersampling. The mask has a pixel of margin all round, so the smoothing is never cut
+        /// off; its pixel (1, 1) is the top left of the glyph's ink.
+        /// </summary>
+        internal static Mask GlyphMask(int glyph, float scale) {
+            Glyph shape = _glyphs[glyph];
+            int width = Mathf.CeilToInt((shape.Width + GlyphRadius * 2f) * scale) + 2;
+            int height = Mathf.CeilToInt((GlyphHeight + GlyphRadius * 2f) * scale) + 2;
+            float[] coverage = new float[width * height];
+            float[] strokes = shape.Strokes;
+            for (int y = 0; y < height; y++) {
+                float py = (y - 0.5f) / scale - GlyphRadius;
+                for (int x = 0; x < width; x++) {
+                    float px = (x - 0.5f) / scale - GlyphRadius;
+                    float nearest = float.MaxValue;
+                    for (int i = 0; i < strokes.Length; i += 4) {
+                        nearest = Mathf.Min(nearest, SegmentDistanceSquared(px, py,
+                            strokes[i], strokes[i + 1], strokes[i + 2], strokes[i + 3]));
+                    }
+                    coverage[y * width + x] = Mathf.Clamp01((GlyphRadius - Mathf.Sqrt(nearest)) * scale + 0.5f);
+                }
+            }
+            return new Mask(width, height, coverage);
+        }
+
+        private static float SegmentDistanceSquared(float px, float py, float ax, float ay, float bx, float by) {
+            float dx = bx - ax;
+            float dy = by - ay;
+            float length = dx * dx + dy * dy;
+            float t = length > 0f ? Mathf.Clamp01(((px - ax) * dx + (py - ay) * dy) / length) : 0f;
+            float ex = px - (ax + dx * t);
+            float ey = py - (ay + dy * t);
+            return ex * ex + ey * ey;
+        }
+
+        /// <summary>The width a count takes in the bubble, in points.</summary>
+        private static float CountWidth(string count) {
+            float width = 0f;
+            for (int i = 0; i < count.Length; i++) {
+                int glyph = GlyphChars.IndexOf(count[i]);
+                if (glyph >= 0) {
+                    width += _glyphs[glyph].Advance;
+                }
+            }
+            return Mathf.Max(0f, width - GlyphTracking);
+        }
+
+        private static float WidestCount() {
+            float widest = 0f;
+            for (int i = 0; i < _countShapes.Length; i++) {
+                widest = Mathf.Max(widest, CountWidth(_countShapes[i]));
+            }
+            return widest;
+        }
+
+        /// <summary>
+        /// The strokes of every character <see cref="Compact"/> can produce, in the order of
+        /// <see cref="GlyphChars"/>. Coordinates are fractions of the glyph's width and height,
+        /// y down; arcs are angles in degrees, 0 to the right and 90 down.
+        /// <para>
+        /// The digits share one width, as a font's figures do, so that a count ticking over does
+        /// not shift the ones beside it.
+        /// </para>
+        /// </summary>
+        private static Glyph[] BuildGlyphs() {
+            return new[] {
+                new GlyphPath(DigitWidth).Arc(0.5f, 0.5f, 0.5f, 0.5f, 0f, 360f).Build(),
+                new GlyphPath(DigitWidth).Line(0.62f, 0f, 0.62f, 1f).Line(0.62f, 0f, 0.12f, 0.28f).Build(),
+                new GlyphPath(DigitWidth).Arc(0.5f, 0.28f, 0.5f, 0.28f, 195f, 400f)
+                    .Line(0.883f, 0.46f, 0f, 1f).Line(0f, 1f, 1f, 1f).Build(),
+                new GlyphPath(DigitWidth).Arc(0.5f, 0.26f, 0.45f, 0.26f, 200f, 450f)
+                    .Arc(0.5f, 0.74f, 0.5f, 0.26f, -90f, 160f).Line(0.3f, 0.5f, 0.5f, 0.5f).Build(),
+                new GlyphPath(DigitWidth).Line(0.78f, 1f, 0.78f, 0f).Line(0.78f, 0f, 0f, 0.7f)
+                    .Line(0f, 0.7f, 1f, 0.7f).Build(),
+                new GlyphPath(DigitWidth).Line(0.92f, 0f, 0.12f, 0f).Line(0.12f, 0f, 0.06f, 0.45f)
+                    .Line(0.06f, 0.45f, 0.213f, 0.418f).Arc(0.5f, 0.68f, 0.5f, 0.32f, -125f, 160f).Build(),
+                // The top stops a pixel and a half short of the bowl at scale 1: run on to it, and at
+                // that size the six closed into an eight.
+                new GlyphPath(DigitWidth).Arc(0.5f, 0.72f, 0.5f, 0.28f, 0f, 360f).Line(0f, 0.72f, 0f, 0.38f)
+                    .Arc(0.5f, 0.38f, 0.5f, 0.38f, 180f, 290f).Build(),
+                new GlyphPath(DigitWidth).Line(0f, 0f, 1f, 0f).Line(1f, 0f, 0.35f, 1f).Build(),
+                new GlyphPath(DigitWidth).Arc(0.5f, 0.25f, 0.42f, 0.25f, 0f, 360f)
+                    .Arc(0.5f, 0.73f, 0.5f, 0.27f, 0f, 360f).Build(),
+                // A six turned over.
+                new GlyphPath(DigitWidth, true).Arc(0.5f, 0.72f, 0.5f, 0.28f, 0f, 360f).Line(0f, 0.72f, 0f, 0.38f)
+                    .Arc(0.5f, 0.38f, 0.5f, 0.38f, 180f, 290f).Build(),
+                new GlyphPath(0f).Line(0f, 1f, 0f, 1f).Build(),
+                new GlyphPath(4f).Line(0f, 0f, 0f, 1f).Line(0.95f, 0.32f, 0f, 0.78f).Line(0.35f, 0.6f, 1f, 1f).Build(),
+                new GlyphPath(6.4f).Line(0f, 1f, 0f, 0f).Line(0f, 0f, 0.5f, 0.7f).Line(0.5f, 0.7f, 1f, 0f)
+                    .Line(1f, 0f, 1f, 1f).Build(),
+                new GlyphPath(DigitWidth).Line(0f, 0f, 0f, 1f).Line(0f, 0f, 0.5f, 0f)
+                    .Arc(0.5f, 0.24f, 0.45f, 0.24f, -90f, 90f).Line(0.5f, 0.48f, 0f, 0.48f)
+                    .Arc(0.5f, 0.74f, 0.5f, 0.26f, -90f, 90f).Line(0.5f, 1f, 0f, 1f).Build(),
+                new GlyphPath(4.6f).Line(0.5f, 0.22f, 0.5f, 0.86f).Line(0f, 0.54f, 1f, 0.54f).Build()
+            };
         }
 
         private static Texture2D SolidTexture(Color color) {
@@ -1385,6 +1908,77 @@ namespace KenseiLog {
                 Tag = tag;
                 Label = tag + "  " + count;
                 Chip = TagPalette.For(tag, 0.6f, 0.9f, -0.08f);
+            }
+        }
+
+        /// <summary>Coverage, 0 to 1, of a small block of pixels, y down.</summary>
+        internal readonly struct Mask {
+            public readonly int Width;
+            public readonly int Height;
+            public readonly float[] Coverage;
+
+            public Mask(int width, int height, float[] coverage) {
+                Width = width;
+                Height = height;
+                Coverage = coverage;
+            }
+        }
+
+        /// <summary>A glyph's strokes in points - x0, y0, x1, y1 per stroke - and how far it moves the pen.</summary>
+        private readonly struct Glyph {
+            public readonly float Width;
+            public readonly float Advance;
+            public readonly float[] Strokes;
+
+            public Glyph(float width, float[] strokes) {
+                Width = width;
+                Advance = width + GlyphRadius * 2f + GlyphTracking;
+                Strokes = strokes;
+            }
+        }
+
+        /// <summary>Builds a glyph's strokes out of lines and elliptical arcs.</summary>
+        private sealed class GlyphPath {
+            private readonly List<float> _strokes = new List<float>();
+            private readonly float _width;
+            private readonly bool _turned;
+
+            public GlyphPath(float width, bool turned = false) {
+                _width = width;
+                _turned = turned;
+            }
+
+            public GlyphPath Line(float u0, float v0, float u1, float v1) {
+                if (_turned) {
+                    u0 = 1f - u0;
+                    v0 = 1f - v0;
+                    u1 = 1f - u1;
+                    v1 = 1f - v1;
+                }
+                _strokes.Add(u0 * _width);
+                _strokes.Add(v0 * GlyphHeight);
+                _strokes.Add(u1 * _width);
+                _strokes.Add(v1 * GlyphHeight);
+                return this;
+            }
+
+            public GlyphPath Arc(float cu, float cv, float ru, float rv, float from, float to) {
+                int steps = Mathf.Max(4, Mathf.CeilToInt(Mathf.Abs(to - from) / 18f));
+                float previousU = cu + ru * Mathf.Cos(from * Mathf.Deg2Rad);
+                float previousV = cv + rv * Mathf.Sin(from * Mathf.Deg2Rad);
+                for (int i = 1; i <= steps; i++) {
+                    float angle = Mathf.Lerp(from, to, i / (float)steps) * Mathf.Deg2Rad;
+                    float u = cu + ru * Mathf.Cos(angle);
+                    float v = cv + rv * Mathf.Sin(angle);
+                    Line(previousU, previousV, u, v);
+                    previousU = u;
+                    previousV = v;
+                }
+                return this;
+            }
+
+            public Glyph Build() {
+                return new Glyph(_width, _strokes.ToArray());
             }
         }
 

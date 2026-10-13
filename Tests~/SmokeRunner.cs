@@ -85,6 +85,12 @@ public static class SmokeRunner {
         Scenario(ConfigDefaultsKeepTheBubble);
         Scenario(ScaleIsCachedNotReadPerEvent);
         Scenario(VisibleIsBackAtTheStartOfARun);
+        Scenario(BubbleGestures);
+        Scenario(BakeIsStable);
+        Scenario(BakeIsThrottled);
+        Scenario(EveryGlyphHasInk);
+        Scenario(ClosingTheViewerBringsTheBubbleUpToDate);
+        Scenario(ALinearProjectGetsLinearPixels);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
         Scenario(CountsSurviveAChangeOfCapacity);
@@ -3268,6 +3274,647 @@ public static class SmokeRunner {
         } finally {
             LogOverlay.Visible = was;
         }
+    }
+
+    /// <summary>
+    /// 0.19.0. The collapsed bubble is no longer a GUI.Button, so the press, the drag and the
+    /// release are the overlay's own: a press on the bubble takes hotControl, and everything after
+    /// it comes back to the bubble until the release. Driven here without Event.current, through
+    /// the method the view calls with each pointer event, at a desktop and a phone scale.
+    /// <para>
+    /// The meaning is BubbleGesture's, as before: a tap opens, a drag moves without opening, a
+    /// press let go off the bubble opens nothing, and a press that missed it is left to the game.
+    /// </para>
+    /// </summary>
+    private static void BubbleGestures() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        MethodInfo handle = typeof(LogOverlay).GetMethod("HandleBubblePointer", Hidden);
+        MethodInfo update = typeof(LogOverlay).GetMethod("UpdateBubble", Hidden);
+        MethodInfo pointer = typeof(LogOverlay).GetMethod("BubblePointer", Hidden);
+        bool parts = OverlayRig.PartsPresent && handle != null && update != null && pointer != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        int previousHot = UnityEngine.GUIUtility.hotControl;
+        try {
+            foreach (float scale in new[] { 1f, 2.5f }) {
+                using (OverlayRig rig = new OverlayRig()) {
+                    LogOverlay.Visible = true;
+                    LogOverlay overlay = rig.Ensure(scale, OverlayBubbleMode.Always);
+                    // A screen big enough that nothing here is clamped.
+                    rig.SetField("_safe", new UnityEngine.Rect(0f, 0f, 4000f, 4000f));
+                    rig.SetField("_screenHeight", 4000);
+                    UnityEngine.Vector2 start = new UnityEngine.Vector2(12f, 12f);
+                    const int id = 4242;
+                    string at = " at scale " + scale.ToString(CultureInfo.InvariantCulture);
+
+                    UnityEngine.Rect Place() {
+                        rig.SetField("_bubble", start);
+                        update.Invoke(overlay, new object[] { 0f, true });
+                        return rig.Field<UnityEngine.Rect>("_bubblePx");
+                    }
+
+                    string Send(UnityEngine.EventType type, UnityEngine.Vector2 position, UnityEngine.Rect rect, int button = 0) {
+                        return handle.Invoke(overlay, new object[] { type, button, position, rect, scale, id }).ToString();
+                    }
+
+                    bool Uses(UnityEngine.EventType type, UnityEngine.Vector2 position, UnityEngine.Rect rect, int button = 0) {
+                        return (bool)pointer.Invoke(overlay, new object[] { type, button, position, rect, scale, id });
+                    }
+
+                    UnityEngine.Rect rect = Place();
+                    Check("the bubble sits where it was put, in pixels" + at,
+                        rect.x == UnityEngine.Mathf.Round(12f * scale) && rect.y == UnityEngine.Mathf.Round(12f * scale));
+                    UnityEngine.Vector2 centre = rect.center;
+
+                    string down = Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    Check("a press on the bubble takes the pointer" + at,
+                        down == "None" && UnityEngine.GUIUtility.hotControl == id);
+                    string up = Send(UnityEngine.EventType.MouseUp, centre, rect);
+                    Check("a tap opens the viewer" + at, up == "Opened" && LogOverlay.IsOpen);
+                    Check("and lets the pointer go" + at, UnityEngine.GUIUtility.hotControl == 0);
+                    LogOverlay.IsOpen = false;
+
+                    rect = Place();
+                    UnityEngine.Vector2 travel = new UnityEngine.Vector2(50f, 30f) * scale;
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    string drag = Send(UnityEngine.EventType.MouseDrag, centre + travel, rect);
+                    UnityEngine.Vector2 moved = rig.Field<UnityEngine.Vector2>("_bubble");
+                    Check("a drag moves the bubble by as many points as the finger went" + at,
+                        drag == "Moved" && (moved - (start + new UnityEngine.Vector2(50f, 30f))).sqrMagnitude < 0.0001f);
+                    UnityEngine.Rect after = rig.Field<UnityEngine.Rect>("_bubblePx");
+                    Check("and its pixels follow it" + at,
+                        UnityEngine.Mathf.Abs(after.x - UnityEngine.Mathf.Round(62f * scale)) < 0.01f &&
+                        UnityEngine.Mathf.Abs(after.y - UnityEngine.Mathf.Round(42f * scale)) < 0.01f);
+                    up = Send(UnityEngine.EventType.MouseUp, centre + travel, after);
+                    Check("the release that ends a drag opens nothing" + at,
+                        up == "None" && !LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0);
+
+                    rect = Place();
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    up = Send(UnityEngine.EventType.MouseUp, new UnityEngine.Vector2(rect.xMax + 40f, rect.yMax + 40f), rect);
+                    Check("a press let go off the bubble opens nothing" + at,
+                        up == "None" && !LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0);
+
+                    rect = Place();
+                    UnityEngine.Vector2 away = new UnityEngine.Vector2(rect.xMax + 200f, rect.yMax + 200f);
+                    Send(UnityEngine.EventType.MouseDown, away, rect);
+                    Check("a press that misses the bubble leaves the pointer to the game" + at,
+                        UnityEngine.GUIUtility.hotControl == 0);
+                    drag = Send(UnityEngine.EventType.MouseDrag, away + travel, rect);
+                    up = Send(UnityEngine.EventType.MouseUp, centre, rect);
+                    Check("and neither moves nor opens it" + at,
+                        drag == "None" && up == "None" && rig.Field<UnityEngine.Vector2>("_bubble") == start &&
+                        !LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0);
+
+                    rect = Place();
+                    UnityEngine.Vector2 wobble = centre + new UnityEngine.Vector2(5f, 0f);
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    drag = Send(UnityEngine.EventType.MouseDrag, wobble, rect);
+                    if (scale >= 2.5f) {
+                        Check("five pixels is not a drag on a phone" + at,
+                            drag == "None" && rig.Field<UnityEngine.Vector2>("_bubble") == start);
+                        up = Send(UnityEngine.EventType.MouseUp, wobble, rect);
+                        Check("so a tap with a shaking finger still opens it" + at,
+                            up == "Opened" && LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0);
+                        LogOverlay.IsOpen = false;
+
+                        // Past the six points unscaled and short of them scaled: a threshold left in
+                        // pixels would call this a drag on a phone, and the tap would open nothing.
+                        rect = Place();
+                        UnityEngine.Vector2 shake = centre + new UnityEngine.Vector2(10f, 0f);
+                        Send(UnityEngine.EventType.MouseDown, centre, rect);
+                        drag = Send(UnityEngine.EventType.MouseDrag, shake, rect);
+                        Check("nor is ten, the threshold being six points and not six pixels" + at,
+                            drag == "None" && rig.Field<UnityEngine.Vector2>("_bubble") == start);
+                        Send(UnityEngine.EventType.MouseUp, shake, rect);
+                        LogOverlay.IsOpen = false;
+                    } else {
+                        Send(UnityEngine.EventType.MouseUp, wobble, rect);
+                        Check("the pointer is let go however the press ended" + at, UnityEngine.GUIUtility.hotControl == 0);
+                        LogOverlay.IsOpen = false;
+                    }
+
+                    // Which events the view uses up: the bubble's own, and none of the game's.
+                    rect = Place();
+                    UnityEngine.Vector2 elsewhere = new UnityEngine.Vector2(rect.xMax + 200f, rect.yMax + 200f);
+                    bool missDown = Uses(UnityEngine.EventType.MouseDown, elsewhere, rect);
+                    bool missDrag = Uses(UnityEngine.EventType.MouseDrag, elsewhere + travel, rect);
+                    bool missUp = Uses(UnityEngine.EventType.MouseUp, elsewhere, rect);
+                    Check("a press, drag and release that miss the bubble are left unused for the game" + at,
+                        !missDown && !missDrag && !missUp);
+                    bool hitDown = Uses(UnityEngine.EventType.MouseDown, centre, rect);
+                    bool hitDrag = Uses(UnityEngine.EventType.MouseDrag, centre + travel, rect);
+                    bool hitUp = Uses(UnityEngine.EventType.MouseUp, centre + travel,
+                        rig.Field<UnityEngine.Rect>("_bubblePx"));
+                    Check("while the bubble's own press, drag and release are used up" + at,
+                        hitDown && hitDrag && hitUp && UnityEngine.GUIUtility.hotControl == 0 && !LogOverlay.IsOpen);
+
+                    // A right click in the middle of a drag is not a new press: it would forget the
+                    // drag, and the left release back over the bubble would open the viewer.
+                    rect = Place();
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    Send(UnityEngine.EventType.MouseDrag, centre + travel, rect);
+                    UnityEngine.Rect dragged = rig.Field<UnityEngine.Rect>("_bubblePx");
+                    UnityEngine.Vector2 over = dragged.center;
+                    bool rightDownUsed = Uses(UnityEngine.EventType.MouseDown, over, dragged, 1);
+                    string rightUp = Send(UnityEngine.EventType.MouseUp, over, dragged, 1);
+                    Check("a right click mid-drag keeps the drag and the pointer" + at,
+                        rightDownUsed && rightUp == "None" && !LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == id);
+                    up = Send(UnityEngine.EventType.MouseUp, over, dragged);
+                    Check("so the left release over the bubble still opens nothing, and the bubble stays moved" + at,
+                        up == "None" && !LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0 &&
+                        (rig.Field<UnityEngine.Vector2>("_bubble") - (start + new UnityEngine.Vector2(50f, 30f))).sqrMagnitude < 0.0001f);
+
+                    // A left press while held is the press whose release was lost: it starts over.
+                    rect = Place();
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    Send(UnityEngine.EventType.MouseDrag, centre + travel, rect);
+                    rect = Place();
+                    string again = Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    up = Send(UnityEngine.EventType.MouseUp, centre, rect);
+                    Check("a left press while held re-arms the bubble, and its tap opens the viewer" + at,
+                        again == "None" && up == "Opened" && LogOverlay.IsOpen && UnityEngine.GUIUtility.hotControl == 0);
+                    LogOverlay.IsOpen = false;
+
+                    // A press held after its release was lost, then the game's own press elsewhere:
+                    // the bubble lets go and leaves that press, and its release, to the game.
+                    foreach (int other in new[] { 0, 1 }) {
+                        rect = Place();
+                        Send(UnityEngine.EventType.MouseDown, centre, rect);
+                        bool lostDownUsed = Uses(UnityEngine.EventType.MouseDown, elsewhere, rect, other);
+                        bool lostUpUsed = Uses(UnityEngine.EventType.MouseUp, elsewhere, rect, other);
+                        Check("a press of button " + other + " off a bubble whose release was lost lets it go, unused" + at,
+                            !lostDownUsed && !lostUpUsed && UnityEngine.GUIUtility.hotControl == 0 && !LogOverlay.IsOpen);
+                    }
+
+                    // A press the bubble never sees the end of: the app went to the background.
+                    rect = Place();
+                    Send(UnityEngine.EventType.MouseDown, centre, rect);
+                    MethodInfo pause = typeof(LogOverlay).GetMethod("OnApplicationPause", Hidden);
+                    pause?.Invoke(overlay, new object[] { true });
+                    Check("going to the background lets the pointer go" + at,
+                        pause != null && UnityEngine.GUIUtility.hotControl == 0);
+                }
+            }
+        } finally {
+            UnityEngine.GUIUtility.hotControl = previousHot;
+        }
+    }
+
+    /// <summary>
+    /// 0.19.0. The collapsed bubble is one texture baked from the counts, with the package's own
+    /// digits. Its size is the bubble's in points times the scale, rounded up, and does not move
+    /// with what the counts read; a count is drawn inside its own slot; the plate shows for a
+    /// warning or an error and for nothing else; and a bake that keeps the size keeps the texture.
+    /// </summary>
+    private static void BakeIsStable() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        const BindingFlags HiddenStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        MethodInfo bake = typeof(LogOverlay).GetMethod("BakeBubble", Hidden);
+        MethodInfo countWidth = typeof(LogOverlay).GetMethod("CountWidth", HiddenStatic);
+        FieldInfo shapesField = typeof(LogOverlay).GetField("_countShapes", HiddenStatic);
+        bool parts = OverlayRig.PartsPresent && bake != null && countWidth != null && shapesField != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+        string[] shapes = (string[])shapesField.GetValue(null);
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = true;
+            foreach (float scale in new[] { 1f, 2.75f, 4f }) {
+                LogOverlay overlay = rig.Ensure(scale, OverlayBubbleMode.Always);
+                string at = " at scale " + scale.ToString(CultureInfo.InvariantCulture);
+                float width = rig.Field<float>("_bubbleWidth");
+                float slot = rig.Field<float>("_digitSlot");
+                UnityEngine.Texture2D texture = rig.Field<UnityEngine.Texture2D>("_bubbleTex");
+                Check("the bubble is baked as soon as it is shown" + at, texture != null);
+                if (texture == null) {
+                    return;
+                }
+                Check("at its size in points times the scale, rounded up" + at,
+                    texture.width == UnityEngine.Mathf.CeilToInt(width * scale) &&
+                    texture.height == UnityEngine.Mathf.CeilToInt(34f * scale));
+                Check("as a plain sRGB texture with no mips" + at,
+                    texture.mipmapCount == 1 && texture.wrapMode == UnityEngine.TextureWrapMode.Clamp &&
+                    texture.filterMode == UnityEngine.FilterMode.Bilinear && texture.isDataSRGB);
+
+                string[] counts = rig.Field<string[]>("_bubbleCounts");
+                bool sameSize = true;
+                bool sameTexture = true;
+                bool fits = true;
+                bool clearGaps = true;
+                UnityEngine.Color32 background = BubblePixel(texture, 1f, 1f, scale);
+                foreach (string shape in shapes) {
+                    fits &= (float)countWidth.Invoke(null, new object[] { shape }) <= slot + 0.001f;
+                    counts[0] = shape;
+                    counts[1] = shape;
+                    counts[2] = shape;
+                    rig.SetField("_bubbleAccent", -1);
+                    bake.Invoke(overlay, null);
+                    UnityEngine.Texture2D baked = rig.Field<UnityEngine.Texture2D>("_bubbleTex");
+                    sameTexture &= ReferenceEquals(baked, texture);
+                    sameSize &= baked.width == texture.width && baked.height == texture.height;
+                    // Between each chip's slot and the next chip's mark there is only background.
+                    UnityEngine.Color32[] pixels = baked.GetPixels32();
+                    float x = 7f;
+                    for (int chip = 0; chip < 3; chip++) {
+                        float gapStart = x + 14f + 3f + slot;
+                        float gapEnd = gapStart + 7f;
+                        for (float gx = gapStart + 1f; gx <= gapEnd - 1f; gx += 1f / scale) {
+                            for (float gy = 2f; gy < 32f; gy += 1f / scale) {
+                                clearGaps &= SameColour(BubblePixel(pixels, baked.width, baked.height, gx, gy, scale), background);
+                            }
+                        }
+                        x = gapEnd;
+                    }
+                }
+                Check("every count shape fits the slot measured for it" + at, fits);
+                Check("and none changes the bubble's size" + at, sameSize);
+                Check("or spills out of its slot" + at, clearGaps);
+                Check("and a bake that keeps the size keeps the texture" + at, sameTexture);
+
+                // The log chip is the last of the three: its digits start after two chips, a mark and a gap.
+                float digits = 7f + (14f + 3f + slot + 7f) * 2f + 14f + 3f;
+                counts[0] = "12";
+                counts[1] = null;
+                counts[2] = null;
+                bake.Invoke(overlay, null);
+                UnityEngine.Color32[] twelve = texture.GetPixels32();
+                counts[0] = "13";
+                bake.Invoke(overlay, null);
+                UnityEngine.Color32[] thirteen = texture.GetPixels32();
+                int differing = 0;
+                int outside = 0;
+                int left = UnityEngine.Mathf.FloorToInt(digits * scale);
+                int right = UnityEngine.Mathf.CeilToInt((digits + slot) * scale);
+                for (int i = 0; i < twelve.Length; i++) {
+                    if (!SameColour(twelve[i], thirteen[i])) {
+                        differing++;
+                        int column = i % texture.width;
+                        if (column < left || column > right) {
+                            outside++;
+                        }
+                    }
+                }
+                Check("12 and 13 bake differently" + at, differing > 0);
+                Check("and only inside the digit slot" + at, outside == 0);
+                counts[0] = null;
+
+                // The plate has hard edges: its outermost pixels are all plate and the ones just
+                // past them all background, with no column or row of half colour in between.
+                int errorLevel = (int)LogLevel.Error;
+                counts[errorLevel] = "408";
+                rig.SetField("_bubbleAccent", errorLevel);
+                bake.Invoke(overlay, null);
+                UnityEngine.Color32[] plated = texture.GetPixels32();
+                int w = texture.width;
+                int h = texture.height;
+                UnityEngine.Color32 At(int column, int row) => plated[(h - 1 - row) * w + column];
+                int plateLeft = (int)UnityEngine.Mathf.Round(3f * scale);
+                int plateRight = (int)UnityEngine.Mathf.Round((7f + 14f + 3f + slot + 4f) * scale);
+                int plateTop = (int)UnityEngine.Mathf.Round(4f * scale);
+                int plateBottom = (int)UnityEngine.Mathf.Round(30f * scale);
+                UnityEngine.Color32 plate = At(plateLeft, plateTop);
+                bool hard = !SameColour(plate, background);
+                for (int row = plateTop; row < plateBottom; row++) {
+                    hard &= SameColour(At(plateLeft, row), plate) && SameColour(At(plateRight - 1, row), plate);
+                    hard &= SameColour(At(plateLeft - 1, row), background) && SameColour(At(plateRight, row), background);
+                }
+                for (int column = plateLeft; column < plateRight; column++) {
+                    hard &= SameColour(At(column, plateTop), plate) && SameColour(At(column, plateBottom - 1), plate);
+                    hard &= SameColour(At(column, plateTop - 1), background) && SameColour(At(column, plateBottom), background);
+                }
+                Check("the plate's edges are whole pixels" + at, hard);
+                counts[errorLevel] = null;
+                rig.SetField("_bubbleAccent", -1);
+            }
+
+            // The plate: sampled just inside its left edge, where neither a mark nor a digit goes.
+            float scaleNow = rig.Field<float>("_scale");
+            float slotNow = rig.Field<float>("_digitSlot");
+            float chipStep = 14f + 3f + slotNow + 7f;
+            MethodInfo update = typeof(LogOverlay).GetMethod("UpdateBubble", Hidden);
+            UnityEngine.Color32 Plate(int chip) {
+                rig.SetField("_bubbleDirty", true);
+                update.Invoke(rig.Overlay, new object[] { 0f, true });
+                return BubblePixel(rig.Field<UnityEngine.Texture2D>("_bubbleTex"), 7f + chipStep * chip - 2.5f, 17f, scaleNow);
+            }
+            UnityEngine.Color32 empty = Plate(0);
+
+            rig.Sink.Write(Record(1, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            Check("a plain log lights no plate",
+                rig.Field<int>("_bubbleAccent") == -1 && SameColour(Plate(2), empty) && SameColour(Plate(0), empty));
+            rig.Sink.Write(Record(2, "A", "two", LogLevel.Warning, LogChannel.Prod, 0));
+            UnityEngine.Color32 warning = Plate(1);
+            Check("a warning lights its own", rig.Field<int>("_bubbleAccent") == (int)LogLevel.Warning &&
+                !SameColour(warning, empty) && warning.r > 200 && warning.g > 160);
+            rig.Sink.Write(Record(3, "A", "three", LogLevel.Error, LogChannel.Prod, 0));
+            UnityEngine.Color32 error = Plate(0);
+            Check("and an error takes it over", rig.Field<int>("_bubbleAccent") == (int)LogLevel.Error &&
+                error.r > 200 && error.g < 160 && SameColour(Plate(1), empty));
+        }
+    }
+
+    /// <summary>
+    /// 0.19.0. A count that changes is baked again at most four times a second, while a change
+    /// of colour - the first warning, the first error - is baked at once; and a count that moves
+    /// without changing what it reads as is not baked at all. The time is handed in, so the
+    /// check does not wait.
+    /// </summary>
+    private static void BakeIsThrottled() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        MethodInfo update = typeof(LogOverlay).GetMethod("UpdateBubble", Hidden);
+        bool parts = OverlayRig.PartsPresent && update != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = true;
+            LogOverlay overlay = rig.Ensure(1f, OverlayBubbleMode.Always);
+            long sequence = 1;
+
+            void Tick(float now) {
+                rig.SetField("_bubbleDirty", true);
+                update.Invoke(overlay, new object[] { now, false });
+            }
+
+            rig.SetField("_lastBake", float.NegativeInfinity);
+            Tick(100f);
+            int settled = rig.Field<int>("BubbleBakes");
+            for (int i = 1; i <= 50; i++) {
+                rig.Sink.Write(Record(sequence++, "A", "spam", LogLevel.Log, LogChannel.Prod, 0));
+                Tick(100f + i * 0.002f);
+            }
+            int bakes = rig.Field<int>("BubbleBakes") - settled;
+            Check("fifty changes of a count in a tenth of a second bake at most twice (" + bakes + ")", bakes <= 2);
+            Check("and the last of them is still waiting", rig.Field<bool>("_bubbleTexDirty"));
+            Tick(100.4f);
+            Check("until the interval has passed",
+                rig.Field<int>("BubbleBakes") == settled + bakes + 1 && !rig.Field<bool>("_bubbleTexDirty"));
+
+            int before = rig.Field<int>("BubbleBakes");
+            rig.Sink.Write(Record(sequence++, "A", "careful", LogLevel.Warning, LogChannel.Prod, 0));
+            Tick(100.41f);
+            Check("a first warning is baked at once", rig.Field<int>("BubbleBakes") == before + 1);
+            rig.Sink.Write(Record(sequence++, "A", "broken", LogLevel.Error, LogChannel.Prod, 0));
+            Tick(100.42f);
+            Check("and so is a first error", rig.Field<int>("BubbleBakes") == before + 2);
+
+            while (rig.Sink.LevelCount(LogLevel.Log) < 1500L) {
+                rig.Sink.Write(Record(sequence++, "A", "fill", LogLevel.Log, LogChannel.Prod, 0));
+            }
+            Tick(200f);
+            Check("1500 reads 1.5k", rig.Field<string[]>("_bubbleCounts")[0] == "1.5k" && !rig.Field<bool>("_bubbleTexDirty"));
+            int at1500 = rig.Field<int>("BubbleBakes");
+            rig.Sink.Write(Record(sequence++, "A", "one more", LogLevel.Log, LogChannel.Prod, 0));
+            // Through the overlay's own intake this time, not a flag set by hand: whatever it
+            // marks when a record arrives is what the bake goes by.
+            MethodInfo ingest = typeof(LogOverlay).GetMethod("Ingest", Hidden);
+            rig.SetField("_bubbleDirty", false);
+            ingest?.Invoke(overlay, null);
+            Check("the record that makes it 1501 is taken in", ingest != null && rig.Field<bool>("_bubbleDirty"));
+            update.Invoke(overlay, new object[] { 300f, false });
+            Check("1501 still reads 1.5k, so nothing is marked or baked",
+                !rig.Field<bool>("_bubbleTexDirty") && rig.Field<int>("BubbleBakes") == at1500);
+            while (rig.Sink.LevelCount(LogLevel.Log) < 1600L) {
+                rig.Sink.Write(Record(sequence++, "A", "fill", LogLevel.Log, LogChannel.Prod, 0));
+            }
+            Tick(300.01f);
+            Check("while 1600 reads 1.6k and is",
+                rig.Field<string[]>("_bubbleCounts")[0] == "1.6k" && rig.Field<int>("BubbleBakes") == at1500 + 1);
+
+            // The key that stands in for the string has to change exactly when the string does.
+            MethodInfo compact = typeof(LogOverlay).GetMethod("Compact", BindingFlags.NonPublic | BindingFlags.Static);
+            MethodInfo key = typeof(LogOverlay).GetMethod("CompactKey", BindingFlags.NonPublic | BindingFlags.Static);
+            string mismatch = null;
+            long[] probes = {
+                0L, 1L, 998L, 999L, 1000L, 1001L, 1099L, 1100L, 9999L, 10000L, 10999L, 11000L, 999999L,
+                1000000L, 1999999L, 2000000L, 999999999L, 1000000000L, long.MaxValue
+            };
+            for (int i = 0; i + 1 < probes.Length && key != null; i++) {
+                bool sameText = (string)compact.Invoke(null, new object[] { probes[i] }) ==
+                                (string)compact.Invoke(null, new object[] { probes[i + 1] });
+                bool sameKey = (long)key.Invoke(null, new object[] { probes[i] }) ==
+                               (long)key.Invoke(null, new object[] { probes[i + 1] });
+                if (sameText != sameKey) {
+                    mismatch = probes[i] + "/" + probes[i + 1];
+                }
+            }
+            Check("the count's key changes exactly when its text does (" + mismatch + ")", key != null && mismatch == null);
+        }
+    }
+
+    /// <summary>
+    /// 0.19.0. The digits are the package's own strokes. Every character a count can be made of
+    /// has to leave ink at a desktop and a phone scale, no two may look the same, and none may be
+    /// cut off at the edge of the mask it is rasterised into.
+    /// </summary>
+    private static void EveryGlyphHasInk() {
+        const BindingFlags HiddenStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        FieldInfo charsField = typeof(LogOverlay).GetField("GlyphChars", HiddenStatic);
+        MethodInfo mask = typeof(LogOverlay).GetMethod("GlyphMask", HiddenStatic);
+        Check("the overlay still has the parts this leans on", charsField != null && mask != null);
+        if (charsField == null || mask == null) {
+            return;
+        }
+        string chars = (string)charsField.GetValue(null);
+        Check("every character a count can hold has a glyph", chars.Contains("0") && chars.Contains("9") &&
+            chars.Contains(".") && chars.Contains("k") && chars.Contains("M") && chars.Contains("B") && chars.Contains("+"));
+
+        foreach (float scale in new[] { 1f, 4f }) {
+            string blank = null;
+            string clipped = null;
+            string twins = null;
+            List<float[]> seen = new List<float[]>();
+            for (int i = 0; i < chars.Length; i++) {
+                object result = mask.Invoke(null, new object[] { i, scale });
+                Type type = result.GetType();
+                int width = (int)type.GetField("Width").GetValue(result);
+                int height = (int)type.GetField("Height").GetValue(result);
+                float[] coverage = (float[])type.GetField("Coverage").GetValue(result);
+                float ink = 0f;
+                float edge = 0f;
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        float c = coverage[y * width + x];
+                        ink += c;
+                        if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
+                            edge = Math.Max(edge, c);
+                        }
+                    }
+                }
+                // A dot at scale 1 is a little under three pixels of ink; a digit is a dozen or more.
+                if (ink < 2f * scale * scale) {
+                    blank = chars[i] + "";
+                }
+                if (edge > 0.05f) {
+                    clipped = chars[i] + "";
+                }
+                for (int other = 0; other < seen.Count; other++) {
+                    if (seen[other].Length == coverage.Length) {
+                        float difference = 0f;
+                        for (int k = 0; k < coverage.Length; k++) {
+                            difference += Math.Abs(seen[other][k] - coverage[k]);
+                        }
+                        if (difference < 1f) {
+                            twins = chars[other] + "=" + chars[i];
+                        }
+                    }
+                }
+                seen.Add(coverage);
+            }
+            string at = " at scale " + scale.ToString(CultureInfo.InvariantCulture);
+            Check("every glyph leaves ink" + at + " (" + blank + ")", blank == null);
+            Check("none is cut off by its own mask" + at + " (" + clipped + ")", clipped == null);
+            Check("and no two look the same" + at + " (" + twins + ")", twins == null);
+        }
+
+        // At scale 1 a stroke is under two pixels wide, and a six whose top ran on towards its
+        // bowl filled the gap and read as an eight. The six has to keep a row inked on the left
+        // and bare on the right in its upper half, the nine the same turned over; the eight,
+        // closed both ways, has none - which is what keeps this check honest.
+        bool OpenRow(char c, bool upper) {
+            object result = mask.Invoke(null, new object[] { chars.IndexOf(c), 1f });
+            Type type = result.GetType();
+            int width = (int)type.GetField("Width").GetValue(result);
+            int height = (int)type.GetField("Height").GetValue(result);
+            float[] coverage = (float[])type.GetField("Coverage").GetValue(result);
+            for (int y = upper ? 1 : height / 2; y < (upper ? height / 2 : height - 1); y++) {
+                float near = 0f;
+                float far = 0f;
+                for (int x = 0; x < width; x++) {
+                    // The six's opening is on the right; the nine's, turned over, on the left.
+                    bool farSide = upper ? x >= width / 2 : x < (width + 1) / 2;
+                    float c2 = coverage[y * width + x];
+                    if (farSide) {
+                        far = Math.Max(far, c2);
+                    } else {
+                        near = Math.Max(near, c2);
+                    }
+                }
+                if (near > 0.5f && far < 0.1f) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        Check("at scale 1 the six stays open at the top", OpenRow('6', true));
+        Check("and the nine at the bottom", OpenRow('9', false));
+        Check("where the eight is closed", !OpenRow('8', true) && !OpenRow('8', false));
+    }
+
+    /// <summary>
+    /// 0.19.0. While the viewer is open the bubble is neither baked nor placed, and Close is pressed
+    /// inside OnGUI: the Repaint of that same frame is the bubble's, before any Update. Closing
+    /// brings the bubble up to date there and then, or that frame shows it where it was and as it
+    /// counted when the viewer opened - at the old size after a rotation, with the old accent
+    /// after an error.
+    /// </summary>
+    private static void ClosingTheViewerBringsTheBubbleUpToDate() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        MethodInfo ingest = typeof(LogOverlay).GetMethod("Ingest", Hidden);
+        bool parts = OverlayRig.PartsPresent && ingest != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = true;
+            LogOverlay overlay = rig.Ensure(1f, OverlayBubbleMode.Always);
+            Check("the bubble is baked before the viewer opens", rig.Field<UnityEngine.Texture2D>("_bubbleTex") != null);
+            LogOverlay.IsOpen = true;
+
+            rig.Sink.Write(Record(1, "A", "broken", LogLevel.Error, LogChannel.Prod, 0));
+            ingest.Invoke(overlay, null);
+            // The screen turned while the viewer was open: Update keeps the scale current.
+            rig.SetField("_scale", 2f);
+            int bakes = rig.Field<int>("BubbleBakes");
+
+            LogOverlay.IsOpen = false;
+            UnityEngine.Texture2D texture = rig.Field<UnityEngine.Texture2D>("_bubbleTex");
+            UnityEngine.Rect placed = rig.Field<UnityEngine.Rect>("_bubblePx");
+            float width = rig.Field<float>("_bubbleWidth");
+            Check("closing it bakes the bubble for what it counts now",
+                rig.Field<int>("BubbleBakes") > bakes && rig.Field<int>("_bakedAccent") == (int)LogLevel.Error);
+            Check("at the scale of now, and places it there",
+                texture != null && texture.width == UnityEngine.Mathf.CeilToInt(width * 2f) &&
+                placed.width == texture.width && placed.height == texture.height);
+        }
+    }
+
+    /// <summary>
+    /// 0.19.0. IMGUI draws the baked texture as if it held linear values, so in a Linear project
+    /// the frame's sRGB encoding washed the gamma colours to grey: the plate's dark digits came
+    /// out mid grey. The bake converts in a Linear project, and leaves a Gamma one byte for byte.
+    /// </summary>
+    private static void ALinearProjectGetsLinearPixels() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        MethodInfo bake = typeof(LogOverlay).GetMethod("BakeBubble", Hidden);
+        FieldInfo linearField = typeof(LogOverlay).GetField("LinearForChecks", Hidden);
+        bool parts = OverlayRig.PartsPresent && bake != null && linearField != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = true;
+            LogOverlay overlay = rig.Ensure(2f, OverlayBubbleMode.Always);
+            rig.Sink.Write(Record(1, "A", "careful", LogLevel.Warning, LogChannel.Prod, 0));
+            rig.Sink.Write(Record(2, "A", "broken", LogLevel.Error, LogChannel.Prod, 0));
+            rig.SetField("_bubbleDirty", true);
+            typeof(LogOverlay).GetMethod("UpdateBubble", Hidden).Invoke(overlay, new object[] { 0f, true });
+
+            linearField.SetValue(overlay, false);
+            bake.Invoke(overlay, null);
+            UnityEngine.Color32[] gamma = rig.Field<UnityEngine.Texture2D>("_bubbleTex").GetPixels32();
+            linearField.SetValue(overlay, true);
+            bake.Invoke(overlay, null);
+            UnityEngine.Color32[] linear = rig.Field<UnityEngine.Texture2D>("_bubbleTex").GetPixels32();
+            linearField.SetValue(overlay, false);
+            bake.Invoke(overlay, null);
+            UnityEngine.Color32[] again = rig.Field<UnityEngine.Texture2D>("_bubbleTex").GetPixels32();
+
+            int Expected(byte value) {
+                return UnityEngine.Mathf.RoundToInt(UnityEngine.Mathf.GammaToLinearSpace(value / 255f) * 255f);
+            }
+            bool converted = gamma.Length == linear.Length;
+            bool changed = false;
+            for (int i = 0; converted && i < gamma.Length; i++) {
+                converted &= Math.Abs(linear[i].r - Expected(gamma[i].r)) <= 1 &&
+                             Math.Abs(linear[i].g - Expected(gamma[i].g)) <= 1 &&
+                             Math.Abs(linear[i].b - Expected(gamma[i].b)) <= 1 && linear[i].a == gamma[i].a;
+                changed |= !SameColour(linear[i], gamma[i]);
+            }
+            Check("a Linear project gets every pixel through the sRGB curve", converted && changed);
+            bool same = again.Length == gamma.Length;
+            for (int i = 0; same && i < gamma.Length; i++) {
+                same &= SameColour(again[i], gamma[i]);
+            }
+            Check("and a Gamma one the pixels it had", same);
+        }
+    }
+
+    /// <summary>A pixel of the baked bubble, addressed in points from its top left.</summary>
+    private static UnityEngine.Color32 BubblePixel(UnityEngine.Texture2D texture, float x, float y, float scale) {
+        return BubblePixel(texture.GetPixels32(), texture.width, texture.height, x, y, scale);
+    }
+
+    private static UnityEngine.Color32 BubblePixel(UnityEngine.Color32[] pixels, int width, int height, float x, float y, float scale) {
+        int px = UnityEngine.Mathf.Clamp(UnityEngine.Mathf.FloorToInt(x * scale), 0, width - 1);
+        int py = UnityEngine.Mathf.Clamp(UnityEngine.Mathf.FloorToInt(y * scale), 0, height - 1);
+        return pixels[(height - 1 - py) * width + px];
+    }
+
+    private static bool SameColour(UnityEngine.Color32 a, UnityEngine.Color32 b) {
+        return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
     }
 
     /// <summary>

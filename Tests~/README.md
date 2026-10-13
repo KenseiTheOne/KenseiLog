@@ -43,7 +43,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-425 assertions over everything that does not need a GUI: the ring buffer including gapped and
+529 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -132,6 +132,34 @@ Each regression check names the bug it guards, because the interesting ones were
 - `OverlayBubbleMode.OnProblem` asleep through plain logs, awake on a warning or an error, asleep
   again after a clear, and shown while the viewer is open; and a zeroed `LogConfig` keeping the
   bubble as it was (0.18.0)
+- the collapsed bubble's press, drag and release, now that it is no longer a `GUI.Button`, driven
+  through the method the view hands each pointer event to: a tap opens, a drag of (50, 30) points
+  moves it by exactly that at scale 1 and 2.5 and opens nothing, a press let go off it opens
+  nothing, a press that misses it is left to the game - not taken and not used up, while the
+  bubble's own press, drag and release are - five or ten pixels on a phone is not a drag, and the
+  pointer is let go after every one of them and when the app goes to the background (0.19.0)
+- a right click in the middle of a drag on the bubble: the right press and release are used up
+  and leave the drag and the pointer as they were, the left release over the bubble then opens
+  nothing and the bubble stays where the drag took it; and a left press while the bubble still
+  holds the pointer - its release lost - re-arms it, so the next tap opens the viewer, while a
+  press of either button off it lets the pointer go and is left to the game, press and release,
+  at scale 1 and 2.5 (0.19.0)
+- the baked bubble: its size in pixels is its size in points times the scale, rounded up, at 1,
+  2.75 and 4; no count shape changes that or spills out of its slot; `12` and `13` differ only
+  inside the slot; the plate lights for a warning or an error and for nothing else, with its
+  edges on whole pixels - no column or row of half colour - at each scale; and a bake that keeps
+  the size keeps the texture (0.19.0)
+- the bake's pace: fifty changes of a count in a tenth of a second bake at most twice and the
+  last of them is not lost, a first warning or error is baked at once, `1500` to `1501` - taken
+  in through the overlay's own intake - bakes nothing while `1600` does, and the number standing in for the count's text changes exactly
+  when the text does (0.19.0)
+- the package's own digits: every character a count can hold leaves ink at scale 1 and 4, none is
+  cut off by the mask it is rasterised into, and no two are alike; at scale 1 the six and the
+  nine stay open where the eight is closed (0.19.0)
+- closing the viewer bakes and places the bubble for the counts and the scale of that moment,
+  for the Repaint of the same frame (0.19.0)
+- in a Linear project the bake puts every pixel through the sRGB curve, and in a Gamma one leaves
+  it byte for byte (0.19.0)
 
 ## Entering play mode
 
@@ -216,6 +244,13 @@ running editor. Each was reasoned about and shipped; none has been seen working.
   moment in the frame, which the harness cannot arrange.
   *Leaves when:* the viewer, open at the newest line, has been watched staying there as a burst
   first pushes records out of the ring.
+- **The baked bubble is as cheap on a phone as on a desktop, and a finger drives it as the checks
+  do.** 0.19.0. Measured in a desktop development player only, and its press, drag and release
+  driven by the checks and by synthetic events in that player, where a translated `GUI.matrix`
+  stands in for the real pointer. The 2.5 ms a frame that started 0.18.0 and this release was
+  measured on a low-end Android phone with 0.17.
+  *Leaves when:* the collapsed bubble has been profiled on a low-end Android phone and tapped,
+  dragged and released off itself there.
 - **KenseiLog compiles and finds context objects on 2022.3 and 6000.4.** 0.17.0. The EntityId
   change was compiled and run on 6000.3 and 6000.5 only. 2022.3 takes the plain int branch, which
   is the code that shipped before; 6000.4 takes the 64-bit branch on the strength of the
