@@ -204,6 +204,19 @@ It is off by default. A debug panel that shows up in someone's game uninvited is
 
 **No setup.** No prefab, no Canvas, no `PanelSettings`, no package dependency — turning the flag on is the whole installation. That is also why it is drawn with IMGUI rather than uGUI or UI Toolkit: it cannot collide with your `EventSystem`, it works in every render pipeline, and it reads touches through `Event.current`, so a project on the new Input System is unaffected.
 
+**What it costs.** The bubble is drawn without IMGUI's Layout pass, and the screen's size, safe area and DPI are read once a frame when they change rather than in every GUI event. It is still IMGUI, so the bubble on the screen costs something on every frame, which a slow phone notices. Two ways to have it cost nothing:
+
+```csharp
+config.ShowOverlay = true;
+config.OverlayBubble = OverlayBubbleMode.OnProblem;   // no bubble until the first warning or error
+```
+
+```csharp
+LogOverlay.Visible = false;                           // hidden: records are still taken in and counted
+```
+
+With `OnProblem` the bubble stays away until a warning or an error is counted, then appears with it; a **Clear** that brings warnings and errors back to zero sends it away again, and opening the viewer from code shows it regardless. `LogOverlay.Visible = false` closes the viewer and stops the drawing altogether — for a performance capture, a screenshot, a build in front of an audience — and `IsOpen = true` does nothing until it is `true` again. In both cases no `OnGUI` runs for the overlay at all, while its counts keep up, so they are right the moment it shows. `Visible` can be set from any thread and before the overlay exists; it takes effect at the overlay's next `Update`, or at once from the main thread, and is back to `true` at the start of each run. The overlay does not honour `GUI.depth`: it draws in whatever order Unity calls its `OnGUI` among yours.
+
 To keep it out of a public build entirely, guard the flag:
 
 ```csharp
@@ -237,6 +250,7 @@ private static void SetUpLogging() {
 | `ShowOverlay` | `false` | Draw the in-game log viewer |
 | `OverlayRecordCapacity` | `4096` | How many records the overlay keeps (at least 32) |
 | `OverlayScale` | `0` | Overlay UI scale, or 0 to derive one from screen DPI, falling back to screen height |
+| `OverlayBubble` | `Always` | `OnProblem` keeps the bubble hidden, at no cost, until the first warning or error |
 
 `Configure` can be called at any time from the main thread; logging starts with the defaults during early initialisation so that nothing is lost before your call arrives.
 
@@ -257,6 +271,7 @@ FileSink file = LogCore.File;                    // the active file sink, or nul
 LogOverlay.IsOpen = true;                        // open the on-device viewer from your own debug menu
 LogOverlay.TagPaneVisible = true;
 LogOverlay.SelectNewest(LogLevel.Error);         // jump to the newest error and expand it
+LogOverlay.Visible = false;                      // hide the overlay; it keeps counting, from any thread
 ```
 
 From an editor script, where `window` is a `LogWindow`:

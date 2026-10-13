@@ -4,6 +4,45 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-13
+
+### Added
+
+- `LogOverlay.Visible`: hides the in-game overlay and brings it back. Hidden, the viewer closes
+  and nothing is drawn - no `OnGUI` runs for it at all - while records are still taken in and
+  counted, so the counts are right the moment it shows again. It can be set from any thread and
+  before the overlay exists, takes effect at the overlay's next `Update` (at once from the main
+  thread), survives the overlay being removed and made again, and is back to `true` at the start
+  of each run, domain reload or not. `IsOpen = true` does nothing while it is `false`. Asked for
+  by a game team whose only way to switch the bubble off was reflection into the hidden object.
+- `LogConfig.OverlayBubble`, with `OverlayBubbleMode.Always` (the default, as before) and
+  `OnProblem`: the bubble stays away, at no cost on the frame, until the first warning or error
+  is counted, appears with it, and goes away again after a **Clear** brings warnings and errors
+  back to zero. Opening the viewer from code shows it regardless. `LogOverlay.Ensure` takes the
+  mode in a new overload; the old one means `Always`.
+
+### Changed
+
+- The overlay draws without IMGUI's Layout pass. Nothing in it uses `GUILayout`, and the Layout
+  event was a whole second `OnGUI` per frame. With the screen read once a frame as well (below),
+  the collapsed bubble's IMGUI time in a desktop development player is 42% of 0.17.1's and its
+  garbage 180 bytes a frame instead of 638; `OnProblem` before the first problem and
+  `Visible = false` cost the same as no overlay. The draw calls are unchanged - fourteen for the
+  bubble - and so is the render thread's share. The 2.5 ms a frame that started this was measured
+  on a low-end phone with 0.17; this release has not been measured there.
+- The screen's size, safe area and DPI are read in `Update` - the size every frame, the safe area
+  every frame for ten frames after a change of size (some phones report the old insets for a frame
+  or two after a rotation) and every thirty frames otherwise, the DPI only when the size or the configured scale
+  changes and not at all when a scale is configured - instead of in every GUI event. `Screen.dpi`
+  alone cost about thirteen microseconds a call on the desktop player, twice per pass. The scale is
+  worked out by the same formula as before.
+- The drawing moved to a component of its own on the same hidden object, so that it can be
+  switched off while the reading carries on. `LogOverlay` no longer has an `OnGUI`.
+- **Migration.** Toggling `LogOverlay.enabled` - found by reflection, as the workaround did - no
+  longer hides the drawing: it stops the reading instead, and the bubble stays on the screen with
+  its counts frozen. Use `LogOverlay.Visible`. Because the view runs without a Layout pass, the
+  overlay does not honour `GUI.depth`.
+
 ## [0.17.1] - 2026-10-13
 
 ### Fixed

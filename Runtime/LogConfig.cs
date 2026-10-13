@@ -87,6 +87,13 @@ namespace KenseiLog {
         /// <summary>UI scale for the overlay, or 0 to derive one from screen DPI.</summary>
         public float OverlayScale;
 
+        /// <summary>
+        /// When the overlay's bubble is on the screen. <see cref="OverlayBubbleMode.Always"/>, the
+        /// default, keeps it there from the start; <see cref="OverlayBubbleMode.OnProblem"/> keeps
+        /// it away - and costs nothing on a frame - until the first warning or error.
+        /// </summary>
+        public OverlayBubbleMode OverlayBubble;
+
         public static LogConfig Default() {
             return new LogConfig {
                 CaptureStackTraceOnError = true,
@@ -112,8 +119,22 @@ namespace KenseiLog {
 #endif
                 ShowOverlay = false,
                 OverlayRecordCapacity = 4096,
-                OverlayScale = 0f
+                OverlayScale = 0f,
+                OverlayBubble = OverlayBubbleMode.Always
             };
         }
+    }
+
+    /// <summary>When the in-game overlay's collapsed bubble is drawn.</summary>
+    public enum OverlayBubbleMode {
+        /// <summary>From the start, whatever has been logged.</summary>
+        Always = 0,
+
+        /// <summary>
+        /// Only once a warning or an error has been counted. Until then nothing is drawn and the
+        /// overlay costs nothing on a frame; a Clear that brings warnings and errors back to zero
+        /// hides it again. Opening the viewer from code shows it regardless.
+        /// </summary>
+        OnProblem = 1
     }
 }

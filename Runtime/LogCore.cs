@@ -455,7 +455,7 @@ namespace KenseiLog {
                     AddSink(_overlaySink);
                 }
                 if (_sceneSystemsReady) {
-                    LogOverlay.Ensure(_overlaySink, _config.OverlayScale);
+                    LogOverlay.Ensure(_overlaySink, _config.OverlayScale, _config.OverlayBubble);
                 }
             } else if (_overlaySink != null) {
                 LogOverlay.Remove();
@@ -591,5 +591,11 @@ namespace KenseiLog {
         private static bool MayCallUnityApi() {
             return Thread.CurrentThread.ManagedThreadId == _mainThreadId && !JobsUtility.IsExecutingJob;
         }
+
+        /// <summary>
+        /// Whether the caller may touch Unity objects: the main thread, and not inside a job it
+        /// is executing. For the overlay's setters, which are callable from any thread.
+        /// </summary>
+        internal static bool IsMainThread() => MayCallUnityApi();
     }
 }

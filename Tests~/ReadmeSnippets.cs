@@ -68,6 +68,15 @@ public static class ReadmeSnippets {
         LogCore.Configure(config);
     }
 
+    public static void KeepTheOverlayOffTheFrame() {
+        LogConfig config = LogConfig.Default();
+        config.ShowOverlay = true;
+        config.OverlayBubble = OverlayBubbleMode.OnProblem;   // no bubble until the first warning or error
+        LogCore.Configure(config);
+
+        LogOverlay.Visible = false;                           // hidden: records are still taken in and counted
+    }
+
     // ## Driving it from your own code
     public static void DriveIt() {
         MySink sink = new MySink();
@@ -81,6 +90,7 @@ public static class ReadmeSnippets {
         LogOverlay.IsOpen = true;
         LogOverlay.TagPaneVisible = true;
         LogOverlay.SelectNewest(LogLevel.Error);
+        LogOverlay.Visible = false;
     }
 
     public static void DriveTheWindow() {

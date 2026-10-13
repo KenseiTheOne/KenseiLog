@@ -16,6 +16,16 @@ namespace KenseiLog {
     /// IMGUI reads touches through Event.current, so projects on the new Input System are
     /// unaffected. It also cannot collide with the game's own EventSystem.
     /// </para>
+    /// <para>
+    /// The drawing lives on a second component, <see cref="LogOverlayView"/>, so that it can be
+    /// switched off while this one keeps reading: a disabled behaviour receives no IMGUI events,
+    /// and that is the only state in which an IMGUI overlay costs nothing on a frame. It is off
+    /// while <see cref="Visible"/> is false, and in <see cref="OverlayBubbleMode.OnProblem"/>
+    /// until the first warning or error. The view runs without a Layout pass - nothing here uses
+    /// GUILayout - and the screen metrics are read in Update when they change rather than per
+    /// event. Toggling this component's own <c>enabled</c> does not hide anything; use
+    /// <see cref="Visible"/>. GUI.depth is not honoured.
+    /// </para>
     /// </summary>
     [AddComponentMenu("")]
     public sealed class LogOverlay : MonoBehaviour {
@@ -62,7 +72,18 @@ namespace KenseiLog {
         private static readonly Comparison<TagRow> _byTagName = (left, right) => string.CompareOrdinal(left.Tag, right.Tag);
         private static readonly string[] _levelCaptions = { "Log", "Warn", "Err" };
 
+        // How often the safe area is asked for when the screen size has not changed. It moves
+        // on its own when a phone rotates between two orientations of the same size, or a
+        // cutout setting changes, and half a second late is soon enough for a debug overlay.
+        private const int SafeAreaPollFrames = 30;
+        // After a change of size the safe area is read every frame for this many frames: on some
+        // phones it reports the old orientation's insets for a frame or two after a rotation, and
+        // read once on the resize it would stay wrong until the next poll.
+        private const int SafeAreaSettleFrames = 10;
+
         private static LogOverlay _instance;
+        // Volatile because the setter is callable from any thread: the next Update reads it.
+        private static volatile bool _shown = true;
 
         private readonly LogFilter _filter = new LogFilter { Name = "Overlay" };
         // The same index the editor window keeps, so that collapsing repeats is written once.
@@ -78,7 +99,29 @@ namespace KenseiLog {
         private LogRecord[] _scratch;
         private long _lastSequence;
         private int _lastVersion = -1;
-        private float _configuredScale;
+        private float _configuredScale = -1f;
+        private LogOverlayView _view;
+        private OverlayBubbleMode _bubbleMode = OverlayBubbleMode.Always;
+        // The view's enabled state is worked out in Update and only when something it depends
+        // on moved, so that a frame with nothing new does not touch the component at all.
+        private bool _viewDirty = true;
+        private bool _appliedShown = true;
+
+        // Screen metrics, cached. Screen.dpi alone cost about thirteen microseconds per call on
+        // a desktop player and was read twice per IMGUI pass; with safeArea and the size beside
+        // it that was most of what the collapsed bubble spent outside drawing itself.
+        private float _scale = 1f;
+        private Rect _safe;
+        private int _screenWidth = -1;
+        private int _screenHeight = -1;
+        private int _framesSinceSafeArea;
+        private int _safeAreaSettling;
+        private bool _scaleDirty = true;
+        // Test hooks: how many times the scale was worked out, and how many of those asked for
+        // Screen.dpi. SmokeRunner reads them to check nothing is recomputed per frame.
+        internal int ScaleComputations;
+        internal int DpiReads;
+        internal int SafeAreaReads;
 
         private bool _open;
         private bool _listBuilt;
@@ -126,22 +169,53 @@ namespace KenseiLog {
             _index = new LogIndex(_filter);
         }
 
+        /// <summary>Creates the overlay, or points the one there is at this sink and scale, with the bubble always shown.</summary>
         public static void Ensure(MemorySink sink, float scale) {
+            Ensure(sink, scale, OverlayBubbleMode.Always);
+        }
+
+        /// <summary>Creates the overlay, or points the one there is at this sink, scale and bubble mode.</summary>
+        public static void Ensure(MemorySink sink, float scale, OverlayBubbleMode bubble) {
             if (!Application.isPlaying) {
                 return;
             }
+            EnsureHost(sink, scale, bubble);
+        }
+
+        /// <summary>
+        /// Ensure without the play-mode gate, which is what the headless checks drive. The host
+        /// carries both components: this one reads, the view draws, and a second call adds
+        /// neither again.
+        /// </summary>
+        internal static LogOverlay EnsureHost(MemorySink sink, float scale, OverlayBubbleMode bubble) {
             if (_instance == null) {
                 GameObject host = new GameObject("KenseiLog Overlay") {
                     hideFlags = HideFlags.HideAndDontSave
                 };
-                DontDestroyOnLoad(host);
+                if (Application.isPlaying) {
+                    DontDestroyOnLoad(host);
+                }
                 _instance = host.AddComponent<LogOverlay>();
             }
-            _instance.Attach(sink, scale);
+            if (_instance._view == null) {
+                LogOverlayView view = _instance.gameObject.AddComponent<LogOverlayView>();
+                // Set here as well as in its Awake, which a component added outside play mode
+                // never gets.
+                view.useGUILayout = false;
+                view.Owner = _instance;
+                _instance._view = view;
+            }
+            _instance.Attach(sink, scale, bubble);
+            return _instance;
         }
 
-        private void Attach(MemorySink sink, float scale) {
-            _configuredScale = scale;
+        private void Attach(MemorySink sink, float scale, OverlayBubbleMode bubble) {
+            if (scale != _configuredScale) {
+                _configuredScale = scale;
+                _scaleDirty = true;
+            }
+            _bubbleMode = bubble;
+            _viewDirty = true;
             if (!ReferenceEquals(_sink, sink)) {
                 // A different sink means a different session: its sequences start again from the
                 // bottom, so the watermark and everything counted from the old one have to go
@@ -153,16 +227,61 @@ namespace KenseiLog {
             if (_scratch == null || _scratch.Length < sink.Buffer.Capacity) {
                 _scratch = new LogRecord[sink.Buffer.Capacity];
             }
+            // Now rather than at the next Update: the view was just added enabled, and a host made
+            // after this frame's Update would otherwise draw once before its first look at them.
+            RefreshScreenMetrics();
+            ApplyViewState();
         }
 
-        /// <summary>Open or close the viewer, for wiring into a debug menu of your own.</summary>
+        /// <summary>
+        /// Open or close the viewer, for wiring into a debug menu of your own.
+        /// <para>
+        /// Opening it while <see cref="Visible"/> is false does nothing: the overlay is hidden,
+        /// and stays closed until it is shown again.
+        /// </para>
+        /// </summary>
         public static bool IsOpen {
             get => _instance != null && _instance._open;
             set {
-                if (_instance != null) {
+                if (_instance != null && (!value || _shown)) {
                     _instance.SetOpen(value);
                 }
             }
+        }
+
+        /// <summary>
+        /// Whether the overlay is drawn at all. True by default.
+        /// <para>
+        /// False closes the viewer and switches the drawing off - no IMGUI pass, nothing on the
+        /// frame - while records are still taken in and counted, so the counts are right the
+        /// moment it is shown again. Kept across <see cref="Ensure(MemorySink,float)"/> and
+        /// <see cref="Remove"/>, so it can be set before the overlay exists, and back to true at
+        /// the start of each run in the editor, domain reload or not.
+        /// </para>
+        /// <para>
+        /// Callable from any thread. It takes effect at the overlay's next Update, or at once when
+        /// set on the main thread with the overlay there.
+        /// </para>
+        /// </summary>
+        public static bool Visible {
+            get => _shown;
+            set {
+                _shown = value;
+                if (!LogCore.IsMainThread()) {
+                    return;
+                }
+                LogOverlay overlay = _instance;
+                if (overlay != null) {
+                    overlay.ApplyViewState();
+                }
+            }
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() {
+            // Enter Play Mode without a domain reload keeps statics, and a game that hid the
+            // overlay in one run would otherwise start the next with it hidden.
+            _shown = true;
         }
 
         /// <summary>Show or hide the tag list inside the viewer.</summary>
@@ -243,7 +362,7 @@ namespace KenseiLog {
             if (_instance == null) {
                 return;
             }
-            Destroy(_instance.gameObject);
+            DestroyAnywhere(_instance.gameObject);
             _instance = null;
         }
 
@@ -252,6 +371,7 @@ namespace KenseiLog {
                 return;
             }
             _open = value;
+            _viewDirty = true;
             if (value) {
                 if (!_listBuilt) {
                     RebuildVisible();
@@ -263,11 +383,83 @@ namespace KenseiLog {
         }
 
         private void Update() {
-            if (_sink == null || _sink.Version == _lastVersion) {
-                return;
+            if (_sink != null && _sink.Version != _lastVersion) {
+                _lastVersion = _sink.Version;
+                Ingest();
             }
-            _lastVersion = _sink.Version;
-            Ingest();
+
+            RefreshScreenMetrics();
+
+            // Visible may have been set from another thread since the last frame.
+            if (_appliedShown != _shown) {
+                _viewDirty = true;
+            }
+            if (_viewDirty) {
+                ApplyViewState();
+            }
+        }
+
+        /// <summary>
+        /// Switches the drawing on or off: on while the overlay is visible and there is something
+        /// to show - the viewer open, the bubble set to always, or a warning or an error counted.
+        /// The component is touched only when the answer changes.
+        /// </summary>
+        private void ApplyViewState() {
+            _viewDirty = false;
+            bool shown = _shown;
+            _appliedShown = shown;
+            if (!shown && _open) {
+                SetOpen(false);
+                _viewDirty = false;
+            }
+
+            bool want = shown && (_open || _bubbleMode == OverlayBubbleMode.Always || HasProblem());
+            if (_view != null && _view.enabled != want) {
+                _view.enabled = want;
+            }
+        }
+
+        private bool HasProblem() {
+            return _sink != null &&
+                   _sink.LevelCount(LogLevel.Warning) + _sink.LevelCount(LogLevel.Error) > 0L;
+        }
+
+        /// <summary>
+        /// Reads the screen once a frame instead of once per IMGUI event: its size every frame,
+        /// the safe area when the size changes and every <see cref="SafeAreaPollFrames"/> frames
+        /// otherwise, and the DPI only when the size or the configured scale changes - not at all
+        /// when a scale is configured.
+        /// </summary>
+        private void RefreshScreenMetrics() {
+            int width = Screen.width;
+            int height = Screen.height;
+            bool resized = width != _screenWidth || height != _screenHeight;
+            if (resized) {
+                _screenWidth = width;
+                _screenHeight = height;
+                _safeAreaSettling = SafeAreaSettleFrames;
+            }
+
+            if (_safeAreaSettling > 0 || ++_framesSinceSafeArea >= SafeAreaPollFrames) {
+                _safe = Screen.safeArea;
+                _framesSinceSafeArea = 0;
+                SafeAreaReads++;
+                if (_safeAreaSettling > 0) {
+                    _safeAreaSettling--;
+                }
+            }
+
+            if (resized || _scaleDirty) {
+                _scaleDirty = false;
+                ScaleComputations++;
+                if (_configuredScale > 0f) {
+                    _scale = _configuredScale;
+                } else {
+                    DpiReads++;
+                    float dpi = Screen.dpi;
+                    _scale = Mathf.Clamp(dpi > 1f ? dpi / 160f : height / 720f, 1f, 4f);
+                }
+            }
         }
 
         private void OnDestroy() {
@@ -287,6 +479,9 @@ namespace KenseiLog {
         private void Ingest() {
             LogRingBuffer buffer = _sink.Buffer;
             long oldest = buffer.OldestSequence;
+
+            // Counts moved, so whether the bubble has something to show may have too.
+            _viewDirty = true;
 
             if (buffer.Count == 0) {
                 Reset();
@@ -360,6 +555,7 @@ namespace KenseiLog {
             _tagRowsDirty = true;
             _followTail = true;
             _scroll = Vector2.zero;
+            _viewDirty = true;
         }
 
         /// <summary>
@@ -426,25 +622,35 @@ namespace KenseiLog {
         // Drawing
         // =====================================================================
 
-        private void OnGUI() {
+        /// <summary>
+        /// Called by <see cref="LogOverlayView"/> for each IMGUI event. Not an OnGUI of this
+        /// component's own, so that this one - which has to keep reading - never pays for one.
+        /// </summary>
+        internal void DrawGUI() {
             if (_sink == null) {
                 return;
             }
+#if UNITY_EDITOR
+            // A paused editor runs no Update but still repaints the Game view, resized or not:
+            // without this the viewer kept the old size, Close and Clear off the edge of a
+            // smaller view until play resumed. Editor only - a player never repaints unpaused.
+            if (UnityEditor.EditorApplication.isPaused && Event.current.type == EventType.Repaint) {
+                RefreshScreenMetrics();
+            }
+#endif
 
             EnsureStyles();
 
-            float scale = _configuredScale > 0f
-                ? _configuredScale
-                : Mathf.Clamp(Screen.dpi > 1f ? Screen.dpi / 160f : Screen.height / 720f, 1f, 4f);
+            float scale = _scale;
 
             // Laid out inside the safe area. Clear and Close sit in the corners, which on a
             // phone with a cutout or a home indicator is exactly where the system takes the
             // touches - a button under one cannot be pressed at all. safeArea is y-up from the
             // bottom of the screen and GUI is y-down from the top, hence the flip.
-            Rect safe = Screen.safeArea;
+            Rect safe = _safe;
             Matrix4x4 previous = GUI.matrix;
             GUI.matrix = Matrix4x4.TRS(
-                new Vector3(safe.xMin, Screen.height - safe.yMax, 0f),
+                new Vector3(safe.xMin, _screenHeight - safe.yMax, 0f),
                 Quaternion.identity,
                 new Vector3(scale, scale, 1f));
 
@@ -479,7 +685,7 @@ namespace KenseiLog {
 
         private void DrawBubble(float width, float height) {
             // Rebuilt when a record arrives rather than per pass: this is the state the overlay
-            // is in for almost all of a session, and OnGUI runs at least twice a frame.
+            // is in for almost all of a session, and the view draws it every frame.
             if (_bubbleDirty) {
                 RebuildBubble();
             }
@@ -663,7 +869,7 @@ namespace KenseiLog {
             float x = 4f;
 
             // Same reason as the bubble's label, which was cached and these were not: a count
-            // changes when a record arrives, and OnGUI runs at least twice a frame.
+            // changes when a record arrives, and the view draws every frame.
             if (_levelLabelsDirty) {
                 for (int i = 0; i < _levelLabels.Length; i++) {
                     _levelLabels[i] = _levelCaptions[i] + " " + Compact(_sink.LevelCount((LogLevel)i));
@@ -1118,8 +1324,17 @@ namespace KenseiLog {
             if (texture == null) {
                 return;
             }
-            Destroy(texture);
+            DestroyAnywhere(texture);
             texture = null;
+        }
+
+        // Destroy is refused outside play mode, which is where the headless checks run.
+        private static void DestroyAnywhere(UnityEngine.Object target) {
+            if (Application.isPlaying) {
+                Destroy(target);
+            } else {
+                DestroyImmediate(target);
+            }
         }
 
         private static Color LevelColor(LogLevel level) {
@@ -1136,7 +1351,7 @@ namespace KenseiLog {
         /// <summary>
         /// Everything a row needs to draw itself, worked out once when the record arrives.
         /// <para>
-        /// OnGUI runs at least twice per frame, so doing this per row per pass meant taking the
+        /// The view draws at least once per frame, so doing this per row per pass meant taking the
         /// buffer's lock, re-deriving the tag colour and cutting two substrings thousands of
         /// times a second - all to produce the same characters, because none of it changes
         /// after the record is written.

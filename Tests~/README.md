@@ -43,7 +43,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-380 assertions over everything that does not need a GUI: the ring buffer including gapped and
+425 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -120,6 +120,18 @@ Each regression check names the bug it guards, because the interesting ones were
   row counting it twice (0.17.1)
 - `LogOverlay.Collapsed` set with the viewer closed, which built the list and left it built, so
   every record after it was formatted into a row nothing read (0.17.1)
+- the overlay drawn with a Layout pass it never used, and the screen's DPI, safe area and size read
+  in every GUI event: the view must run without `useGUILayout`, a second Ensure must not add a
+  second one, and nothing but the once-a-frame refresh may read `Screen` - in the overlay, its
+  view, the bubble gesture or anything nested in them - with the safe area read every frame for a
+  while after a change of size (0.18.0)
+- `LogOverlay.Visible` left `false` from one run into the next when play mode is entered without a
+  domain reload (0.18.0)
+- `LogOverlay.Visible`: set before the overlay exists, set from another thread, hiding an open
+  viewer, refusing `IsOpen` while hidden, and still counting what arrives meanwhile (0.18.0)
+- `OverlayBubbleMode.OnProblem` asleep through plain logs, awake on a warning or an error, asleep
+  again after a clear, and shown while the viewer is open; and a zeroed `LogConfig` keeping the
+  bubble as it was (0.18.0)
 
 ## Entering play mode
 

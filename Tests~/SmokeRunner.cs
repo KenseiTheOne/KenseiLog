@@ -79,6 +79,12 @@ public static class SmokeRunner {
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
         Scenario(ARecordThatArrivesBeforeTheViewerOpensIsListedOnce);
         Scenario(CollapsedWhileClosedDoesNotBuildTheList);
+        Scenario(ViewUsesNoLayoutPass);
+        Scenario(VisibleHidesAndKeepsCounting);
+        Scenario(OnProblemSleepsUntilAWarning);
+        Scenario(ConfigDefaultsKeepTheBubble);
+        Scenario(ScaleIsCachedNotReadPerEvent);
+        Scenario(VisibleIsBackAtTheStartOfARun);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
         Scenario(CountsSurviveAChangeOfCapacity);
@@ -2854,7 +2860,7 @@ public static class SmokeRunner {
         try {
             LogOverlay overlay = host.AddComponent<LogOverlay>();
             MemorySink sink = new MemorySink(64);
-            attach.Invoke(overlay, new object[] { sink, 1f });
+            attach.Invoke(overlay, new object[] { sink, 1f, OverlayBubbleMode.Always });
             System.Collections.IList visible = (System.Collections.IList)visibleField.GetValue(overlay);
             LogIndex index = (LogIndex)indexField.GetValue(overlay);
             LogFilter filter = (LogFilter)filterField.GetValue(overlay);
@@ -2946,7 +2952,7 @@ public static class SmokeRunner {
             LogOverlay overlay = host.AddComponent<LogOverlay>();
             instanceField.SetValue(null, overlay);
             MemorySink sink = new MemorySink(64);
-            attach.Invoke(overlay, new object[] { sink, 1f });
+            attach.Invoke(overlay, new object[] { sink, 1f, OverlayBubbleMode.Always });
             System.Collections.IList visible = (System.Collections.IList)visibleField.GetValue(overlay);
             LogIndex index = (LogIndex)indexField.GetValue(overlay);
 
@@ -2971,6 +2977,350 @@ public static class SmokeRunner {
             LogOverlay.Collapsed = false;
             instanceField.SetValue(null, previous);
             UnityEngine.Object.DestroyImmediate(host);
+        }
+    }
+
+    /// <summary>
+    /// Drives the overlay the way Ensure builds it, without the play-mode gate, and puts back
+    /// every static it touches: the instance, which the static API goes to, and Visible, which
+    /// outlives both Ensure and Remove by design.
+    /// </summary>
+    private sealed class OverlayRig : IDisposable {
+        private const BindingFlags Instance = BindingFlags.NonPublic | BindingFlags.Instance;
+        private static readonly FieldInfo _instanceField =
+            typeof(LogOverlay).GetField("_instance", BindingFlags.NonPublic | BindingFlags.Static);
+        private static readonly MethodInfo _ensure =
+            typeof(LogOverlay).GetMethod("EnsureHost", BindingFlags.NonPublic | BindingFlags.Static);
+        private static readonly MethodInfo _update = typeof(LogOverlay).GetMethod("Update", Instance);
+        private static readonly FieldInfo _viewField = typeof(LogOverlay).GetField("_view", Instance);
+
+        private readonly object _previousInstance;
+        private readonly bool _previousVisible;
+
+        public static readonly Type ViewType = typeof(LogOverlay).Assembly.GetType("KenseiLog.LogOverlayView");
+        public static bool PartsPresent =>
+            _instanceField != null && _ensure != null && _update != null && _viewField != null && ViewType != null;
+
+        public readonly MemorySink Sink = new MemorySink(64);
+        public LogOverlay Overlay;
+
+        public OverlayRig() {
+            _previousInstance = _instanceField.GetValue(null);
+            _previousVisible = LogOverlay.Visible;
+            _instanceField.SetValue(null, null);
+        }
+
+        public LogOverlay Ensure(float scale, OverlayBubbleMode bubble) {
+            Overlay = (LogOverlay)_ensure.Invoke(null, new object[] { Sink, scale, bubble });
+            return Overlay;
+        }
+
+        public UnityEngine.Behaviour View => (UnityEngine.Behaviour)_viewField.GetValue(Overlay);
+
+        public void Update() {
+            _update.Invoke(Overlay, null);
+        }
+
+        public T Field<T>(string name) {
+            return (T)typeof(LogOverlay).GetField(name, Instance).GetValue(Overlay);
+        }
+
+        public void SetField(string name, object value) {
+            typeof(LogOverlay).GetField(name, Instance).SetValue(Overlay, value);
+        }
+
+        public void Dispose() {
+            if (Overlay != null) {
+                UnityEngine.Object.DestroyImmediate(Overlay.gameObject);
+            }
+            _instanceField.SetValue(null, _previousInstance);
+            LogOverlay.Visible = _previousVisible;
+        }
+    }
+
+    /// <summary>
+    /// 0.18.0. A game team measured the collapsed bubble at about 2.5 ms a frame on a low-end
+    /// phone. Most of it was the IMGUI Layout pass the overlay never used - GUILayout appears
+    /// nowhere in it - so the drawing moved to a view component that runs without one, and the
+    /// overlay itself no longer has an OnGUI to be called for.
+    /// </summary>
+    private static void ViewUsesNoLayoutPass() {
+        Check("the overlay still has the parts this leans on", OverlayRig.PartsPresent);
+        if (!OverlayRig.PartsPresent) {
+            return;
+        }
+
+        Check("the reading half receives no IMGUI events",
+            typeof(LogOverlay).GetMethod("OnGUI", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) == null);
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay overlay = rig.Ensure(1f, OverlayBubbleMode.Always);
+            UnityEngine.Behaviour view = rig.View;
+            Check("ensure adds a view beside the overlay", view != null && view.gameObject == overlay.gameObject);
+            Check("and the view runs without a layout pass", view != null && !((UnityEngine.MonoBehaviour)view).useGUILayout);
+            FieldInfo owner = OverlayRig.ViewType.GetField("Owner", BindingFlags.NonPublic | BindingFlags.Instance);
+            Check("and draws for the overlay it was made with",
+                owner != null && view != null && ReferenceEquals(owner.GetValue(view), overlay));
+
+            LogOverlay again = rig.Ensure(1f, OverlayBubbleMode.Always);
+            Check("a second ensure keeps the one overlay", ReferenceEquals(again, overlay) &&
+                overlay.GetComponents<LogOverlay>().Length == 1);
+            Check("and adds no second view", overlay.GetComponents(OverlayRig.ViewType).Length == 1 &&
+                ReferenceEquals(rig.View, view));
+        }
+    }
+
+    /// <summary>
+    /// 0.18.0. The project-side workaround for the bubble's cost was reflection to find the
+    /// hidden host and switch it off. LogOverlay.Visible is the package's own: it stops the
+    /// drawing and leaves the reading running, so the counts are right when it comes back.
+    /// </summary>
+    private static void VisibleHidesAndKeepsCounting() {
+        Check("the overlay still has the parts this leans on", OverlayRig.PartsPresent);
+        if (!OverlayRig.PartsPresent) {
+            return;
+        }
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = false;
+            rig.Ensure(1f, OverlayBubbleMode.Always);
+            Check("hidden before the overlay exists, it starts hidden", !rig.View.enabled);
+            rig.Update();
+            Check("and stays hidden through an update", !rig.View.enabled && !LogOverlay.Visible);
+
+            LogOverlay.Visible = true;
+            Check("shown on the main thread, it shows at once", rig.View.enabled);
+
+            LogOverlay.IsOpen = true;
+            Check("the viewer opens while shown", LogOverlay.IsOpen);
+            LogOverlay.Visible = false;
+            rig.Update();
+            Check("hiding it closes the viewer", !LogOverlay.IsOpen);
+            Check("and switches the drawing off", !rig.View.enabled);
+
+            rig.Sink.Write(Record(1, "A", "one", LogLevel.Warning, LogChannel.Prod, 0));
+            rig.Sink.Write(Record(2, "A", "two", LogLevel.Error, LogChannel.Prod, 0));
+            rig.Update();
+            Check("records are still taken in while hidden",
+                rig.Field<int>("_lastVersion") == rig.Sink.Version && rig.Field<long>("_lastSequence") == 2L);
+            Check("and counted", rig.Sink.LevelCount(LogLevel.Warning) == 1L && rig.Sink.LevelCount(LogLevel.Error) == 1L);
+            Check("and a problem does not bring it back while hidden", !rig.View.enabled);
+
+            LogOverlay.IsOpen = true;
+            rig.Update();
+            Check("opening the viewer while hidden does nothing", !LogOverlay.IsOpen && !rig.View.enabled);
+
+            LogOverlay.Visible = true;
+            rig.Update();
+            Check("shown again, it draws", rig.View.enabled);
+
+            Exception thrown = null;
+            try {
+                System.Threading.Tasks.Task.Run(() => LogOverlay.Visible = false).Wait();
+            } catch (Exception exception) {
+                thrown = exception;
+            }
+            Check("hiding it from another thread does not throw", thrown == null);
+            Check("and waits for the next update", rig.View.enabled && !LogOverlay.Visible);
+            rig.Update();
+            Check("which applies it", !rig.View.enabled);
+        }
+    }
+
+    /// <summary>
+    /// 0.18.0. OverlayBubbleMode.OnProblem keeps the bubble off the screen, and off the frame,
+    /// until there is a warning or an error to show - the signal the bubble exists for.
+    /// </summary>
+    private static void OnProblemSleepsUntilAWarning() {
+        Check("the overlay still has the parts this leans on", OverlayRig.PartsPresent);
+        if (!OverlayRig.PartsPresent) {
+            return;
+        }
+
+        using (OverlayRig rig = new OverlayRig()) {
+            LogOverlay.Visible = true;
+            rig.Ensure(1f, OverlayBubbleMode.OnProblem);
+            Check("with nothing logged the bubble sleeps", !rig.View.enabled);
+
+            rig.Sink.Write(Record(1, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            rig.Update();
+            Check("a plain log does not wake it", !rig.View.enabled);
+
+            rig.Sink.Write(Record(2, "A", "two", LogLevel.Warning, LogChannel.Prod, 0));
+            rig.Update();
+            Check("a warning does", rig.View.enabled);
+
+            rig.Sink.Clear();
+            rig.Update();
+            Check("a clear back to nothing puts it to sleep again", !rig.View.enabled);
+
+            LogOverlay.IsOpen = true;
+            rig.Update();
+            Check("opening the viewer shows it regardless", LogOverlay.IsOpen && rig.View.enabled);
+            LogOverlay.IsOpen = false;
+            rig.Update();
+            Check("and closing it returns to the policy", !rig.View.enabled);
+
+            rig.Sink.Write(Record(3, "A", "three", LogLevel.Error, LogChannel.Prod, 0));
+            rig.Update();
+            Check("an error wakes it too", rig.View.enabled);
+
+            rig.Sink.Clear();
+            rig.Update();
+            rig.Ensure(1f, OverlayBubbleMode.Always);
+            Check("a later ensure with Always shows it at once", rig.View.enabled);
+        }
+    }
+
+    /// <summary>
+    /// 0.18.0. OverlayBubble is a new field on a struct people build with `new LogConfig()` as
+    /// well as with Default(): both have to keep the bubble as it was.
+    /// </summary>
+    private static void ConfigDefaultsKeepTheBubble() {
+        Check("a zeroed config keeps the bubble", default(LogConfig).OverlayBubble == OverlayBubbleMode.Always);
+        Check("and so do the defaults", LogConfig.Default().OverlayBubble == OverlayBubbleMode.Always);
+        Check("the modes keep their numbers", (int)OverlayBubbleMode.Always == 0 && (int)OverlayBubbleMode.OnProblem == 1);
+    }
+
+    /// <summary>
+    /// 0.18.0. The scale, the safe area and the screen size were read in every IMGUI event, and
+    /// Screen.dpi alone cost about thirteen microseconds a call on a desktop player, twice per
+    /// pass. They are read in Update now, and the scale worked out again only when the size or
+    /// the configured scale changes.
+    /// </summary>
+    private static void ScaleIsCachedNotReadPerEvent() {
+        Check("the overlay still has the parts this leans on", OverlayRig.PartsPresent);
+        if (!OverlayRig.PartsPresent) {
+            return;
+        }
+
+        // Screen is read in one method and nowhere else: whatever the view calls cannot reach it.
+        // The view and the gesture are looked at too, and every nested type - a lambda compiles
+        // to one - so a read moved out of LogOverlay's own methods is still found.
+        Assembly runtime = typeof(LogOverlay).Assembly;
+        string readers = ScreenReaders(typeof(LogOverlay), runtime.GetType("KenseiLog.LogOverlayView"),
+            runtime.GetType("KenseiLog.BubbleGesture"));
+        Check("only the metrics refresh reads the screen (" + readers + ")",
+            readers == "LogOverlay.RefreshScreenMetrics");
+
+        using (OverlayRig rig = new OverlayRig()) {
+            rig.Ensure(0f, OverlayBubbleMode.Always);
+            int computed = rig.Field<int>("ScaleComputations");
+            int dpi = rig.Field<int>("DpiReads");
+            Check("the scale is worked out when the overlay attaches", computed == 1 && dpi == 1);
+
+            for (int i = 0; i < 40; i++) {
+                rig.Update();
+            }
+            rig.Sink.Write(Record(1, "A", "one", LogLevel.Warning, LogChannel.Prod, 0));
+            rig.Update();
+            rig.Ensure(0f, OverlayBubbleMode.Always);
+            Check("and not again while nothing changes",
+                rig.Field<int>("ScaleComputations") == computed && rig.Field<int>("DpiReads") == dpi);
+
+            int safeReads = rig.Field<int>("SafeAreaReads");
+            rig.SetField("_screenWidth", -1);
+            rig.Update();
+            Check("a change of size works it out again", rig.Field<int>("ScaleComputations") == computed + 1 &&
+                rig.Field<int>("DpiReads") == dpi + 1);
+
+            // A safe area can lag a rotation by a frame or two, so it is read every frame for ten
+            // frames after a change of size, and then left to the slow poll again.
+            int settle = rig.Field<int>("SafeAreaReads");
+            for (int i = 0; i < 9; i++) {
+                rig.Update();
+            }
+            Check("a change of size reads the safe area every frame for a while",
+                settle == safeReads + 1 && rig.Field<int>("SafeAreaReads") == safeReads + 10);
+            rig.Update();
+            Check("and then stops", rig.Field<int>("SafeAreaReads") == safeReads + 10);
+
+            rig.Ensure(2f, OverlayBubbleMode.Always);
+            Check("a configured scale is taken as it is",
+                Math.Abs(rig.Field<float>("_scale") - 2f) < 0.0001f && rig.Field<int>("ScaleComputations") == computed + 2);
+            rig.SetField("_screenWidth", -1);
+            rig.Update();
+            Check("and with one configured the DPI is never asked for",
+                rig.Field<int>("ScaleComputations") == computed + 3 && rig.Field<int>("DpiReads") == dpi + 1);
+        }
+    }
+
+    /// <summary>
+    /// 0.18.0. Visible is static, and Enter Play Mode without a domain reload keeps statics: a
+    /// game that hid the overlay in one run would start the next with it hidden. A method run at
+    /// SubsystemRegistration puts it back, and nothing else would notice if it went.
+    /// </summary>
+    private static void VisibleIsBackAtTheStartOfARun() {
+        MethodInfo reset = typeof(LogOverlay).GetMethod("ResetStatics", BindingFlags.NonPublic | BindingFlags.Static);
+        UnityEngine.RuntimeInitializeOnLoadMethodAttribute registered =
+            reset?.GetCustomAttribute<UnityEngine.RuntimeInitializeOnLoadMethodAttribute>();
+        Check("the reset runs at the start of every run, before any scene",
+            registered != null && registered.loadType == UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration);
+        if (reset == null) {
+            return;
+        }
+
+        bool was = LogOverlay.Visible;
+        try {
+            LogOverlay.Visible = false;
+            reset.Invoke(null, null);
+            Check("and shows the overlay again", LogOverlay.Visible);
+        } finally {
+            LogOverlay.Visible = was;
+        }
+    }
+
+    /// <summary>
+    /// The methods of these types and of every type nested in them whose IL calls anything on
+    /// UnityEngine.Screen, as Type.Method, comma separated.
+    /// </summary>
+    private static string ScreenReaders(params Type[] types) {
+        List<string> found = new List<string>();
+        Stack<Type> pending = new Stack<Type>();
+        foreach (Type type in types) {
+            if (type != null) {
+                pending.Push(type);
+            }
+        }
+        while (pending.Count > 0) {
+            Type type = pending.Pop();
+            foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)) {
+                pending.Push(nested);
+            }
+            ScreenReadersOf(type, found);
+        }
+        found.Sort(string.CompareOrdinal);
+        return string.Join(",", found);
+    }
+
+    private static void ScreenReadersOf(Type type, List<string> found) {
+        const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance |
+                                 BindingFlags.Static | BindingFlags.DeclaredOnly;
+        List<MethodBase> methods = new List<MethodBase>(type.GetMethods(All));
+        methods.AddRange(type.GetConstructors(All));
+        foreach (MethodBase method in methods) {
+            MethodBody body = method.GetMethodBody();
+            byte[] il = body?.GetILAsByteArray();
+            if (il == null) {
+                continue;
+            }
+            for (int i = 0; i + 4 < il.Length; i++) {
+                // call and callvirt, each followed by a four byte method token.
+                if (il[i] != 0x28 && il[i] != 0x6F) {
+                    continue;
+                }
+                int token = BitConverter.ToInt32(il, i + 1);
+                MethodBase callee;
+                try {
+                    callee = method.Module.ResolveMethod(token);
+                } catch (Exception) {
+                    continue;
+                }
+                if (callee != null && callee.DeclaringType == typeof(UnityEngine.Screen)) {
+                    found.Add(type.Name + "." + method.Name);
+                    break;
+                }
+            }
         }
     }
 
