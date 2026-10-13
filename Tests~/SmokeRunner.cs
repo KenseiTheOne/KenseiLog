@@ -77,6 +77,8 @@ public static class SmokeRunner {
         Scenario(TheEntryLineIsWrittenOnTheSideOfTheReloadTheWindowShows);
         Scenario(AMirroredLineComesBackAsTheRecordItMirrored);
         Scenario(TheBubbleStillOpensAfterItHasBeenDragged);
+        Scenario(ARecordThatArrivesBeforeTheViewerOpensIsListedOnce);
+        Scenario(CollapsedWhileClosedDoesNotBuildTheList);
         Scenario(CountsSurviveABurstLongerThanTheBuffer);
         Scenario(ACountNeverOutgrowsTheChipItIsDrawnIn);
         Scenario(CountsSurviveAChangeOfCapacity);
@@ -2817,6 +2819,170 @@ public static class SmokeRunner {
         gesture.Press(false, start);
         Check("a drag that began off the bubble does not move it",
             !gesture.TryDrag(true, new UnityEngine.Vector2(40f, 0f), out UnityEngine.Vector2 _));
+    }
+
+    /// <summary>
+    /// Found in review of the PerfectWar project's overlay change, by reading: the viewer builds
+    /// its list from the whole buffer when it opens or a filter changes, and left the watermark
+    /// where the last poll had put it. A record that landed between that poll and the rebuild was
+    /// listed by the rebuild and copied again by the next poll - a second row for it, or a
+    /// collapsed row counting it twice. The overlay has no play-mode coverage, so this drives it
+    /// the way a frame would, by hand: Update is the poll, SetOpen the tap on the bubble,
+    /// RebuildVisible what every filter control calls.
+    /// </summary>
+    private static void ARecordThatArrivesBeforeTheViewerOpensIsListedOnce() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        Type type = typeof(LogOverlay);
+        MethodInfo attach = type.GetMethod("Attach", Hidden);
+        MethodInfo update = type.GetMethod("Update", Hidden);
+        MethodInfo setOpen = type.GetMethod("SetOpen", Hidden);
+        MethodInfo rebuild = type.GetMethod("RebuildVisible", Hidden);
+        FieldInfo visibleField = type.GetField("_visible", Hidden);
+        FieldInfo indexField = type.GetField("_index", Hidden);
+        FieldInfo filterField = type.GetField("_filter", Hidden);
+        FieldInfo labelsDirty = type.GetField("_levelLabelsDirty", Hidden);
+        bool parts = attach != null && update != null && setOpen != null && rebuild != null &&
+            visibleField != null && indexField != null && filterField != null && labelsDirty != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        UnityEngine.GameObject host = new UnityEngine.GameObject("smoke overlay") {
+            hideFlags = UnityEngine.HideFlags.HideAndDontSave
+        };
+        try {
+            LogOverlay overlay = host.AddComponent<LogOverlay>();
+            MemorySink sink = new MemorySink(64);
+            attach.Invoke(overlay, new object[] { sink, 1f });
+            System.Collections.IList visible = (System.Collections.IList)visibleField.GetValue(overlay);
+            LogIndex index = (LogIndex)indexField.GetValue(overlay);
+            LogFilter filter = (LogFilter)filterField.GetValue(overlay);
+
+            // The poll, then a record, then the tap - the order a frame puts them in when the
+            // record is logged from a script that runs after the overlay's Update.
+            sink.Write(Record(1, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            update.Invoke(overlay, null);
+            sink.Write(Record(2, "A", "two", LogLevel.Warning, LogChannel.Prod, 0));
+            setOpen.Invoke(overlay, new object[] { true });
+            Check("opening the viewer lists both records", visible.Count == 2);
+            update.Invoke(overlay, null);
+            Check("and the next poll does not list the late one again",
+                visible.Count == 2 && index.Count == 2 && SequencesDistinct(index));
+
+            // A level button, a tag, Collapse: each rebuilds, and each had the same gap.
+            sink.Write(Record(3, "A", "three", LogLevel.Log, LogChannel.Prod, 0));
+            rebuild.Invoke(overlay, null);
+            update.Invoke(overlay, null);
+            Check("a rebuild after a filter change does not list a record twice",
+                visible.Count == 3 && index.Count == 3 && SequencesDistinct(index));
+
+            // Collapsed, the second copy did not show as a row: it folded into its own, and the
+            // count beside it said two for a line logged once.
+            filter.Collapse = true;
+            rebuild.Invoke(overlay, null);
+            update.Invoke(overlay, null);
+            sink.Write(Record(4, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            rebuild.Invoke(overlay, null);
+            update.Invoke(overlay, null);
+            Check("a collapsed rebuild counts a repeat once",
+                index.Count == 3 && index.Repeats[0] == 2 && visible.Count == 3);
+            filter.Collapse = false;
+            rebuild.Invoke(overlay, null);
+            update.Invoke(overlay, null);
+
+            // The fix moves the watermark and not the version. Moving both stops the duplicate
+            // too, and then the poll after it sees nothing new and leaves the counts on the bar
+            // as they were.
+            labelsDirty.SetValue(overlay, false);
+            sink.Write(Record(5, "A", "five", LogLevel.Error, LogChannel.Prod, 0));
+            rebuild.Invoke(overlay, null);
+            update.Invoke(overlay, null);
+            Check("the poll after a rebuild still marks the counts for redrawing",
+                (bool)labelsDirty.GetValue(overlay) && visible.Count == 5 && SequencesDistinct(index));
+
+            setOpen.Invoke(overlay, new object[] { false });
+            update.Invoke(overlay, null);
+            sink.Write(Record(6, "A", "six", LogLevel.Log, LogChannel.Prod, 0));
+            setOpen.Invoke(overlay, new object[] { true });
+            update.Invoke(overlay, null);
+            Check("reopening lists a late record once", visible.Count == 6 && SequencesDistinct(index));
+        } finally {
+            UnityEngine.Object.DestroyImmediate(host);
+        }
+    }
+
+    /// <summary>
+    /// Found alongside the one above. The Collapsed setter rebuilt the list whether or not the
+    /// viewer was open, and a rebuild marks the list built - so a game that set it at startup,
+    /// with the bubble closed, had the overlay format a row for every record from then on, which
+    /// is exactly the cost the closed viewer is kept to counts to avoid. Nothing showed: the rows
+    /// were simply never read.
+    /// </summary>
+    private static void CollapsedWhileClosedDoesNotBuildTheList() {
+        const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance;
+        Type type = typeof(LogOverlay);
+        MethodInfo attach = type.GetMethod("Attach", Hidden);
+        MethodInfo update = type.GetMethod("Update", Hidden);
+        MethodInfo setOpen = type.GetMethod("SetOpen", Hidden);
+        FieldInfo instanceField = type.GetField("_instance", BindingFlags.NonPublic | BindingFlags.Static);
+        FieldInfo builtField = type.GetField("_listBuilt", Hidden);
+        FieldInfo visibleField = type.GetField("_visible", Hidden);
+        FieldInfo indexField = type.GetField("_index", Hidden);
+        bool parts = attach != null && update != null && setOpen != null && instanceField != null &&
+            builtField != null && visibleField != null && indexField != null;
+        Check("the overlay still has the parts this leans on", parts);
+        if (!parts) {
+            return;
+        }
+
+        // Collapsed is static and goes to the one overlay there is. Batchmode never makes one,
+        // but whatever is there is put back.
+        object previous = instanceField.GetValue(null);
+        UnityEngine.GameObject host = new UnityEngine.GameObject("smoke overlay") {
+            hideFlags = UnityEngine.HideFlags.HideAndDontSave
+        };
+        try {
+            LogOverlay overlay = host.AddComponent<LogOverlay>();
+            instanceField.SetValue(null, overlay);
+            MemorySink sink = new MemorySink(64);
+            attach.Invoke(overlay, new object[] { sink, 1f });
+            System.Collections.IList visible = (System.Collections.IList)visibleField.GetValue(overlay);
+            LogIndex index = (LogIndex)indexField.GetValue(overlay);
+
+            LogOverlay.Collapsed = true;
+            Check("collapsing is taken while the viewer is closed", LogOverlay.Collapsed);
+            sink.Write(Record(1, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            update.Invoke(overlay, null);
+            Check("and builds no list for it", !(bool)builtField.GetValue(overlay));
+            Check("so a record logged after it is formatted into no row", visible.Count == 0);
+
+            sink.Write(Record(2, "A", "two", LogLevel.Log, LogChannel.Prod, 0));
+            setOpen.Invoke(overlay, new object[] { true });
+            update.Invoke(overlay, null);
+            Check("opening builds the list collapsed, each record counted once",
+                index.Count == 2 && visible.Count == 2 && index.Repeats[0] == 1 && index.Repeats[1] == 1);
+
+            sink.Write(Record(3, "A", "one", LogLevel.Log, LogChannel.Prod, 0));
+            update.Invoke(overlay, null);
+            Check("and a repeat folds into its row",
+                index.Count == 2 && visible.Count == 2 && index.Repeats[0] == 2);
+        } finally {
+            LogOverlay.Collapsed = false;
+            instanceField.SetValue(null, previous);
+            UnityEngine.Object.DestroyImmediate(host);
+        }
+    }
+
+    private static bool SequencesDistinct(LogIndex index) {
+        for (int i = 0; i < index.Count; i++) {
+            for (int j = i + 1; j < index.Count; j++) {
+                if (index.Sequences[i] == index.Sequences[j]) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /// <summary>

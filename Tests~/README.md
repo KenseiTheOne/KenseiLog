@@ -43,7 +43,7 @@ Unity.exe -projectPath <project> -batchmode -quit -nographics \
           -executeMethod SmokeRunner.Run -logFile <log>
 ```
 
-367 assertions over everything that does not need a GUI: the ring buffer including gapped and
+380 assertions over everything that does not need a GUI: the ring buffer including gapped and
 out-of-order sequences, tag matching, collapse, the tag tree, JSON round trips, file rotation
 including a rotation that is refused, the buffer under four writers and a reader, and the
 regressions listed below. Prints
@@ -115,6 +115,11 @@ Each regression check names the bug it guards, because the interesting ones were
   file through both the fast parser and JsonUtility (0.17.0)
 - a line mirrored into the console coming back after a reload as a second, foreign record
   (0.17.0)
+- a record that landed between the overlay's last poll and the viewer opening, or a filter
+  change, listed by the rebuild and copied again by the next poll: a second row, or a collapsed
+  row counting it twice (0.17.1)
+- `LogOverlay.Collapsed` set with the viewer closed, which built the list and left it built, so
+  every record after it was formatted into a row nothing read (0.17.1)
 
 ## Entering play mode
 

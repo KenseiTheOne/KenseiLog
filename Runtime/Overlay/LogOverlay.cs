@@ -188,7 +188,14 @@ namespace KenseiLog {
                     return;
                 }
                 _instance._filter.Collapse = value;
-                _instance.RebuildVisible();
+                // Only a list that exists has to be taken again. While the viewer is closed there
+                // is none, and the one built when it opens folds by the filter as it stands then.
+                // Rebuilding here built it anyway and marked it built, so from then on every
+                // record was formatted into a row nothing read, for the rest of the run - the cost
+                // the closed viewer exists to avoid.
+                if (_instance._listBuilt) {
+                    _instance.RebuildVisible();
+                }
             }
         }
 
@@ -365,6 +372,15 @@ namespace KenseiLog {
             int copied = _sink.Buffer.CopyNewerThan(0, _scratch);
             for (int i = 0; i < copied; i++) {
                 TakeRow(in _scratch[i]);
+            }
+            // The rebuild read the whole buffer, so the watermark moves up to what it took. A
+            // record that landed after the last poll is in the list now, and left below the
+            // watermark the next poll copied it again and listed it twice - on opening the viewer,
+            // and on every filter change. The version is left alone on purpose: the poll still
+            // has to see that something arrived, or the counts on the bar and the bubble would
+            // not be redrawn for it.
+            if (copied > 0) {
+                _lastSequence = Math.Max(_lastSequence, _scratch[copied - 1].Sequence);
             }
             _listBuilt = true;
             ScrollToSelectionOrTail();

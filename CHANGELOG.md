@@ -4,6 +4,21 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-10-13
+
+### Fixed
+
+- The in-game viewer no longer lists a record twice. A record logged after the overlay's last
+  poll in a frame - from any script whose Update runs after the overlay's - was taken into the
+  list when the viewer opened, and taken again by the next poll: a second row for it, or, with
+  Collapse on, a count of two beside a line logged once. The same held for every filter change -
+  a level button, a tag, Collapse, `LogOverlay.Collapsed` - since each rebuilds the list the same
+  way. Found in review of the PerfectWar project's overlay change.
+- Setting `LogOverlay.Collapsed` while the viewer is closed no longer builds the list behind it.
+  It did, and marked it built, so from then on the overlay formatted a row for every record that
+  nothing read until the viewer was opened and closed again - the cost a closed viewer is kept to
+  counts to avoid, paid for the rest of the run by a game that set it at startup.
+
 ## [0.17.0] - 2026-10-08
 
 ### Fixed
